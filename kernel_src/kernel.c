@@ -11,6 +11,8 @@
 #elif !defined(__i386__)
 	#error "This code must be compiled with an x86-elf compiler"
 #endif
+
+uint8_t WANT_NMI = 0;
  
 // This is the x86's VGA textmode buffer. To display text, we write data to this memory location
 volatile uint16_t* vga_buffer = (uint16_t*)0xB8000;
@@ -125,6 +127,110 @@ void term_print(const char* str)
 		term_putc(str[i]);
 }
  
+uint8_t read_cmos(uint8_t reg)
+{
+	outb(0x70, WANT_NMI | reg);
+	return inb(0x71);
+}
+
+void memcpy(uint8_t *dst, uint8_t *src, unsigned int count)
+{
+	while (count) {
+		--count;
+		*dst = *src;
+		++dst;
+		++src;
+	}
+}
+
+uint8_t memcmp(uint8_t *a, uint8_t *b, unsigned int count)
+{
+	while (1) {
+		if (!count) { return 0; }
+		if (*a < *b) { return -1; }
+		if (*b > *a) { return 1; }
+		--count;
+		++a;
+		++b;
+	}
+}
+
+void get_time()
+{
+	uint8_t timeA[9], timeB[9];
+	do {
+		memcpy(timeB, timeA, sizeof(timeA));
+		while (((timeA[0] = read_cmos(0x0A)) & 0x80) != 0) { } // Status Register A
+		timeA[1] = read_cmos(0x00); // Seconds
+		timeA[2] = read_cmos(0x02); // Minutes
+		timeA[3] = read_cmos(0x04); // Hours
+		timeA[4] = read_cmos(0x07); // Day of Month (ignore weekday)
+		timeA[5] = read_cmos(0x08); // Month
+		timeA[6] = read_cmos(0x09); // Year
+		timeA[7] = read_cmos(0x32); // Century (maybe)
+		timeA[8] = read_cmos(0x0B); // Status Register B
+	} while (memcmp(timeA, timeB, sizeof(timeA)) != 0);
+
+	char outtime[21];
+	uint8_t tens, ones;
+	if (timeA[8] & 0x04) { // binary mode
+		if ((timeA[8] & 0x02) == 0) { // 12 hour mode
+			if (timeA[3] & 0x80) {
+				timeA[3] = 12 + (timeA[3] & 0x7F);
+			} else if (timeA[3] == 12) {
+				timeA[3] = 0;
+			}
+		}
+		tens = timeA[7] / 10; ones = timeA[7] % 10;
+		outtime[0] = tens + '0'; outtime[1] = ones + '0';
+		tens = timeA[6] / 10; ones = timeA[6] % 10;
+		outtime[2] = tens + '0'; outtime[3] = ones + '0';
+		tens = timeA[5] / 10; ones = timeA[5] % 10;
+		outtime[5] = tens + '0'; outtime[6] = ones + '0';
+		tens = timeA[4] / 10; ones = timeA[4] % 10;
+		outtime[8] = tens + '0'; outtime[9] = ones + '0';
+		tens = timeA[3] / 10; ones = timeA[3] % 10;
+		outtime[11] = tens + '0'; outtime[12] = ones + '0';
+		tens = timeA[2] / 10; ones = timeA[2] % 10;
+		outtime[14] = tens + '0'; outtime[15] = ones + '0';
+		tens = timeA[1] / 10; ones = timeA[1] % 10;
+		outtime[17] = tens + '0'; outtime[18] = ones + '0';
+	} else { // BCD mode
+		if ((timeA[8] & 0x02) == 0) { // 12 hour mode
+			if (timeA[3] == 0x88) {
+				timeA[3] = 0x20;
+			} else if (timeA[3] == 0x89) {
+				timeA[3] = 0x21;
+			} else if (timeA[3] & 0x80) {
+				timeA[3] = 12 + (timeA[3] & 0x7F);
+			} else if (timeA[3] == 0x12) {
+				timeA[3] = 0;
+			}
+		}
+		tens = timeA[7] >> 4; ones = timeA[7] & 0x0F;
+		outtime[0] = tens + '0'; outtime[1] = ones + '0';
+		tens = timeA[6] >> 4; ones = timeA[6] & 0x0F;
+		outtime[2] = tens + '0'; outtime[3] = ones + '0';
+		tens = timeA[5] >> 4; ones = timeA[5] & 0x0F;
+		outtime[5] = tens + '0'; outtime[6] = ones + '0';
+		tens = timeA[4] >> 4; ones = timeA[4] & 0x0F;
+		outtime[8] = tens + '0'; outtime[9] = ones + '0';
+		tens = timeA[3] >> 4; ones = timeA[3] & 0x0F;
+		outtime[11] = tens + '0'; outtime[12] = ones + '0';
+		tens = timeA[2] >> 4; ones = timeA[2] & 0x0F;
+		outtime[14] = tens + '0'; outtime[15] = ones + '0';
+		tens = timeA[1] >> 4; ones = timeA[1] & 0x0F;
+		outtime[17] = tens + '0'; outtime[18] = ones + '0';
+	}
+
+	outtime[4] = '-';
+	outtime[7] = '-';
+	outtime[10] = ' ';
+	outtime[13] = ':';
+	outtime[16] = ':';
+	outtime[19] = '\n'; outtime[20] = '\0';
+	term_print(outtime);
+}
  
  
 // This is our kernel's main function
@@ -138,4 +244,5 @@ void kernel_main()
 	// Display some messages
 	term_print("Hello, World!\n");
 	term_print("Welcome to the kernel.\n");
+	get_time();
 }
