@@ -24,6 +24,28 @@
 	.long MB_FLAGS
 	// Use the checksum we calculated earlier
 	.long MB_CHECKSUM
+
+.section .data
+	.align 1 // byte backed data here
+	null_gdt: .long 0
+	          .long 0 // required
+	code_gdt: .short 0xFFFF // limit 0:15
+	          .short 0      // base 0:15
+	          .byte 0       // base 16:23
+	          .byte 0x9A    // Present, Ring 0, Normal, Executable, Non Conforming, Readable, Not accessed
+	          .byte 0xCF    // 4K blocks, 32-bit selector, 2x reserved; limit 16:19
+	          .byte 0       // base 24:31
+	data_gdt: .short 0xFFFF // limit 0:15
+	          .short 0      // base 0:15
+	          .byte 0       // base 16:23
+	          .byte 0x92    // Present, Ring 0, Normal, Data, Grows up, Writable, Not accessed
+	          .byte 0xCF    // 4K blocks, 32-bit selector, 2x reserved; limit 16:19
+	          .byte 0       // base 24:31
+//	task_gdt: .long 0
+//	          .long 0 // probably want something here eventually
+	gdtr:     .short (gdtr - null_gdt - 1) // size (minus one)
+	          .long null_gdt // offset
+
  
 // This section contains data initialised to zeroes when the kernel is loaded
 .section .bss
@@ -45,6 +67,19 @@
 		// C is very relaxed in its requirements: All we need to do is to set up the stack.
 		// Please note that on x86, the stack grows DOWNWARD. This is why we start at the top.
 		mov $stack_top, %esp // Set the stack pointer to the top of the stack
+
+		// setup the Global Descriptor Table with static values
+		lgdtl gdtr
+		jmpl $0x08, $reload_CS
+
+		reload_CS:
+		mov $0x10, %ax
+		mov %ax, %ds
+		mov %ax, %es
+		mov %ax, %fs
+		mov %ax, %gs
+		mov %ax, %ss
+		// GDT loaded!
  
 		// Now we have a C-worthy (haha!) environment ready to run the rest of our kernel.
 		// At this point, we can call our main C function.
