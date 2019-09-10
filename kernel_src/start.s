@@ -5,6 +5,7 @@
 // We declare the 'start' label as global (accessible from outside this file), since the linker will need to know where it is.
 // In a bit, we'll actually take a look at the code that defines this label.
 .global start
+.global mb_header
  
 // Our bootloader, GRUB, needs to know some basic information about our kernel before it can boot it.
 // We give GRUB this information using a standard known as 'Multiboot'.
@@ -32,11 +33,14 @@
 	stack_bottom:
 		.skip 4096 // Reserve a 4096-byte (4K) stack
 	stack_top:
+	mb_header: .long
  
 // This section contains our actual assembly code to be run when our kernel loads
 .section .text
 	// Here is the 'start' label we mentioned before. This is the first code that gets run in our kernel.
 	start:
+		mov %ebx, mb_header // might want this for later
+
 		// First thing's first: we want to set up an environment that's ready to run C code.
 		// C is very relaxed in its requirements: All we need to do is to set up the stack.
 		// Please note that on x86, the stack grows DOWNWARD. This is why we start at the top.
