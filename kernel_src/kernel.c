@@ -25,6 +25,23 @@ int term_col = 0;
 int term_row = 0;
 uint8_t term_color = 0x0F; // Black background, White foreground
 
+struct IDTDescr {
+   uint16_t offset_1; // offset bits 0..15
+   uint16_t selector; // a code segment selector in GDT or LDT
+   uint8_t zero;      // unused, set to 0
+   uint8_t type_attr; // type and attributes, see below
+   uint16_t offset_2; // offset bits 16..31
+} __attribute((packed));
+
+struct IDTRecord {
+   uint16_t size;
+   uint32_t offset;
+} __attribute((packed));
+
+struct IDTDescr IDT[14]; // need enough to handle General Protection Fault
+struct IDTRecord IDTR;
+
+volatile uint32_t GPF_COUNT = 0;
 
 static inline void outb(uint16_t port, uint8_t val)
 {
@@ -230,9 +247,58 @@ void get_time()
 	outtime[16] = ':';
 	outtime[19] = '\n'; outtime[20] = '\0';
 	term_print(outtime);
+	// clear RTC flag
+	outb(0x70, 0x0C);	// select register C
+	inb(0x71);		// just throw away contents
 }
- 
- 
+
+struct interrupt_frame
+{
+    uint32_t ip;
+    uint32_t cs;
+    uint32_t flags;
+    uint32_t sp;
+    uint32_t ss;
+};
+
+__attribute__ ((interrupt))
+void interrupt_handler(struct interrupt_frame *frame)
+{
+	//term_print("Got GPF.\n");
+	//get_time();
+	++GPF_COUNT;
+	//outb(0x20,0x20);
+	//while (1) {}
+}
+
+__attribute__ ((interrupt))
+void gpf_handler(struct interrupt_frame *frame, uint32_t error_code)
+{
+	//term_print("Got GPF.\n");
+	//get_time();
+	++GPF_COUNT;
+	//outb(0x20,0x20);
+	//while (1) {}
+}
+void interrupt_setup()
+{
+	// ensure IDT entries are not present
+	for (int i = 0; i < (sizeof(IDT) / sizeof(IDT[0])); ++i) {
+		IDT[i].type_attr = 0;
+	}
+	// setup GPF descriptor
+	IDT[13].offset_1 = ((uint32_t) &gpf_handler) & 0xFFFF;
+	IDT[13].selector = 0x08;
+	IDT[13].zero = 0;
+	IDT[13].type_attr = 0x8E;
+	IDT[13].offset_2 = ((uint32_t) &gpf_handler) >> 16;
+	IDTR.size = sizeof(IDT) - 1;
+	IDTR.offset = (uint32_t) &IDT;
+	asm volatile ( "lidt %0" :: "m" (IDTR) );
+	term_print("loaded idtl\n");
+	asm volatile ( "sti" :: );
+}
+
 // This is our kernel's main function
 void kernel_main()
 {
@@ -244,5 +310,14 @@ void kernel_main()
 	// Display some messages
 	term_print("Hello, World!\n");
 	term_print("Welcome to the kernel.\n");
+	interrupt_setup();
 	get_time();
+	while (1) {
+		while (GPF_COUNT) {
+			outb(0x20,0x20);
+			term_print(".");
+			--GPF_COUNT;
+			get_time();
+		}
+	}
 }
