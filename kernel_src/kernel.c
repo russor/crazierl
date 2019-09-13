@@ -274,11 +274,10 @@ void interrupt_handler(struct interrupt_frame *frame)
 __attribute__ ((interrupt))
 void gpf_handler(struct interrupt_frame *frame, uint32_t error_code)
 {
-	//term_print("Got GPF.\n");
-	//get_time();
+	term_print("Got GPF at ");
+	get_time();
 	++GPF_COUNT;
 	//outb(0x20,0x20);
-	//while (1) {}
 }
 void interrupt_setup()
 {
@@ -317,7 +316,6 @@ void kernel_main()
 			outb(0x20,0x20);
 			term_print(".");
 			--GPF_COUNT;
-			get_time();
 		}
 	}
 }
