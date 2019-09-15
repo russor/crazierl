@@ -190,7 +190,6 @@ void get_time()
 		timeA[8] = read_cmos(0x0B); // Status Register B
 	} while (memcmp(timeA, timeB, sizeof(timeA)) != 0);
 
-	char outtime[21];
 	uint8_t tens, ones;
 	if ((timeA[8] & 0x04) == 0) { // BCD mode
 		for (int i = 1; i <= 7; ++i) {
@@ -205,7 +204,7 @@ void get_time()
 			timeA[3] = 0;
 		}
 	}
-	snprintf(outtime, sizeof(outtime), "%02d%02d-%02d-%02d %02d:%02d:%02d\n",
+	printf("%02d%02d-%02d-%02d %02d:%02d:%02d\n",
 		timeA[7], timeA[6], timeA[5], timeA[4], timeA[3], timeA[2], timeA[1]);
 	term_print(outtime);
 	// clear RTC flag
