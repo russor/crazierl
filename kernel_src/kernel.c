@@ -12,6 +12,8 @@
 	#error "This code must be compiled with an x86-elf compiler"
 #endif
 
+#include <stdio.h>
+
 uint8_t WANT_NMI = 0;
  
 // This is the x86's VGA textmode buffer. To display text, we write data to this memory location
@@ -100,7 +102,7 @@ void write_serial(char a) {
 }
 
 // This function places a single character onto the screen
-void term_putc(char c)
+void _putchar(char c)
 {
 	// Remember - we don't want to display ALL characters!
 	switch (c)
@@ -141,7 +143,7 @@ void term_putc(char c)
 void term_print(const char* str)
 {
 	for (size_t i = 0; str[i] != '\0'; i ++) // Keep placing characters until we hit the null-terminating character ('\0')
-		term_putc(str[i]);
+		_putchar(str[i]);
 }
  
 uint8_t read_cmos(uint8_t reg)
@@ -190,62 +192,21 @@ void get_time()
 
 	char outtime[21];
 	uint8_t tens, ones;
-	if (timeA[8] & 0x04) { // binary mode
-		if ((timeA[8] & 0x02) == 0) { // 12 hour mode
-			if (timeA[3] & 0x80) {
-				timeA[3] = 12 + (timeA[3] & 0x7F);
-			} else if (timeA[3] == 12) {
-				timeA[3] = 0;
-			}
+	if ((timeA[8] & 0x04) == 0) { // BCD mode
+		for (int i = 1; i <= 7; ++i) {
+			timeA[i] = ((timeA[i] >> 4) * 10) + (timeA[i] & 0x0F);
 		}
-		tens = timeA[7] / 10; ones = timeA[7] % 10;
-		outtime[0] = tens + '0'; outtime[1] = ones + '0';
-		tens = timeA[6] / 10; ones = timeA[6] % 10;
-		outtime[2] = tens + '0'; outtime[3] = ones + '0';
-		tens = timeA[5] / 10; ones = timeA[5] % 10;
-		outtime[5] = tens + '0'; outtime[6] = ones + '0';
-		tens = timeA[4] / 10; ones = timeA[4] % 10;
-		outtime[8] = tens + '0'; outtime[9] = ones + '0';
-		tens = timeA[3] / 10; ones = timeA[3] % 10;
-		outtime[11] = tens + '0'; outtime[12] = ones + '0';
-		tens = timeA[2] / 10; ones = timeA[2] % 10;
-		outtime[14] = tens + '0'; outtime[15] = ones + '0';
-		tens = timeA[1] / 10; ones = timeA[1] % 10;
-		outtime[17] = tens + '0'; outtime[18] = ones + '0';
-	} else { // BCD mode
-		if ((timeA[8] & 0x02) == 0) { // 12 hour mode
-			if (timeA[3] == 0x88) {
-				timeA[3] = 0x20;
-			} else if (timeA[3] == 0x89) {
-				timeA[3] = 0x21;
-			} else if (timeA[3] & 0x80) {
-				timeA[3] = 12 + (timeA[3] & 0x7F);
-			} else if (timeA[3] == 0x12) {
-				timeA[3] = 0;
-			}
-		}
-		tens = timeA[7] >> 4; ones = timeA[7] & 0x0F;
-		outtime[0] = tens + '0'; outtime[1] = ones + '0';
-		tens = timeA[6] >> 4; ones = timeA[6] & 0x0F;
-		outtime[2] = tens + '0'; outtime[3] = ones + '0';
-		tens = timeA[5] >> 4; ones = timeA[5] & 0x0F;
-		outtime[5] = tens + '0'; outtime[6] = ones + '0';
-		tens = timeA[4] >> 4; ones = timeA[4] & 0x0F;
-		outtime[8] = tens + '0'; outtime[9] = ones + '0';
-		tens = timeA[3] >> 4; ones = timeA[3] & 0x0F;
-		outtime[11] = tens + '0'; outtime[12] = ones + '0';
-		tens = timeA[2] >> 4; ones = timeA[2] & 0x0F;
-		outtime[14] = tens + '0'; outtime[15] = ones + '0';
-		tens = timeA[1] >> 4; ones = timeA[1] & 0x0F;
-		outtime[17] = tens + '0'; outtime[18] = ones + '0';
 	}
 
-	outtime[4] = '-';
-	outtime[7] = '-';
-	outtime[10] = ' ';
-	outtime[13] = ':';
-	outtime[16] = ':';
-	outtime[19] = '\n'; outtime[20] = '\0';
+	if ((timeA[8] & 0x02) == 0) { // 12 hour mode
+		if (timeA[3] & 0x80) {
+			timeA[3] = 12 + (timeA[3] & 0x7F);
+		} else if (timeA[3] == 12) {
+			timeA[3] = 0;
+		}
+	}
+	snprintf(outtime, sizeof(outtime), "%02d%02d-%02d-%02d %02d:%02d:%02d\n",
+		timeA[7], timeA[6], timeA[5], timeA[4], timeA[3], timeA[2], timeA[1]);
 	term_print(outtime);
 	// clear RTC flag
 	outb(0x70, 0x0C);	// select register C
