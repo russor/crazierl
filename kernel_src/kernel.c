@@ -206,7 +206,6 @@ void get_time()
 	}
 	printf("%02d%02d-%02d-%02d %02d:%02d:%02d\n",
 		timeA[7], timeA[6], timeA[5], timeA[4], timeA[3], timeA[2], timeA[1]);
-	term_print(outtime);
 	// clear RTC flag
 	outb(0x70, 0x0C);	// select register C
 	inb(0x71);		// just throw away contents
@@ -234,7 +233,7 @@ void interrupt_handler(struct interrupt_frame *frame)
 __attribute__ ((interrupt))
 void gpf_handler(struct interrupt_frame *frame, uint32_t error_code)
 {
-	term_print("Got GPF at ");
+	printf("Got GPF (%u) at ", error_code);
 	get_time();
 	++GPF_COUNT;
 	//outb(0x20,0x20);
