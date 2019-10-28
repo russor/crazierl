@@ -197,31 +197,6 @@ typedef	__int64_t	sbintime_t;
 
 typedef	__segsz_t	segsz_t;	/* segment size (in pages) */
 
-#ifndef _SIZE_T_DECLARED
-typedef	__size_t	size_t;
-#define	_SIZE_T_DECLARED
-#endif
-
-#ifndef _SSIZE_T_DECLARED
-typedef	__ssize_t	ssize_t;
-#define	_SSIZE_T_DECLARED
-#endif
-
-#ifndef _SUSECONDS_T_DECLARED
-typedef	__suseconds_t	suseconds_t;	/* microseconds (signed) */
-#define	_SUSECONDS_T_DECLARED
-#endif
-
-#ifndef _TIME_T_DECLARED
-typedef	__time_t	time_t;
-#define	_TIME_T_DECLARED
-#endif
-
-#ifndef _TIMER_T_DECLARED
-typedef	__timer_t	timer_t;
-#define	_TIMER_T_DECLARED
-#endif
-
 #ifndef _MQD_T_DECLARED
 typedef	__mqd_t	mqd_t;
 #define	_MQD_T_DECLARED

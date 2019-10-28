@@ -221,7 +221,7 @@
 #endif
 #if __GNUC_PREREQ__(2, 7) || defined(__INTEL_COMPILER)
 #define	__dead2		__attribute__((__noreturn__))
-#define	__pure2		__attribute__((__const__))
+//#define	__pure2		__attribute__((__const__))
 #define	__unused	__attribute__((__unused__))
 #define	__used		__attribute__((__used__))
 #define	__packed	__attribute__((__packed__))
@@ -539,8 +539,8 @@
 
 #if defined(__GNUC__) || defined(__INTEL_COMPILER)
 #ifndef __INTEL_COMPILER
-#define	__strong_reference(sym,aliassym)	\
-	extern __typeof (sym) aliassym __attribute__ ((__alias__ (#sym)))
+//#define	__strong_reference(sym,aliassym)	\
+//	extern __typeof (sym) aliassym __attribute__ ((__alias__ (#sym)))
 #endif
 #ifdef __STDC__
 #define	__weak_reference(sym,alias)	\
@@ -759,7 +759,7 @@
 #define	__POSIX_VISIBLE		200809
 #define	__XSI_VISIBLE		700
 #define	__BSD_VISIBLE		1
-#define	__ISO_C_VISIBLE		2011
+#define	__ISO_C_VISIBLE		1999
 #define	__EXT1_VISIBLE		1
 #endif
 #endif

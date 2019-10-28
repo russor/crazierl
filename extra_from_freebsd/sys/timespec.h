@@ -37,7 +37,7 @@
 #define _SYS_TIMESPEC_H_
 
 #include <sys/cdefs.h>
-#include <sys/_timespec.h>
+#include <time.h>
 
 #if __BSD_VISIBLE
 #define	TIMEVAL_TO_TIMESPEC(tv, ts)					\

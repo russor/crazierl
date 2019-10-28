@@ -72,14 +72,6 @@ typedef	__uint64_t		uint64_t;
 #define	_UINT64_T_DECLARED
 #endif
 
-#ifndef _INTPTR_T_DECLARED
-typedef	__intptr_t		intptr_t;
-#define	_INTPTR_T_DECLARED
-#endif
-#ifndef _UINTPTR_T_DECLARED
-typedef	__uintptr_t		uintptr_t;
-#define	_UINTPTR_T_DECLARED
-#endif
 #ifndef _INTMAX_T_DECLARED
 typedef	__intmax_t		intmax_t;
 #define	_INTMAX_T_DECLARED

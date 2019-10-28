@@ -48,19 +48,9 @@ typedef	__gid_t		gid_t;
 #define	_GID_T_DECLARED
 #endif
 
-#ifndef _TIME_T_DECLARED
-typedef	__time_t	time_t;
-#define	_TIME_T_DECLARED
-#endif
-
 #ifndef _UID_T_DECLARED
 typedef	__uid_t		uid_t;
 #define	_UID_T_DECLARED
-#endif
-
-#ifndef _SIZE_T_DECLARED
-typedef __size_t	size_t;
-#define _SIZE_T_DECLARED
 #endif
 
 #define _PATH_PWD		"/etc"

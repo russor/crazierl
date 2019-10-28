@@ -50,12 +50,7 @@
 #if __POSIX_VISIBLE >= 200809
 
 #include <sys/_pthreadtypes.h>
-#include <sys/_timespec.h>
-
-#ifndef _SIZE_T_DECLARED
-typedef	__size_t	size_t;
-#define	_SIZE_T_DECLARED
-#endif
+#include <time.h>
 
 #ifndef _UID_T_DECLARED
 typedef	__uid_t		uid_t;

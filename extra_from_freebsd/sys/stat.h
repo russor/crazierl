@@ -41,7 +41,7 @@
 #define	_SYS_STAT_H_
 
 #include <sys/cdefs.h>
-#include <sys/_timespec.h>
+#include <time.h>
 #include <sys/_types.h>
 
 #ifndef _BLKSIZE_T_DECLARED
