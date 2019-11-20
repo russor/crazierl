@@ -40,11 +40,6 @@
 #include <sys/_iovec.h>
 #include <sys/_uio.h>
 
-#ifndef _SSIZE_T_DECLARED
-typedef	__ssize_t	ssize_t;
-#define	_SSIZE_T_DECLARED
-#endif
-
 #ifndef _OFF_T_DECLARED
 typedef	__off_t	off_t;
 #define	_OFF_T_DECLARED
