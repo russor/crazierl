@@ -20,5 +20,5 @@ start.o: start.s
 kernel.o: kernel.c
 	clang -mno-sse -g --target=i386-none-elf -ffreestanding -nostdinc -I ../libc/include -I ../libc/printf -I ../libc/arch/x86/include -I ../extra -g -c kernel.c -o kernel.o -gdwarf-2
 
-syscalls.o: syscalls.c
-	clang -mno-sse -g --target=i386-none-elf -ffreestanding -nostdinc -I ../libc/include -I ../libc/printf -I ../libc/arch/x86/include -I ../extra -g -c syscalls.c -o syscalls.o -gdwarf-2
+syscalls.o: /usr/src/sys/kern/syscalls.c
+	clang -mno-sse -g --target=i386-none-elf -ffreestanding -nostdinc -I ../libc/include -I ../libc/printf -I ../libc/arch/x86/include -I ../extra -g -c /usr/src/sys/kern/syscalls.c -o syscalls.o -gdwarf-2
