@@ -2,6 +2,9 @@
 // They give us access to useful things like fixed-width types
 #include <stddef.h>
 #include <stdint.h>
+
+extern const char *syscallnames[];
+extern void * handle_int_80;
  
 #define PORT 0x3f8   /* COM1 */
 
@@ -13,6 +16,12 @@
 #endif
 
 #include <stdio.h>
+#include "/usr/src/stand/i386/libi386/multiboot.h"
+typedef uint32_t u_int32_t;
+
+#include <sys/elf32.h>
+
+#include <errno.h>
 
 uint8_t WANT_NMI = 0;
  
@@ -40,10 +49,12 @@ struct IDTRecord {
    uint32_t offset;
 } __attribute((packed));
 
-struct IDTDescr IDT[14]; // need enough to handle General Protection Fault
+struct IDTDescr IDT[256]; // need enough to handle General Protection Fault
 struct IDTRecord IDTR;
 
-volatile uint32_t GPF_COUNT = 0;
+volatile uint32_t TIMER_COUNT = 0;
+
+uint8_t last_time[9];
 
 static inline void outb(uint16_t port, uint8_t val)
 {
@@ -136,6 +147,12 @@ void _putchar(char c)
 		term_col = 0;
 		term_row = 0;
 	}
+	if (term_col == 0) {
+		size_t index = (VGA_COLS * term_row); // Like before, calculate the buffer index
+		for (int i = 0; i < 80; ++i) {
+			vga_buffer[index +i] = ((uint16_t)term_color << 8) | ' ';
+		}
+	}
 	write_serial(c);
 }
  
@@ -174,11 +191,11 @@ uint8_t memcmp(uint8_t *a, uint8_t *b, unsigned int count)
 	}
 }
 
-void get_time()
+void get_time(uint8_t timeA[])
 {
-	uint8_t timeA[9], timeB[9];
+	uint8_t timeB[9];
 	do {
-		memcpy(timeB, timeA, sizeof(timeA));
+		memcpy(timeB, timeA, sizeof(timeB));
 		while (((timeA[0] = read_cmos(0x0A)) & 0x80) != 0) { } // Status Register A
 		timeA[1] = read_cmos(0x00); // Seconds
 		timeA[2] = read_cmos(0x02); // Minutes
@@ -188,7 +205,7 @@ void get_time()
 		timeA[6] = read_cmos(0x09); // Year
 		timeA[7] = read_cmos(0x32); // Century (maybe)
 		timeA[8] = read_cmos(0x0B); // Status Register B
-	} while (memcmp(timeA, timeB, sizeof(timeA)) != 0);
+	} while (memcmp(timeA, timeB, sizeof(timeB)) != 0);
 
 	uint8_t tens, ones;
 	if ((timeA[8] & 0x04) == 0) { // BCD mode
@@ -204,11 +221,11 @@ void get_time()
 			timeA[3] = 0;
 		}
 	}
+}
+	
+void print_time(uint8_t time[9]) {
 	printf("%02d%02d-%02d-%02d %02d:%02d:%02d\n",
-		timeA[7], timeA[6], timeA[5], timeA[4], timeA[3], timeA[2], timeA[1]);
-	// clear RTC flag
-	outb(0x70, 0x0C);	// select register C
-	inb(0x71);		// just throw away contents
+		time[7], time[6], time[5], time[4], time[3], time[2], time[1]);
 }
 
 struct interrupt_frame
@@ -221,44 +238,167 @@ struct interrupt_frame
 };
 
 __attribute__ ((interrupt))
-void interrupt_handler(struct interrupt_frame *frame)
+void handle_timer(struct interrupt_frame *frame)
 {
-	//term_print("Got GPF.\n");
-	//get_time();
-	++GPF_COUNT;
-	//outb(0x20,0x20);
-	//while (1) {}
+	uint8_t new_time[9];
+	get_time(new_time);
+	//if (1) { 
+	if (memcmp(last_time, new_time, sizeof(last_time)) != 0) {
+		memcpy(last_time, new_time, sizeof(new_time));
+		printf("Got RTC interrupt IP: %08x at ", frame->ip);
+		print_time(last_time);
+	}
+	// clear RTC flag
+	//outb(0x70, 0x0C);	// select register C
+	//inb(0x71);		// just throw away contents
+	++TIMER_COUNT;
+}
+
+uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
+{	
+	switch(call) {
+		case 58:
+			printf("readlink (%s, %08x, %d)\n", (char *)frame[0], frame[1], frame[2]);
+			call = ENOENT;
+			return 0;
+	}
+				
+	if (call <= 567) {
+		printf("Got syscall %d (%s)@%08x at ", call, syscallnames[call], &call);
+	} else {
+		printf("got unknown syscall %d at ", call);
+	}
+	print_time(last_time);
+	while (1) {
+	}
 }
 
 __attribute__ ((interrupt))
-void gpf_handler(struct interrupt_frame *frame, uint32_t error_code)
+void handle_gp(struct interrupt_frame *frame, uint32_t error_code)
 {
-	printf("Got GPF (%u) at ", error_code);
-	get_time();
-	++GPF_COUNT;
-	//outb(0x20,0x20);
+	if (frame) {
+		printf("Got #GP (%u) IP: %08x at ", error_code, frame->ip);
+	} else {
+		printf("Got #GP, no stack frame\n");
+	}
+	print_time(last_time);
+	while (1) { } // loop forever
+}
+
+__attribute__ ((interrupt))
+void handle_ud(struct interrupt_frame *frame)
+{
+	printf("Got #UD IP: %08x at ", frame->ip);
+	print_time(last_time);
+	while (1) { } // loop forever
 }
 void interrupt_setup()
 {
+	// remap primary PIC so that the interrupts don't conflict with Intel exceptions
+	
+	uint8_t mask = inb(0x21); // read current mask from PIC
+	outb(0x20, 0x11); // request initialization
+	outb(0x80, 0); // wait cycle
+	outb(0x21, 0x20); // offset interrupts by 0x20
+	outb(0x80, 0); // wait
+	outb(0x21, 0x4); // indicate slave PIC on IRQ 2
+	outb(0x80, 0); //wait
+	outb(0x21, 0x01); // set to 8086 mode
+	outb(0x80, 0); //wait
+	outb(0x21, mask); // reset interrupt mask
+
 	// ensure IDT entries are not present
 	for (int i = 0; i < (sizeof(IDT) / sizeof(IDT[0])); ++i) {
 		IDT[i].type_attr = 0;
 	}
-	// setup GPF descriptor
-	IDT[13].offset_1 = ((uint32_t) &gpf_handler) & 0xFFFF;
-	IDT[13].selector = 0x08;
-	IDT[13].zero = 0;
-	IDT[13].type_attr = 0x8E;
-	IDT[13].offset_2 = ((uint32_t) &gpf_handler) >> 16;
+	IDT[0x06].offset_1 = ((uint32_t) &handle_ud) & 0xFFFF;
+	IDT[0x06].selector = 0x08;
+	IDT[0x06].zero = 0;
+	IDT[0x06].type_attr = 0x8E;
+	IDT[0x06].offset_2 = ((uint32_t) &handle_ud) >> 16;
+
+	IDT[0x0D].offset_1 = ((uint32_t) &handle_gp) & 0xFFFF;
+	IDT[0x0D].selector = 0x08;
+	IDT[0x0D].zero = 0;
+	IDT[0x0D].type_attr = 0x8E;
+	IDT[0x0D].offset_2 = ((uint32_t) &handle_gp) >> 16;
+
+	IDT[0x20].offset_1 = ((uint32_t) &handle_timer) & 0xFFFF;
+	IDT[0x20].selector = 0x08;
+	IDT[0x20].zero = 0;
+	IDT[0x20].type_attr = 0x8E;
+	IDT[0x20].offset_2 = ((uint32_t) &handle_timer) >> 16;
+
+	IDT[0x80].offset_1 = ((uint32_t) &handle_int_80) & 0xFFFF;
+	IDT[0x80].selector = 0x08;
+	IDT[0x80].zero = 0;
+	IDT[0x80].type_attr = 0x8E;
+	IDT[0x80].offset_2 = ((uint32_t) &handle_int_80) >> 16;
+	
 	IDTR.size = sizeof(IDT) - 1;
 	IDTR.offset = (uint32_t) &IDT;
 	asm volatile ( "lidt %0" :: "m" (IDTR) );
-	term_print("loaded idtl\n");
+	printf("loaded idtl of size 0x%04x\n", IDTR.size);
 	asm volatile ( "sti" :: );
 }
 
+unsigned int min(unsigned int a, unsigned int b) {
+	if (a < b) { return a; }
+	return b;
+}
+void (*entrypoint)(void);
+
+void load_module(multiboot_module_t mod) {
+	Elf32_Ehdr * head = (void *)mod.mod_start;
+	entrypoint = (void *) head->e_entry;
+	printf ("elf entrypoint 0x%08x\n", head->e_entry);
+	printf ("%d program headers of size %d\n", head->e_phnum, head->e_phentsize);
+	
+	Elf32_Phdr *phead = (void *)mod.mod_start + head->e_phoff;
+	for (int i = 0; i < head->e_phnum; ++i) {
+		printf( "  %d: type 0x%x, offset %08x, virt %08x, filesize 0x%08x, memsize 0x%08x\n",
+			i, phead->p_type, phead->p_offset, phead->p_vaddr,
+			phead->p_filesz, phead->p_memsz);
+		++phead;
+		if (phead->p_type == PT_LOAD) {
+			unsigned int count = min(phead->p_filesz, phead->p_memsz);
+			uint8_t *src = (void*) mod.mod_start + phead->p_offset;
+			uint8_t *dst = (void*) phead->p_vaddr;
+			printf("copying %d bytes from %08x to %08x\n", count, src, dst);
+			memcpy(dst, src, count);
+		}
+	}
+}
+
+void enable_sse() {
+/*	mov %cr0, %eax
+	and 0xFFFFFFFB, %ax		//clear coprocessor emulation CR0.EM
+	or 0x2, %eax			//set coprocessor monitoring  CR0.MP
+//	mov %eax, %cr0
+	mov %cr4, %eax
+	or 3 << 9, %eax		//set CR4.OSFXSR and CR4.OSXMMEXCPT at the same time
+//	mov %eax, %cr4
+*/
+	uint32_t a,b,c,d;
+	uint32_t code = 1;
+	asm volatile("cpuid":"=a"(a),"=b"(b),"=c"(c),"=d"(d):"a"(code));
+	printf("cpuid eax %08x, ebx %08x, ecx %08x, edx %08x\n", a, b, c, d);
+	// https://wiki.osdev.org/SSE#Adding_support
+	asm volatile("mov %%cr0, %0" : "=a" (a));
+	printf("cr0: %08x\n", a);
+	a&= 0xFFFFFFFB;
+	a|= 2;
+	printf("cr0: %08x\n", a);
+	asm volatile("mov %0, %%cr0" :: "a"(a));
+	asm volatile("mov %%cr4, %0" : "=a" (a));
+	printf("cr4: %08x\n", a);
+	a|= (3 << 9);
+	printf("cr4: %08x\n", a);
+	asm volatile("mov %0, %%cr4" :: "a"(a));
+}
+
 // This is our kernel's main function
-void kernel_main()
+void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 {
 	// We're here! Let's initiate the terminal and display a message to show we got here.
  
@@ -267,14 +407,56 @@ void kernel_main()
  
 	// Display some messages
 	term_print("Hello, World!\n");
-	term_print("Welcome to the kernel.\n");
+	term_print("Welcome to the kernel at ");
+	get_time(last_time);
+	print_time(last_time);
+
+	printf("kernel main at %08x\n", kernel_main);
+	printf("Multiboot magic: %08x (%s)\n", mb_magic, (char *) mb->boot_loader_name);
+	printf("Multiboot info at %08x (%08x)\n", mb, &mb);
+	printf("mem range: %08x-%08x\n", mb->mem_lower, mb->mem_upper);
+	printf("modules: %d @ %08x\n", mb->mods_count, mb->mods_addr);
+	
+	multiboot_module_t *mods = (void *)mb->mods_addr;
+	for (int mod = 0; mod < mb->mods_count; ++mod) {
+		printf("Module %d (%s):\n 0x%08x-0x%08x\n", mod, mods[mod].cmdline, mods[mod].mod_start, mods[mod].mod_end);
+		load_module(mods[mod]);
+	}
+	
+	
+	printf("memory map: %d @ %08x\n", mb->mmap_length, mb->mmap_addr);
+      multiboot_memory_map_t *mmap;
+      
+      printf ("mmap_addr = 0x%x, mmap_length = 0x%x\n",
+              (unsigned) mb->mmap_addr, (unsigned) mb->mmap_length);
+      for (mmap = (multiboot_memory_map_t *) mb->mmap_addr;
+           (unsigned long) mmap < mb->mmap_addr + mb->mmap_length;
+           mmap = (multiboot_memory_map_t *) ((unsigned long) mmap
+                                    + mmap->size + sizeof (mmap->size)))
+        printf (" size = 0x%x, base_addr = 0x%08x,"
+                " length = 0x%08x, type = 0x%x\n",
+                (unsigned) mmap->size,
+                //(unsigned) (mmap->addr >> 32),
+                (unsigned) (mmap->addr & 0xffffffff),
+                //(unsigned) (mmap->len >> 32),
+                (unsigned) (mmap->len & 0xffffffff),
+                (unsigned) mmap->type);	
+	
 	interrupt_setup();
-	get_time();
+	
+	enable_sse();
+	
+	if (entrypoint) {
+		printf ("jumping to %08x\n", entrypoint);
+		entrypoint();
+	}
+	//get_time();
 	while (1) {
-		while (GPF_COUNT) {
+		while (TIMER_COUNT) {
 			outb(0x20,0x20);
 			term_print(".");
-			--GPF_COUNT;
+			--TIMER_COUNT;
 		}
 	}
 }
+

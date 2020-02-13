@@ -5,7 +5,8 @@
 // We declare the 'start' label as global (accessible from outside this file), since the linker will need to know where it is.
 // In a bit, we'll actually take a look at the code that defines this label.
 .global start
-.global mb_header
+
+.global handle_int_80
  
 // Our bootloader, GRUB, needs to know some basic information about our kernel before it can boot it.
 // We give GRUB this information using a standard known as 'Multiboot'.
@@ -61,12 +62,13 @@
 .section .text
 	// Here is the 'start' label we mentioned before. This is the first code that gets run in our kernel.
 	start:
-		mov %ebx, mb_header // might want this for later
-
 		// First thing's first: we want to set up an environment that's ready to run C code.
 		// C is very relaxed in its requirements: All we need to do is to set up the stack.
 		// Please note that on x86, the stack grows DOWNWARD. This is why we start at the top.
 		mov $stack_top, %esp // Set the stack pointer to the top of the stack
+
+		pushl %ebx // push multiboot header
+		pushl %eax // push multiboot magic
 
 		// setup the Global Descriptor Table with static values
 		lgdtl gdtr
@@ -90,3 +92,26 @@
 			cli      // Disable CPU interrupts
 			hlt      // Halt the CPU
 			jmp hang // If that didn't work, loop around and try again.
+	// handle syscall interrupts
+	handle_int_80:
+		pushl %eax // push syscall number
+		mov %esp, %eax
+		addl $20, %eax // move 1 (caller IP) + 3 (interrupt) + 1 (our pushes)32-bit ints up the stack to the caller pushed values
+		pushl %eax 
+		call handle_int_80_impl // call into C now
+		
+		test %eax, %eax
+		mov 16(%esp), %eax
+		je error
+		andl $0xFFFFFFFE, %eax
+		jmp done
+		
+		error:
+		orl $1, %eax
+		jmp done
+
+		done:
+		mov %eax, 16(%esp)
+		addl $4, %esp // skip frame pointer
+		popl %eax
+		iret
