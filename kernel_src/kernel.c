@@ -115,9 +115,11 @@ void write_serial(char a) {
 // This function places a single character onto the screen
 void _putchar(char c)
 {
+	write_serial(c);
 	// Remember - we don't want to display ALL characters!
 	switch (c)
 	{
+	case '\r': break;
 	case '\n': // Newline characters should return the column to 0, and increment the row
 		{
 			term_col = 0;
@@ -148,12 +150,12 @@ void _putchar(char c)
 		term_row = 0;
 	}
 	if (term_col == 0) {
-		size_t index = (VGA_COLS * term_row); // Like before, calculate the buffer index
+		// clear the line if we're starting a new line
+		size_t index = (VGA_COLS * term_row);
 		for (int i = 0; i < 80; ++i) {
 			vga_buffer[index +i] = ((uint16_t)term_color << 8) | ' ';
 		}
 	}
-	write_serial(c);
 }
  
 // This function prints an entire string onto the screen
