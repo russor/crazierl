@@ -56,6 +56,9 @@ volatile uint32_t TIMER_COUNT = 0;
 
 uint8_t last_time[9];
 
+uint32_t free_addr;
+uint32_t max_addr;
+
 static inline void outb(uint16_t port, uint8_t val)
 {
 	asm volatile ( "outb %0, %1" : : "a"(val), "Nd"(port) );
@@ -259,10 +262,54 @@ void handle_timer(struct interrupt_frame *frame)
 uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 {	
 	switch(call) {
-		case 58:
+		case 4: // write
+			if (frame[0] == 1 || frame[0] == 2) { // stdout/stderr
+				uint8_t *buffer = (uint8_t *)frame[1];
+				call = frame[2];
+				size_t nbyte = call;
+				while (nbyte) {
+					_putchar(*buffer);
+					++buffer;
+					--nbyte;
+				}
+				return 1;
+			} else {
+				printf("write (%d, %08x, %d)\n", frame[0], frame[1], frame[2]);
+				call = EBADF;
+				return 0;
+			}
+		case 58: // readlink
 			printf("readlink (%s, %08x, %d)\n", (char *)frame[0], frame[1], frame[2]);
 			call = ENOENT;
 			return 0;
+		case 202:
+			printf("__sysctl (%08x, %d, %08x, %08x, %08x, %08x)\n", 
+				frame[0], frame[1], 
+				frame[2], frame[3],
+				frame[4], frame[5]);
+			call = ENOENT;
+			return 0;
+			break;
+		case 253:
+			printf("issetugid()\n");
+			call = 0;
+			return 1;
+		case 477:
+			printf("mmap (%08x, %d, %08x, %08x, %d, %d)\n",
+				frame[0], frame[1], frame[2],
+				frame[3], frame[4], frame[5]);
+			// push to 4k page
+			if (free_addr & 0x0FFF) {
+				free_addr = free_addr & ~(0x0FFF) + 4096;
+			}
+			if (frame[1] > (max_addr - free_addr + 1)) {
+				call = ENOMEM;
+				return 0;
+			} else {
+				call = free_addr;
+				free_addr += frame[1];
+				return 1;
+			}
 	}
 				
 	if (call <= 567) {
@@ -348,6 +395,11 @@ unsigned int min(unsigned int a, unsigned int b) {
 	if (a < b) { return a; }
 	return b;
 }
+
+unsigned int max(unsigned int a, unsigned int b) {
+	if (a > b) { return a; }
+	return b;
+}
 void (*entrypoint)(void);
 
 void load_module(multiboot_module_t mod) {
@@ -361,41 +413,34 @@ void load_module(multiboot_module_t mod) {
 		printf( "  %d: type 0x%x, offset %08x, virt %08x, filesize 0x%08x, memsize 0x%08x\n",
 			i, phead->p_type, phead->p_offset, phead->p_vaddr,
 			phead->p_filesz, phead->p_memsz);
-		++phead;
 		if (phead->p_type == PT_LOAD) {
 			unsigned int count = min(phead->p_filesz, phead->p_memsz);
 			uint8_t *src = (void*) mod.mod_start + phead->p_offset;
 			uint8_t *dst = (void*) phead->p_vaddr;
 			printf("copying %d bytes from %08x to %08x\n", count, src, dst);
 			memcpy(dst, src, count);
+			uint32_t next_addr = max(phead->p_filesz, phead->p_memsz) + phead->p_vaddr;
+			if (next_addr > free_addr && next_addr < max_addr) {
+				printf("moving free address from %08x to %08x\n", free_addr, next_addr);
+				free_addr = next_addr;
+			}
 		}
+		++phead;
 	}
 }
 
 void enable_sse() {
-/*	mov %cr0, %eax
-	and 0xFFFFFFFB, %ax		//clear coprocessor emulation CR0.EM
-	or 0x2, %eax			//set coprocessor monitoring  CR0.MP
-//	mov %eax, %cr0
-	mov %cr4, %eax
-	or 3 << 9, %eax		//set CR4.OSFXSR and CR4.OSXMMEXCPT at the same time
-//	mov %eax, %cr4
-*/
 	uint32_t a,b,c,d;
 	uint32_t code = 1;
 	asm volatile("cpuid":"=a"(a),"=b"(b),"=c"(c),"=d"(d):"a"(code));
 	printf("cpuid eax %08x, ebx %08x, ecx %08x, edx %08x\n", a, b, c, d);
 	// https://wiki.osdev.org/SSE#Adding_support
 	asm volatile("mov %%cr0, %0" : "=a" (a));
-	printf("cr0: %08x\n", a);
 	a&= 0xFFFFFFFB;
 	a|= 2;
-	printf("cr0: %08x\n", a);
 	asm volatile("mov %0, %%cr0" :: "a"(a));
 	asm volatile("mov %%cr4, %0" : "=a" (a));
-	printf("cr4: %08x\n", a);
 	a|= (3 << 9);
-	printf("cr4: %08x\n", a);
 	asm volatile("mov %0, %%cr4" :: "a"(a));
 }
 
@@ -413,6 +458,33 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 	get_time(last_time);
 	print_time(last_time);
 
+	
+	printf("memory map: %d @ %08x\n", mb->mmap_length, mb->mmap_addr);
+      multiboot_memory_map_t *mmap;
+      
+      printf ("mmap_addr = 0x%x, mmap_length = 0x%x\n",
+              (unsigned) mb->mmap_addr, (unsigned) mb->mmap_length);
+      for (mmap = (multiboot_memory_map_t *) mb->mmap_addr;
+           (unsigned long) mmap < mb->mmap_addr + mb->mmap_length;
+           mmap = (multiboot_memory_map_t *) ((unsigned long) mmap
+                                    + mmap->size + sizeof (mmap->size))) {
+        printf (" size = 0x%x, base_addr = 0x%08x,"
+                " length = 0x%08x, type = 0x%x\n",
+                (unsigned) mmap->size,
+                //(unsigned) (mmap->addr >> 32),
+                (unsigned) (mmap->addr & 0xffffffff),
+                //(unsigned) (mmap->len >> 32),
+                (unsigned) (mmap->len & 0xffffffff),
+                (unsigned) mmap->type);	
+                if (mmap->type == 1) {
+                	if (mmap->len > (max_addr - free_addr)) {
+                		free_addr = mmap->addr;
+                		max_addr = mmap->addr + (mmap->len - 1);
+                		printf("free memory now at %08x-%08x\n", free_addr, max_addr);
+			}
+                }
+	}
+
 	printf("kernel main at %08x\n", kernel_main);
 	printf("Multiboot magic: %08x (%s)\n", mb_magic, (char *) mb->boot_loader_name);
 	printf("Multiboot info at %08x (%08x)\n", mb, &mb);
@@ -424,25 +496,6 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 		printf("Module %d (%s):\n 0x%08x-0x%08x\n", mod, mods[mod].cmdline, mods[mod].mod_start, mods[mod].mod_end);
 		load_module(mods[mod]);
 	}
-	
-	
-	printf("memory map: %d @ %08x\n", mb->mmap_length, mb->mmap_addr);
-      multiboot_memory_map_t *mmap;
-      
-      printf ("mmap_addr = 0x%x, mmap_length = 0x%x\n",
-              (unsigned) mb->mmap_addr, (unsigned) mb->mmap_length);
-      for (mmap = (multiboot_memory_map_t *) mb->mmap_addr;
-           (unsigned long) mmap < mb->mmap_addr + mb->mmap_length;
-           mmap = (multiboot_memory_map_t *) ((unsigned long) mmap
-                                    + mmap->size + sizeof (mmap->size)))
-        printf (" size = 0x%x, base_addr = 0x%08x,"
-                " length = 0x%08x, type = 0x%x\n",
-                (unsigned) mmap->size,
-                //(unsigned) (mmap->addr >> 32),
-                (unsigned) (mmap->addr & 0xffffffff),
-                //(unsigned) (mmap->len >> 32),
-                (unsigned) (mmap->len & 0xffffffff),
-                (unsigned) mmap->type);	
 	
 	interrupt_setup();
 	
