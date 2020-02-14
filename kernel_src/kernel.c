@@ -5,7 +5,7 @@
 
 extern const char *syscallnames[];
 extern void * handle_int_80;
- 
+extern void start_entrypoint(); 
 #define PORT 0x3f8   /* COM1 */
 
 // First, let's do some basic checks to make sure we are using our x86-elf cross-compiler correctly
@@ -400,7 +400,7 @@ unsigned int max(unsigned int a, unsigned int b) {
 	if (a > b) { return a; }
 	return b;
 }
-void (*entrypoint)(void);
+void *entrypoint;
 
 void load_module(multiboot_module_t mod) {
 	Elf32_Ehdr * head = (void *)mod.mod_start;
@@ -503,7 +503,7 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 	
 	if (entrypoint) {
 		printf ("jumping to %08x\n", entrypoint);
-		entrypoint();
+		start_entrypoint(entrypoint, 1, "beam", NULL, "env1", NULL);
 	}
 	//get_time();
 	while (1) {

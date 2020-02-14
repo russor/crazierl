@@ -7,6 +7,7 @@
 .global start
 
 .global handle_int_80
+.global start_entrypoint
  
 // Our bootloader, GRUB, needs to know some basic information about our kernel before it can boot it.
 // We give GRUB this information using a standard known as 'Multiboot'.
@@ -115,3 +116,10 @@
 		addl $4, %esp // skip frame pointer
 		popl %eax
 		iret
+
+	// handle call from C, adjust the stack a bit, and jump to the
+	// passed entrypoint
+	start_entrypoint:
+		addl $4, %esp // who needs a return address?
+		popl %eax // get the destination address from the stack
+		jmp *%eax
