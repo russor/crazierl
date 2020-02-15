@@ -627,7 +627,9 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 	
 	if (entrypoint) {
 		printf ("jumping to %08x\n", entrypoint);
-		start_entrypoint(entrypoint, 1, "beam", NULL, "env1", NULL);
+		uint32_t new_top = max_addr & 0xFFFFFFFC;
+		max_addr -= 1024 * 1024; // 1 MB stack should be good for now?
+		start_entrypoint(new_top, entrypoint, 1, "beam", NULL, "env1", NULL);
 	}
 	while (1) {
 		while (TIMER_COUNT) {

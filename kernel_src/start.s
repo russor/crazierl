@@ -121,9 +121,28 @@
 	// handle call from C, adjust the stack a bit, and jump to the
 	// passed entrypoint
 	start_entrypoint:
-		addl $4, %esp // who needs a return address?
-		popl %eax // get the destination address from the stack
-		jmp *%eax
+		popl %eax // who needs a return address?
+		popl %ebx // new stack top
+		popl %ecx // entrypoint
+
+		popl %eax // argc
+		mov %eax, (%ebx)
+		subl $4, %ebx
+
+	argv:	popl %eax
+		mov %eax, (%ebx)
+		subl $4, %ebx
+		test %eax, %eax
+		jne argv
+
+	env:	popl %eax
+		mov %eax, (%ebx)
+		subl $4, %ebx
+		test %eax, %eax
+		jne env
+
+		mov %ebx, %esp
+		jmp *%ecx
 
 	unknown_int:
 		// repeat 256 times
