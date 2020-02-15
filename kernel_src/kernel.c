@@ -342,7 +342,8 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 					case CTL_KERN: switch(buffer[1]) {
 						case KERN_ARND: {
 							uint8_t *r = (uint8_t *)frame[2];
-							uint32_t count = frame[3];
+							uint32_t count = *((uint32_t *)frame[3]);
+							printf("random requested (%d)\n", count);
 							while (count) {
 								*r = rand() & 0xFF;
 								--count;
