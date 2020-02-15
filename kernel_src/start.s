@@ -8,6 +8,7 @@
 
 .global handle_int_80
 .global start_entrypoint
+.global unknown_int
  
 // Our bootloader, GRUB, needs to know some basic information about our kernel before it can boot it.
 // We give GRUB this information using a standard known as 'Multiboot'.
@@ -123,3 +124,313 @@
 		addl $4, %esp // who needs a return address?
 		popl %eax // get the destination address from the stack
 		jmp *%eax
+
+	unknown_int:
+		// repeat 256 times
+		// 0x
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+
+		// 1x
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+
+		// 2x
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+
+		// 3x
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+
+		// 4x
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+
+		// 5x
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+
+		// 6x
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+
+		// 7x
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+
+		// 8x
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+
+		// 9x
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+
+		// Ax
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+
+		// Bx
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+
+		// Cx
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+
+		// Dx
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+
+		// Ex
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+
+		// Fx
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+		call call_handler
+
+	call_handler:
+		xchg %eax, (%esp)
+		push %ecx
+		push %edx
+
+		sub $(unknown_int + 5), %eax
+		xor %edx, %edx
+		mov $5, %ecx
+		idivw %cx
+		push %eax
+		mov %esp, %eax
+		addl $16, %eax
+		push %eax
+		call handle_unknown_irq
+		addl $8, %esp
+		pop %edx
+		pop %ecx
+		pop %eax
+		iret

@@ -4,6 +4,9 @@ run: mykernel.elf
 debug: mykernel.elf
 	qemu-system-i386 -S -s  -m 256 -serial mon:stdio -kernel mykernel.elf -initrd ../otp_src_R12B-5/bin/x86_64-unknown-freebsd12.1/beam.static
 
+debugger:
+	gdb -ex "set confirm off" -ex "add-symbol-file mykernel.elf" -ex "add-symbol-file ../otp_src_R12B-5/bin/x86_64-unknown-freebsd12.1/beam.static" -ex "set confirm on" -ex "target remote localhost:1234"
+
 run2: mykernel.elf
 	qemu-system-i386 -m 256 -serial mon:stdio -kernel mykernel.elf
 
@@ -17,8 +20,8 @@ mykernel.elf: start.o kernel.o linker.ld syscalls.o
 start.o: start.s
 	clang --target=i386-none-elf -g -gdwarf-2 -c start.s -o start.o
 
-kernel.o: kernel.c
-	clang -mno-sse -g --target=i386-none-elf -ffreestanding -nostdinc -I ../libc/include -I ../libc/printf -I ../libc/arch/x86/include -I ../extra -g -c kernel.c -o kernel.o -gdwarf-2
+kernel.o: kernel.c sysctl.h
+	clang -mrdrnd -mno-sse -g --target=i386-none-elf -ffreestanding -nostdinc -I ../libc/include -I ../libc/printf -I ../libc/arch/x86/include -I ../extra -g -c kernel.c -o kernel.o -gdwarf-2
 
 syscalls.o: /usr/src/sys/kern/syscalls.c
 	clang -mno-sse -g --target=i386-none-elf -ffreestanding -nostdinc -I ../libc/include -I ../libc/printf -I ../libc/arch/x86/include -I ../extra -g -c /usr/src/sys/kern/syscalls.c -o syscalls.o -gdwarf-2

@@ -5,6 +5,8 @@
 
 extern const char *syscallnames[];
 extern void * handle_int_80;
+extern void * unknown_int;
+
 extern void start_entrypoint(); 
 #define PORT 0x3f8   /* COM1 */
 
@@ -18,10 +20,13 @@ extern void start_entrypoint();
 #include <stdio.h>
 #include "/usr/src/stand/i386/libi386/multiboot.h"
 typedef uint32_t u_int32_t;
-
+ 
 #include <sys/elf32.h>
 
 #include <errno.h>
+#include "sysctl.h"
+#include <time.h>
+#include <stdlib.h>
 
 uint8_t WANT_NMI = 0;
  
@@ -227,10 +232,32 @@ void get_time(uint8_t timeA[])
 		}
 	}
 }
+
+uint32_t unix_time() {
+	int years = (last_time[7] * 100 + last_time[6]) - 1970;
+	int days = years * 365 + (years >> 2) + last_time[4];
+	if (last_time[5] == 1 || (last_time[5] == 2 && last_time[4] <= 29)) {
+		--days;
+	}
+	switch (last_time[5]) {
+		case 12: days += 30;
+		case 11: days += 31;
+		case 10: days += 30;
+		case  9: days += 31;
+		case  8: days += 31;
+		case  7: days += 30;
+		case  6: days += 31;
+		case  5: days += 30;
+		case  4: days += 31;
+		case  3: days += 28;
+		case  2: days += 31;
+	}
+	return days * 86400 + last_time[3] * 3600 + last_time[2] * 60 + last_time[1];
+}
 	
 void print_time(uint8_t time[9]) {
-	printf("%02d%02d-%02d-%02d %02d:%02d:%02d\n",
-		time[7], time[6], time[5], time[4], time[3], time[2], time[1]);
+	printf("%02d%02d-%02d-%02d %02d:%02d:%02d (%d)\n",
+		time[7], time[6], time[5], time[4], time[3], time[2], time[1], unix_time());
 }
 
 struct interrupt_frame
@@ -241,6 +268,20 @@ struct interrupt_frame
     uint32_t sp;
     uint32_t ss;
 };
+
+void handle_unknown_irq(struct interrupt_frame *frame, uint32_t irq)
+{
+	printf("Got unexpected interrupt 0x%02x IP: %08x at ", irq, frame->ip);
+	print_time(last_time);
+	while (1) { }
+}
+
+void handle_unknown_error(struct interrupt_frame *frame, uint32_t irq, uint32_t error_code)
+{
+	printf("Got unexpected error %d (%d) IP: %08x at ", irq, error_code, frame->ip);
+	print_time(last_time);
+	while (1) { }
+}
 
 __attribute__ ((interrupt))
 void handle_timer(struct interrupt_frame *frame)
@@ -282,30 +323,102 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 			printf("readlink (%s, %08x, %d)\n", (char *)frame[0], frame[1], frame[2]);
 			call = ENOENT;
 			return 0;
-		case 202:
-			printf("__sysctl (%08x, %d, %08x, %08x, %08x, %08x)\n", 
+		case 73: // munmap
+			printf("munmap (%08x, %d)\n",
+				frame[0], frame[1]);
+			if (frame[0] + frame[1] == free_addr) {
+				free_addr = frame[0];
+				printf("free_addr -> %08x\n", free_addr);
+			}
+			call = 0;
+			return 1;
+		case 75: // madvise, ignore
+			call = 0;
+			return 0;
+		case 202: // sysctl
+			if (frame[1] == 2) {
+				uint32_t *buffer = (uint32_t *)frame[0];
+				switch (buffer[0]) {
+					case CTL_KERN: switch(buffer[1]) {
+						case KERN_ARND: {
+							uint8_t *r = (uint8_t *)frame[2];
+							uint32_t count = frame[3];
+							while (count) {
+								*r = rand() & 0xFF;
+								--count;
+							}
+							call = 0;
+							return 1;
+							}
+							break;
+						}
+					case CTL_VM: switch (buffer[1]) {
+						case VM_OVERCOMMIT:
+							*(uint32_t *)frame[2] = 0;
+							*(uint32_t *)frame[3] = sizeof(uint32_t);
+							call = 0;
+							return 1;
+						}
+					case CTL_HW: switch (buffer[1]) {
+						case HW_NCPU:
+							printf("hw.ncpu\n");
+							*(uint32_t *)frame[2] = 1;
+							*(uint32_t *)frame[3] = sizeof(uint32_t);
+							call = 0;
+							return 1;
+						case HW_PAGESIZE:
+							printf("hw.pagesize\n");
+							*(uint32_t *)frame[2] = 4096;
+							*(uint32_t *)frame[3] = sizeof(uint32_t);
+							call = 0;
+							return 1;
+						}
+					case CTL_P1003_1B: switch (buffer[1]) {
+						case CTL_P1003_1B_PAGESIZE:
+							printf("posix.pagesize\n");
+							*(uint32_t *)frame[2] = 4096;
+							*(uint32_t *)frame[3] = sizeof(uint32_t);
+							call = 0;
+							return 1;
+						}
+				}
+			}
+			printf("__sysctl (%08x, %d, %08x, %d, %08x, %08x)\n", 
 				frame[0], frame[1], 
-				frame[2], frame[3],
+				frame[2], *(uint32_t *)frame[3],
 				frame[4], frame[5]);
+			for (int i = 0; i < frame[1]; ++i) {
+				printf("  %d\n", ((uint32_t *)frame[0])[i]);
+			}
 			call = ENOENT;
 			return 0;
 			break;
+		case 232: //clock_gettime
+			printf("clock_gettime(%d, %08x)\n", frame[0], frame[1]);
+			((struct timespec *) frame[1])->tv_sec = unix_time();
+			((struct timespec *) frame[1])->tv_nsec = 0;
+			call = 0;
+			return 1;
 		case 253:
 			printf("issetugid()\n");
 			call = 0;
 			return 1;
 		case 477:
-			printf("mmap (%08x, %d, %08x, %08x, %d, %d)\n",
-				frame[0], frame[1], frame[2],
-				frame[3], frame[4], frame[5]);
-			// push to 4k page
+			// round up to 4k page
 			if (free_addr & 0x0FFF) {
-				free_addr = free_addr & ~(0x0FFF) + 4096;
+				free_addr = (free_addr & 0xFFFFF000) + 4096;
 			}
 			if (frame[1] > (max_addr - free_addr + 1)) {
+				printf("mmap (%08x, %d, %08x, %08x, %d, %d) = ENOMEM\n",
+					frame[0], frame[1], frame[2],
+					frame[3], frame[4], frame[5]);
 				call = ENOMEM;
 				return 0;
 			} else {
+				printf("mmap (%08x, %d, %08x, %08x, %d, %d) = %08x @ %08x\n",
+					frame[0], frame[1], frame[2],
+					frame[3], frame[4], frame[5],
+					free_addr, frame[-1]);
 				call = free_addr;
 				free_addr += frame[1];
 				return 1;
@@ -313,7 +426,7 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 	}
 				
 	if (call <= 567) {
-		printf("Got syscall %d (%s)@%08x at ", call, syscallnames[call], &call);
+		printf("Got syscall %d (%s)@%08x at ", call, syscallnames[call], frame[-1]);
 	} else {
 		printf("got unknown syscall %d at ", call);
 	}
@@ -359,7 +472,17 @@ void interrupt_setup()
 	// ensure IDT entries are not present
 	for (int i = 0; i < (sizeof(IDT) / sizeof(IDT[0])); ++i) {
 		IDT[i].type_attr = 0;
+		if (i < 0x20) {
+			uint32_t handler = (uint32_t)(&unknown_int);
+			handler +=(i * 5);
+			IDT[i].offset_1 = handler & 0xFFFF;
+			IDT[i].selector = 0x08;
+			IDT[i].zero = 0;
+			IDT[i].type_attr = 0x8E;
+			IDT[i].offset_2 = handler >> 16;
+		}
 	}
+
 	IDT[0x06].offset_1 = ((uint32_t) &handle_ud) & 0xFFFF;
 	IDT[0x06].selector = 0x08;
 	IDT[0x06].zero = 0;
@@ -505,7 +628,6 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 		printf ("jumping to %08x\n", entrypoint);
 		start_entrypoint(entrypoint, 1, "beam", NULL, "env1", NULL);
 	}
-	//get_time();
 	while (1) {
 		while (TIMER_COUNT) {
 			outb(0x20,0x20);
