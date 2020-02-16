@@ -1,13 +1,17 @@
-// GCC provides these header files automatically
 // They give us access to useful things like fixed-width types
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
+#include <stdarg.h>
 
 extern const char *syscallnames[];
 extern void * handle_int_80;
 extern void * unknown_int;
-
 extern void start_entrypoint(); 
+
+char **environ = {NULL};
+char *__progname = "crazierlkernel";
+
 #define PORT 0x3f8   /* COM1 */
 
 // First, let's do some basic checks to make sure we are using our x86-elf cross-compiler correctly
@@ -27,6 +31,7 @@ typedef uint32_t u_int32_t;
 #include "sysctl.h"
 #include <time.h>
 #include <stdlib.h>
+#include <sys/stat.h>
 
 uint8_t WANT_NMI = 0;
  
@@ -172,33 +177,23 @@ void term_print(const char* str)
 	for (size_t i = 0; str[i] != '\0'; i ++) // Keep placing characters until we hit the null-terminating character ('\0')
 		_putchar(str[i]);
 }
+
+void term_printf(const char* format, ...)
+{
+	va_list args;
+	va_start(args, format);
+	
+	char foo[512];
+	vsnprintf(foo, sizeof(foo), format, args);
+	term_print(foo);
+}
+
+
  
 uint8_t read_cmos(uint8_t reg)
 {
 	outb(0x70, WANT_NMI | reg);
 	return inb(0x71);
-}
-
-void memcpy(uint8_t *dst, uint8_t *src, unsigned int count)
-{
-	while (count) {
-		--count;
-		*dst = *src;
-		++dst;
-		++src;
-	}
-}
-
-uint8_t memcmp(uint8_t *a, uint8_t *b, unsigned int count)
-{
-	while (1) {
-		if (!count) { return 0; }
-		if (*a < *b) { return -1; }
-		if (*b > *a) { return 1; }
-		--count;
-		++a;
-		++b;
-	}
 }
 
 void get_time(uint8_t timeA[])
@@ -256,7 +251,7 @@ uint32_t unix_time() {
 }
 	
 void print_time(uint8_t time[9]) {
-	printf("%02d%02d-%02d-%02d %02d:%02d:%02d (%d)\n",
+	term_printf("%02d%02d-%02d-%02d %02d:%02d:%02d (%d)\n",
 		time[7], time[6], time[5], time[4], time[3], time[2], time[1], unix_time());
 }
 
@@ -271,14 +266,14 @@ struct interrupt_frame
 
 void handle_unknown_irq(struct interrupt_frame *frame, uint32_t irq)
 {
-	printf("Got unexpected interrupt 0x%02x IP: %08x at ", irq, frame->ip);
+	term_printf("Got unexpected interrupt 0x%02x IP: %08x at ", irq, frame->ip);
 	print_time(last_time);
 	while (1) { }
 }
 
 void handle_unknown_error(struct interrupt_frame *frame, uint32_t irq, uint32_t error_code)
 {
-	printf("Got unexpected error %d (%d) IP: %08x at ", irq, error_code, frame->ip);
+	term_printf("Got unexpected error %d (%d) IP: %08x at ", irq, error_code, frame->ip);
 	print_time(last_time);
 	while (1) { }
 }
@@ -291,7 +286,7 @@ void handle_timer(struct interrupt_frame *frame)
 	//if (1) { 
 	if (memcmp(last_time, new_time, sizeof(last_time)) != 0) {
 		memcpy(last_time, new_time, sizeof(new_time));
-		printf("Got RTC interrupt IP: %08x at ", frame->ip);
+		term_printf("Got RTC interrupt IP: %08x at ", frame->ip);
 		print_time(last_time);
 	}
 	// clear RTC flag
@@ -315,20 +310,20 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 				}
 				return 1;
 			} else {
-				printf("write (%d, %08x, %d)\n", frame[0], frame[1], frame[2]);
+				term_printf("write (%d, %08x, %d)\n", frame[0], frame[1], frame[2]);
 				call = EBADF;
 				return 0;
 			}
 		case 58: // readlink
-			printf("readlink (%s, %08x, %d)\n", (char *)frame[0], frame[1], frame[2]);
+			term_printf("readlink (%s, %08x, %d)\n", (char *)frame[0], frame[1], frame[2]);
 			call = ENOENT;
 			return 0;
 		case 73: // munmap
-			printf("munmap (%08x, %d)\n",
+			term_printf("munmap (%08x, %d)\n",
 				frame[0], frame[1]);
 			if (frame[0] + frame[1] == free_addr) {
 				free_addr = frame[0];
-				printf("free_addr -> %08x\n", free_addr);
+				term_printf("free_addr -> %08x\n", free_addr);
 			}
 			call = 0;
 			return 1;
@@ -344,7 +339,7 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 							{
 								uint8_t *r = (uint8_t *)frame[2];
 								uint32_t count = *((uint32_t *)frame[3]);
-								printf("random requested (%d)\n", count);
+								term_printf("random requested (%d)\n", count);
 								while (count) {
 									*r = rand() & 0xFF;
 									--count;
@@ -367,13 +362,13 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 						}
 					case CTL_HW: switch (buffer[1]) {
 						case HW_NCPU:
-							printf("hw.ncpu\n");
+							term_printf("hw.ncpu\n");
 							*(uint32_t *)frame[2] = 1;
 							*(uint32_t *)frame[3] = sizeof(uint32_t);
 							call = 0;
 							return 1;
 						case HW_PAGESIZE:
-							printf("hw.pagesize\n");
+							term_printf("hw.pagesize\n");
 							*(uint32_t *)frame[2] = 4096;
 							*(uint32_t *)frame[3] = sizeof(uint32_t);
 							call = 0;
@@ -381,7 +376,7 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 						}
 					case CTL_P1003_1B: switch (buffer[1]) {
 						case CTL_P1003_1B_PAGESIZE:
-							printf("posix.pagesize\n");
+							term_printf("posix.pagesize\n");
 							*(uint32_t *)frame[2] = 4096;
 							*(uint32_t *)frame[3] = sizeof(uint32_t);
 							call = 0;
@@ -389,24 +384,24 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 						}
 				}
 			}
-			printf("__sysctl (%08x, %d, %08x, %d, %08x, %08x)\n", 
+			term_printf("__sysctl (%08x, %d, %08x, %d, %08x, %08x)\n", 
 				frame[0], frame[1], 
 				frame[2], *(uint32_t *)frame[3],
 				frame[4], frame[5]);
 			for (int i = 0; i < frame[1]; ++i) {
-				printf("  %d\n", ((uint32_t *)frame[0])[i]);
+				term_printf("  %d\n", ((uint32_t *)frame[0])[i]);
 			}
 			call = ENOENT;
 			return 0;
 			break;
 		case 232: //clock_gettime
-			printf("clock_gettime(%d, %08x)\n", frame[0], frame[1]);
+			term_printf("clock_gettime(%d, %08x)\n", frame[0], frame[1]);
 			((struct timespec *) frame[1])->tv_sec = unix_time();
 			((struct timespec *) frame[1])->tv_nsec = 0;
 			call = 0;
 			return 1;
 		case 253:
-			printf("issetugid()\n");
+			term_printf("issetugid()\n");
 			call = 0;
 			return 1;
 		case 477:
@@ -415,13 +410,13 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 				free_addr = (free_addr & 0xFFFFF000) + 4096;
 			}
 			if (frame[1] > (max_addr - free_addr + 1)) {
-				printf("mmap (%08x, %d, %08x, %08x, %d, %d) = ENOMEM\n",
+				term_printf("mmap (%08x, %d, %08x, %08x, %d, %d) = ENOMEM\n",
 					frame[0], frame[1], frame[2],
 					frame[3], frame[4], frame[5]);
 				call = ENOMEM;
 				return 0;
 			} else {
-				printf("mmap (%08x, %d, %08x, %08x, %d, %d) = %08x @ %08x\n",
+				term_printf("mmap (%08x, %d, %08x, %08x, %d, %d) = %08x @ %08x\n",
 					frame[0], frame[1], frame[2],
 					frame[3], frame[4], frame[5],
 					free_addr, frame[-1]);
@@ -430,16 +425,26 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 				return 1;
 			}
 		case 551: //
-			printf("fstat (%d)\n", frame[0]);
+			term_printf("fstat (%d)\n", frame[0]);
+			if (frame[0] == 1) {
+				struct stat* s = (struct stat*)frame[1];
+				s->st_mode = 8592;
+				call = 0;
+				return 1;
+			}
 			break;
 	}
 				
 	if (call <= 567) {
-		printf("Got syscall %d (%s)@%08x at ", call, syscallnames[call], frame[-1]);
+		//term_printf("Got syscall %d (%s)@%08x at ", call, syscallnames[call], frame[-1]);
+		term_print("got syscall ");
+		term_print(syscallnames[call]);
+		term_print("\n");
 	} else {
-		printf("got unknown syscall %d at ", call);
+		term_printf("got unknown syscall %d at ", call);
 	}
-	print_time(last_time);
+	//print_time(last_time);
+	term_print ("halting\n");
 	while (1) {
 	}
 }
@@ -448,9 +453,9 @@ __attribute__ ((interrupt))
 void handle_gp(struct interrupt_frame *frame, uint32_t error_code)
 {
 	if (frame) {
-		printf("Got #GP (%u) IP: %08x at ", error_code, frame->ip);
+		term_printf("Got #GP (%u) IP: %08x at ", error_code, frame->ip);
 	} else {
-		printf("Got #GP, no stack frame\n");
+		term_printf("Got #GP, no stack frame\n");
 	}
 	print_time(last_time);
 	while (1) { } // loop forever
@@ -459,7 +464,7 @@ void handle_gp(struct interrupt_frame *frame, uint32_t error_code)
 __attribute__ ((interrupt))
 void handle_ud(struct interrupt_frame *frame)
 {
-	printf("Got #UD IP: %08x at ", frame->ip);
+	term_printf("Got #UD IP: %08x at ", frame->ip);
 	print_time(last_time);
 	while (1) { } // loop forever
 }
@@ -519,7 +524,7 @@ void interrupt_setup()
 	IDTR.size = sizeof(IDT) - 1;
 	IDTR.offset = (uint32_t) &IDT;
 	asm volatile ( "lidt %0" :: "m" (IDTR) );
-	printf("loaded idtl of size 0x%04x\n", IDTR.size);
+	//term_printf("loaded idtl of size 0x%04x\n", IDTR.size);
 	asm volatile ( "sti" :: );
 }
 
@@ -537,23 +542,23 @@ void *entrypoint;
 void load_module(multiboot_module_t mod) {
 	Elf32_Ehdr * head = (void *)mod.mod_start;
 	entrypoint = (void *) head->e_entry;
-	printf ("elf entrypoint 0x%08x\n", head->e_entry);
-	printf ("%d program headers of size %d\n", head->e_phnum, head->e_phentsize);
+	term_printf ("elf entrypoint 0x%08x\n", head->e_entry);
+	term_printf ("%d program headers of size %d\n", head->e_phnum, head->e_phentsize);
 	
 	Elf32_Phdr *phead = (void *)mod.mod_start + head->e_phoff;
 	for (int i = 0; i < head->e_phnum; ++i) {
-		printf( "  %d: type 0x%x, offset %08x, virt %08x, filesize 0x%08x, memsize 0x%08x\n",
+		term_printf( "  %d: type 0x%x, offset %08x, virt %08x, filesize 0x%08x, memsize 0x%08x\n",
 			i, phead->p_type, phead->p_offset, phead->p_vaddr,
 			phead->p_filesz, phead->p_memsz);
 		if (phead->p_type == PT_LOAD) {
 			unsigned int count = min(phead->p_filesz, phead->p_memsz);
 			uint8_t *src = (void*) mod.mod_start + phead->p_offset;
 			uint8_t *dst = (void*) phead->p_vaddr;
-			printf("copying %d bytes from %08x to %08x\n", count, src, dst);
+			term_printf("copying %d bytes from %08x to %08x\n", count, src, dst);
 			memcpy(dst, src, count);
 			uint32_t next_addr = max(phead->p_filesz, phead->p_memsz) + phead->p_vaddr;
 			if (next_addr > free_addr && next_addr < max_addr) {
-				printf("moving free address from %08x to %08x\n", free_addr, next_addr);
+				term_printf("moving free address from %08x to %08x\n", free_addr, next_addr);
 				free_addr = next_addr;
 			}
 		}
@@ -565,7 +570,7 @@ void enable_sse() {
 	uint32_t a,b,c,d;
 	uint32_t code = 1;
 	asm volatile("cpuid":"=a"(a),"=b"(b),"=c"(c),"=d"(d):"a"(code));
-	printf("cpuid eax %08x, ebx %08x, ecx %08x, edx %08x\n", a, b, c, d);
+	//term_printf("cpuid eax %08x, ebx %08x, ecx %08x, edx %08x\n", a, b, c, d);
 	// https://wiki.osdev.org/SSE#Adding_support
 	asm volatile("mov %%cr0, %0" : "=a" (a));
 	a&= 0xFFFFFFFB;
@@ -587,20 +592,22 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 	// Display some messages
 	term_print("Hello, World!\n");
 	term_print("Welcome to the kernel at ");
+	enable_sse();
+	interrupt_setup();
 	get_time(last_time);
 	print_time(last_time);
 
 	
-	printf("memory map: %d @ %08x\n", mb->mmap_length, mb->mmap_addr);
+	term_printf("memory map: %d @ %08x\n", mb->mmap_length, mb->mmap_addr);
       multiboot_memory_map_t *mmap;
       
-      printf ("mmap_addr = 0x%x, mmap_length = 0x%x\n",
+      term_printf ("mmap_addr = 0x%x, mmap_length = 0x%x\n",
               (unsigned) mb->mmap_addr, (unsigned) mb->mmap_length);
       for (mmap = (multiboot_memory_map_t *) mb->mmap_addr;
            (unsigned long) mmap < mb->mmap_addr + mb->mmap_length;
            mmap = (multiboot_memory_map_t *) ((unsigned long) mmap
                                     + mmap->size + sizeof (mmap->size))) {
-        printf (" size = 0x%x, base_addr = 0x%08x,"
+        term_printf (" size = 0x%x, base_addr = 0x%08x,"
                 " length = 0x%08x, type = 0x%x\n",
                 (unsigned) mmap->size,
                 //(unsigned) (mmap->addr >> 32),
@@ -612,29 +619,27 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
                 	if (mmap->len > (max_addr - free_addr)) {
                 		free_addr = mmap->addr;
                 		max_addr = mmap->addr + (mmap->len - 1);
-                		printf("free memory now at %08x-%08x\n", free_addr, max_addr);
+                		term_printf("free memory now at %08x-%08x\n", free_addr, max_addr);
 			}
                 }
 	}
 
-	printf("kernel main at %08x\n", kernel_main);
-	printf("Multiboot magic: %08x (%s)\n", mb_magic, (char *) mb->boot_loader_name);
-	printf("Multiboot info at %08x (%08x)\n", mb, &mb);
-	printf("mem range: %08x-%08x\n", mb->mem_lower, mb->mem_upper);
-	printf("modules: %d @ %08x\n", mb->mods_count, mb->mods_addr);
+	term_printf("kernel main at %08x\n", kernel_main);
+	term_printf("Multiboot magic: %08x (%s)\n", mb_magic, (char *) mb->boot_loader_name);
+	term_printf("Multiboot info at %08x (%08x)\n", mb, &mb);
+	term_printf("mem range: %08x-%08x\n", mb->mem_lower, mb->mem_upper);
+	term_printf("modules: %d @ %08x\n", mb->mods_count, mb->mods_addr);
 	
 	multiboot_module_t *mods = (void *)mb->mods_addr;
 	for (int mod = 0; mod < mb->mods_count; ++mod) {
-		printf("Module %d (%s):\n 0x%08x-0x%08x\n", mod, mods[mod].cmdline, mods[mod].mod_start, mods[mod].mod_end);
+		term_printf("Module %d (%s):\n 0x%08x-0x%08x\n", mod, mods[mod].cmdline, mods[mod].mod_start, mods[mod].mod_end);
 		load_module(mods[mod]);
 	}
 	
-	interrupt_setup();
 	
-	enable_sse();
 	
 	if (entrypoint) {
-		printf ("jumping to %08x\n", entrypoint);
+		term_printf ("jumping to %08x\n", entrypoint);
 		uint32_t new_top = max_addr & 0xFFFFFFFC;
 		max_addr -= 1024 * 1024; // 1 MB stack should be good for now?
 		start_entrypoint(new_top, entrypoint, 1, "beam", 
