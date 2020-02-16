@@ -1,11 +1,11 @@
 run: mykernel.elf
-	qemu-system-i386 -m 256 -serial mon:stdio -kernel mykernel.elf -initrd ../otp_src_R12B-5/bin/x86_64-unknown-freebsd12.1/beam.static
+	qemu-system-i386 -m 256 -serial mon:stdio -kernel mykernel.elf -initrd ../otp_src_R12B-5/bin/i386-none-elf/beam.static
 
 debug: mykernel.elf
-	qemu-system-i386 -S -s  -m 256 -serial mon:stdio -kernel mykernel.elf -initrd ../otp_src_R12B-5/bin/x86_64-unknown-freebsd12.1/beam.static
+	qemu-system-i386 -S -s  -m 256 -serial mon:stdio -kernel mykernel.elf -initrd ../otp_src_R12B-5/bin/i386-none-elf/beam.static
 
 debugger:
-	gdb -ex "set confirm off" -ex "add-symbol-file mykernel.elf" -ex "add-symbol-file ../otp_src_R12B-5/bin/x86_64-unknown-freebsd12.1/beam.static" -ex "set confirm on" -ex "target remote localhost:1234"
+	gdb -ex "set confirm off" -ex "add-symbol-file mykernel.elf" -ex "add-symbol-file ../otp_src_R12B-5/bin/i386-none-elf/beam.static" -ex "set confirm on" -ex "target remote localhost:1234"
 
 run2: mykernel.elf
 	qemu-system-i386 -m 256 -serial mon:stdio -kernel mykernel.elf
