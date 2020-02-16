@@ -340,18 +340,23 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 				uint32_t *buffer = (uint32_t *)frame[0];
 				switch (buffer[0]) {
 					case CTL_KERN: switch(buffer[1]) {
-						case KERN_ARND: {
-							uint8_t *r = (uint8_t *)frame[2];
-							uint32_t count = *((uint32_t *)frame[3]);
-							printf("random requested (%d)\n", count);
-							while (count) {
-								*r = rand() & 0xFF;
-								--count;
+						case KERN_ARND:
+							{
+								uint8_t *r = (uint8_t *)frame[2];
+								uint32_t count = *((uint32_t *)frame[3]);
+								printf("random requested (%d)\n", count);
+								while (count) {
+									*r = rand() & 0xFF;
+									--count;
+								}
+								call = 0;
+								return 1;
 							}
+						case KERN_OSRELDATE:
+							*(uint32_t *)frame[2] = 1201000; // pretend to be freebsd 12.1 for now
+							*(uint32_t *)frame[3] = sizeof(uint32_t);
 							call = 0;
 							return 1;
-							}
-							break;
 						}
 					case CTL_VM: switch (buffer[1]) {
 						case VM_OVERCOMMIT:
@@ -424,6 +429,9 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 				free_addr += frame[1];
 				return 1;
 			}
+		case 551: //
+			printf("fstat (%d)\n", frame[0]);
+			break;
 	}
 				
 	if (call <= 567) {
@@ -629,7 +637,9 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 		printf ("jumping to %08x\n", entrypoint);
 		uint32_t new_top = max_addr & 0xFFFFFFFC;
 		max_addr -= 1024 * 1024; // 1 MB stack should be good for now?
-		start_entrypoint(new_top, entrypoint, 1, "beam", NULL, "env1", NULL);
+		start_entrypoint(new_top, entrypoint, 1, "beam", 
+			"--", "-root", "../otp_src_R12B-5/", "-progname", "erl",
+			NULL, "BINDIR=/", NULL);
 	}
 	while (1) {
 		while (TIMER_COUNT) {

@@ -12,6 +12,7 @@
 #define	CTL_USER	8		/* user-level */
 #define	CTL_P1003_1B	9		/* POSIX 1003.1B */
 
+#define	KERN_OSRELDATE		24	/* int: kernel release date */
 #define	KERN_ARND		37	/* int: from arc4rand() */
 
 #define VM_OVERCOMMIT           12      /* vm.overcommit */
