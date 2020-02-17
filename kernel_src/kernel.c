@@ -1,8 +1,8 @@
-// They give us access to useful things like fixed-width types
+#include <sys/types.h>
+#include <printf.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
-#include <stdarg.h>
 
 extern const char *syscallnames[];
 extern void * handle_int_80;
@@ -28,10 +28,15 @@ typedef uint32_t u_int32_t;
 #include <sys/elf32.h>
 
 #include <errno.h>
-#include "sysctl.h"
+#include <sys/sysctl.h>
+#include <vm/vm_param.h>
+#include <sys/syscall.h>
 #include <time.h>
 #include <stdlib.h>
 #include <sys/stat.h>
+#include <sys/ioctl.h>
+#include <term.h>
+#include <sys/resource.h>
 
 uint8_t WANT_NMI = 0;
  
@@ -178,18 +183,6 @@ void term_print(const char* str)
 		_putchar(str[i]);
 }
 
-void term_printf(const char* format, ...)
-{
-	va_list args;
-	va_start(args, format);
-	
-	char foo[512];
-	vsnprintf(foo, sizeof(foo), format, args);
-	term_print(foo);
-}
-
-
- 
 uint8_t read_cmos(uint8_t reg)
 {
 	outb(0x70, WANT_NMI | reg);
@@ -251,7 +244,7 @@ uint32_t unix_time() {
 }
 	
 void print_time(uint8_t time[9]) {
-	term_printf("%02d%02d-%02d-%02d %02d:%02d:%02d (%d)\n",
+	printf("%02d%02d-%02d-%02d %02d:%02d:%02d (%d)\n",
 		time[7], time[6], time[5], time[4], time[3], time[2], time[1], unix_time());
 }
 
@@ -266,14 +259,14 @@ struct interrupt_frame
 
 void handle_unknown_irq(struct interrupt_frame *frame, uint32_t irq)
 {
-	term_printf("Got unexpected interrupt 0x%02x IP: %08x at ", irq, frame->ip);
+	printf("Got unexpected interrupt 0x%02x IP: %08x at ", irq, frame->ip);
 	print_time(last_time);
 	while (1) { }
 }
 
 void handle_unknown_error(struct interrupt_frame *frame, uint32_t irq, uint32_t error_code)
 {
-	term_printf("Got unexpected error %d (%d) IP: %08x at ", irq, error_code, frame->ip);
+	printf("Got unexpected error %d (%d) IP: %08x at ", irq, error_code, frame->ip);
 	print_time(last_time);
 	while (1) { }
 }
@@ -286,7 +279,7 @@ void handle_timer(struct interrupt_frame *frame)
 	//if (1) { 
 	if (memcmp(last_time, new_time, sizeof(last_time)) != 0) {
 		memcpy(last_time, new_time, sizeof(new_time));
-		term_printf("Got RTC interrupt IP: %08x at ", frame->ip);
+		printf("Got RTC interrupt IP: %08x at ", frame->ip);
 		print_time(last_time);
 	}
 	// clear RTC flag
@@ -298,7 +291,7 @@ void handle_timer(struct interrupt_frame *frame)
 uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 {	
 	switch(call) {
-		case 4: // write
+		case SYS_write:
 			if (frame[0] == 1 || frame[0] == 2) { // stdout/stderr
 				uint8_t *buffer = (uint8_t *)frame[1];
 				call = frame[2];
@@ -310,27 +303,67 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 				}
 				return 1;
 			} else {
-				term_printf("write (%d, %08x, %d)\n", frame[0], frame[1], frame[2]);
+				printf("write (%d, %08x, %d)\n", frame[0], frame[1], frame[2]);
 				call = EBADF;
 				return 0;
 			}
-		case 58: // readlink
-			term_printf("readlink (%s, %08x, %d)\n", (char *)frame[0], frame[1], frame[2]);
+		case SYS_ioctl:
+			printf("ioctl (%d, %08x, ...)\n", frame[0], frame[1]);
+			switch (frame[1]) {
+				case TIOCGETA:
+					if (frame[0] == 0) {
+						struct termios *t = (struct termios *)frame[2];
+						t->c_iflag = 11010;
+						t->c_oflag = 3;
+						t->c_cflag = 19200;
+						t->c_lflag = 1483;
+						//t->c_cc = "\004\377\377\177\027\025\022\b\003\034\032\031\021\023\026\017\001\000\024\377";
+						t->c_ispeed = 38400;
+						t->c_ospeed = 38400;
+						call = 0;
+						return 1;
+					} else {
+						printf("TIOCGETA\n");
+					}
+					break;
+			}
+			printf("parm_len %d, cmd %d, group %c\n", IOCPARM_LEN(frame[1]), frame[1] & 0xff, IOCGROUP(frame[1]));
+			break;
+		case SYS_readlink:
+			printf("readlink (%s, %08x, %d)\n", (char *)frame[0], frame[1], frame[2]);
 			call = ENOENT;
 			return 0;
-		case 73: // munmap
-			term_printf("munmap (%08x, %d)\n",
+		case SYS_munmap:
+			printf("munmap (%08x, %d)\n",
 				frame[0], frame[1]);
 			if (frame[0] + frame[1] == free_addr) {
 				free_addr = frame[0];
-				term_printf("free_addr -> %08x\n", free_addr);
+				printf("free_addr -> %08x\n", free_addr);
 			}
 			call = 0;
 			return 1;
-		case 75: // madvise, ignore
+		case SYS_madvise: //ignore
 			call = 0;
 			return 0;
-		case 202: // sysctl
+		case SYS_getrlimit: {
+			struct rlimit *rlp = (struct rlimit *) frame[1];
+			switch (frame[0]) {
+				case RLIMIT_STACK:
+					rlp->rlim_cur = 1024 * 1024;
+					rlp->rlim_max = 1024 * 1024;
+					break;
+				case RLIMIT_NOFILE:
+					rlp->rlim_cur = 1024 * 1024;
+					rlp->rlim_max = 1024 * 1024;
+					break;
+				default:
+					rlp->rlim_cur = RLIM_INFINITY;
+					rlp->rlim_max = RLIM_INFINITY;
+			}
+			call = 0;
+			return 1;
+			}
+		case SYS___sysctl:
 			if (frame[1] == 2) {
 				uint32_t *buffer = (uint32_t *)frame[0];
 				switch (buffer[0]) {
@@ -339,7 +372,7 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 							{
 								uint8_t *r = (uint8_t *)frame[2];
 								uint32_t count = *((uint32_t *)frame[3]);
-								term_printf("random requested (%d)\n", count);
+								printf("random requested (%d)\n", count);
 								while (count) {
 									*r = rand() & 0xFF;
 									--count;
@@ -362,13 +395,13 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 						}
 					case CTL_HW: switch (buffer[1]) {
 						case HW_NCPU:
-							term_printf("hw.ncpu\n");
+							printf("hw.ncpu\n");
 							*(uint32_t *)frame[2] = 1;
 							*(uint32_t *)frame[3] = sizeof(uint32_t);
 							call = 0;
 							return 1;
 						case HW_PAGESIZE:
-							term_printf("hw.pagesize\n");
+							printf("hw.pagesize\n");
 							*(uint32_t *)frame[2] = 4096;
 							*(uint32_t *)frame[3] = sizeof(uint32_t);
 							call = 0;
@@ -376,7 +409,7 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 						}
 					case CTL_P1003_1B: switch (buffer[1]) {
 						case CTL_P1003_1B_PAGESIZE:
-							term_printf("posix.pagesize\n");
+							printf("posix.pagesize\n");
 							*(uint32_t *)frame[2] = 4096;
 							*(uint32_t *)frame[3] = sizeof(uint32_t);
 							call = 0;
@@ -384,39 +417,58 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 						}
 				}
 			}
-			term_printf("__sysctl (%08x, %d, %08x, %d, %08x, %08x)\n", 
+			printf("__sysctl (%08x, %d, %08x, %d, %08x, %08x)\n", 
 				frame[0], frame[1], 
 				frame[2], *(uint32_t *)frame[3],
 				frame[4], frame[5]);
 			for (int i = 0; i < frame[1]; ++i) {
-				term_printf("  %d\n", ((uint32_t *)frame[0])[i]);
+				printf("  %d\n", ((uint32_t *)frame[0])[i]);
 			}
 			call = ENOENT;
 			return 0;
 			break;
-		case 232: //clock_gettime
-			term_printf("clock_gettime(%d, %08x)\n", frame[0], frame[1]);
+		case SYS_clock_gettime:
+			printf("clock_gettime(%d, %08x)\n", frame[0], frame[1]);
 			((struct timespec *) frame[1])->tv_sec = unix_time();
 			((struct timespec *) frame[1])->tv_nsec = 0;
 			call = 0;
 			return 1;
-		case 253:
-			term_printf("issetugid()\n");
+		case SYS_issetugid:
+			printf("issetugid()\n");
 			call = 0;
 			return 1;
-		case 477:
+		case SYS_sigprocmask:
+			printf("sigprocmask (%d, ...)\n", frame[0]);
+			call = 0;
+			return 1;
+		case SYS_sigaction:
+			printf("sigaction (%d, ...)\n", frame[0]);
+			call = 0;
+			return 1;
+		case SYS_thr_self:
+			printf("thr_self()\n");
+			*((long *)frame[0]) = 100002;
+			call = 0;
+			return 1;
+		case SYS_thr_kill:
+			printf("thr_kill(%d, %d)\n", frame[0], frame[1]);
+			break;
+			call = 0;
+			return 1;
+			
+		case SYS_mmap:
 			// round up to 4k page
 			if (free_addr & 0x0FFF) {
 				free_addr = (free_addr & 0xFFFFF000) + 4096;
 			}
 			if (frame[1] > (max_addr - free_addr + 1)) {
-				term_printf("mmap (%08x, %d, %08x, %08x, %d, %d) = ENOMEM\n",
+				printf("mmap (%08x, %d, %08x, %08x, %d, %d) = ENOMEM\n",
 					frame[0], frame[1], frame[2],
 					frame[3], frame[4], frame[5]);
 				call = ENOMEM;
 				return 0;
 			} else {
-				term_printf("mmap (%08x, %d, %08x, %08x, %d, %d) = %08x @ %08x\n",
+				printf("mmap (%08x, %d, %08x, %08x, %d, %d) = %08x @ %08x\n",
 					frame[0], frame[1], frame[2],
 					frame[3], frame[4], frame[5],
 					free_addr, frame[-1]);
@@ -424,8 +476,8 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 				free_addr += frame[1];
 				return 1;
 			}
-		case 551: //
-			term_printf("fstat (%d)\n", frame[0]);
+		case SYS_fstat:
+			printf("fstat (%d)\n", frame[0]);
 			if (frame[0] == 1) {
 				struct stat* s = (struct stat*)frame[1];
 				s->st_mode = 8592;
@@ -435,13 +487,10 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 			break;
 	}
 				
-	if (call <= 567) {
-		//term_printf("Got syscall %d (%s)@%08x at ", call, syscallnames[call], frame[-1]);
-		term_print("got syscall ");
-		term_print(syscallnames[call]);
-		term_print("\n");
+	if (call < SYS_MAXSYSCALL) {
+		printf("Got syscall %d (%s)@%08x", call, syscallnames[call], frame[-1]);
 	} else {
-		term_printf("got unknown syscall %d at ", call);
+		printf("got unknown syscall %d", call);
 	}
 	//print_time(last_time);
 	term_print ("halting\n");
@@ -453,9 +502,9 @@ __attribute__ ((interrupt))
 void handle_gp(struct interrupt_frame *frame, uint32_t error_code)
 {
 	if (frame) {
-		term_printf("Got #GP (%u) IP: %08x at ", error_code, frame->ip);
+		printf("Got #GP (%u) IP: %08x at ", error_code, frame->ip);
 	} else {
-		term_printf("Got #GP, no stack frame\n");
+		printf("Got #GP, no stack frame\n");
 	}
 	print_time(last_time);
 	while (1) { } // loop forever
@@ -464,7 +513,7 @@ void handle_gp(struct interrupt_frame *frame, uint32_t error_code)
 __attribute__ ((interrupt))
 void handle_ud(struct interrupt_frame *frame)
 {
-	term_printf("Got #UD IP: %08x at ", frame->ip);
+	printf("Got #UD IP: %08x at ", frame->ip);
 	print_time(last_time);
 	while (1) { } // loop forever
 }
@@ -524,7 +573,7 @@ void interrupt_setup()
 	IDTR.size = sizeof(IDT) - 1;
 	IDTR.offset = (uint32_t) &IDT;
 	asm volatile ( "lidt %0" :: "m" (IDTR) );
-	//term_printf("loaded idtl of size 0x%04x\n", IDTR.size);
+	//printf("loaded idtl of size 0x%04x\n", IDTR.size);
 	asm volatile ( "sti" :: );
 }
 
@@ -542,23 +591,23 @@ void *entrypoint;
 void load_module(multiboot_module_t mod) {
 	Elf32_Ehdr * head = (void *)mod.mod_start;
 	entrypoint = (void *) head->e_entry;
-	term_printf ("elf entrypoint 0x%08x\n", head->e_entry);
-	term_printf ("%d program headers of size %d\n", head->e_phnum, head->e_phentsize);
+	printf ("elf entrypoint 0x%08x\n", head->e_entry);
+	printf ("%d program headers of size %d\n", head->e_phnum, head->e_phentsize);
 	
 	Elf32_Phdr *phead = (void *)mod.mod_start + head->e_phoff;
 	for (int i = 0; i < head->e_phnum; ++i) {
-		term_printf( "  %d: type 0x%x, offset %08x, virt %08x, filesize 0x%08x, memsize 0x%08x\n",
+		printf( "  %d: type 0x%x, offset %08x, virt %08x, filesize 0x%08x, memsize 0x%08x\n",
 			i, phead->p_type, phead->p_offset, phead->p_vaddr,
 			phead->p_filesz, phead->p_memsz);
 		if (phead->p_type == PT_LOAD) {
 			unsigned int count = min(phead->p_filesz, phead->p_memsz);
 			uint8_t *src = (void*) mod.mod_start + phead->p_offset;
 			uint8_t *dst = (void*) phead->p_vaddr;
-			term_printf("copying %d bytes from %08x to %08x\n", count, src, dst);
+			printf("copying %d bytes from %08x to %08x\n", count, src, dst);
 			memcpy(dst, src, count);
 			uint32_t next_addr = max(phead->p_filesz, phead->p_memsz) + phead->p_vaddr;
 			if (next_addr > free_addr && next_addr < max_addr) {
-				term_printf("moving free address from %08x to %08x\n", free_addr, next_addr);
+				printf("moving free address from %08x to %08x\n", free_addr, next_addr);
 				free_addr = next_addr;
 			}
 		}
@@ -570,7 +619,7 @@ void enable_sse() {
 	uint32_t a,b,c,d;
 	uint32_t code = 1;
 	asm volatile("cpuid":"=a"(a),"=b"(b),"=c"(c),"=d"(d):"a"(code));
-	//term_printf("cpuid eax %08x, ebx %08x, ecx %08x, edx %08x\n", a, b, c, d);
+	//printf("cpuid eax %08x, ebx %08x, ecx %08x, edx %08x\n", a, b, c, d);
 	// https://wiki.osdev.org/SSE#Adding_support
 	asm volatile("mov %%cr0, %0" : "=a" (a));
 	a&= 0xFFFFFFFB;
@@ -598,16 +647,16 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 	print_time(last_time);
 
 	
-	term_printf("memory map: %d @ %08x\n", mb->mmap_length, mb->mmap_addr);
+	printf("memory map: %d @ %08x\n", mb->mmap_length, mb->mmap_addr);
       multiboot_memory_map_t *mmap;
       
-      term_printf ("mmap_addr = 0x%x, mmap_length = 0x%x\n",
+      printf ("mmap_addr = 0x%x, mmap_length = 0x%x\n",
               (unsigned) mb->mmap_addr, (unsigned) mb->mmap_length);
       for (mmap = (multiboot_memory_map_t *) mb->mmap_addr;
            (unsigned long) mmap < mb->mmap_addr + mb->mmap_length;
            mmap = (multiboot_memory_map_t *) ((unsigned long) mmap
                                     + mmap->size + sizeof (mmap->size))) {
-        term_printf (" size = 0x%x, base_addr = 0x%08x,"
+        printf (" size = 0x%x, base_addr = 0x%08x,"
                 " length = 0x%08x, type = 0x%x\n",
                 (unsigned) mmap->size,
                 //(unsigned) (mmap->addr >> 32),
@@ -619,27 +668,27 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
                 	if (mmap->len > (max_addr - free_addr)) {
                 		free_addr = mmap->addr;
                 		max_addr = mmap->addr + (mmap->len - 1);
-                		term_printf("free memory now at %08x-%08x\n", free_addr, max_addr);
+                		printf("free memory now at %08x-%08x\n", free_addr, max_addr);
 			}
                 }
 	}
 
-	term_printf("kernel main at %08x\n", kernel_main);
-	term_printf("Multiboot magic: %08x (%s)\n", mb_magic, (char *) mb->boot_loader_name);
-	term_printf("Multiboot info at %08x (%08x)\n", mb, &mb);
-	term_printf("mem range: %08x-%08x\n", mb->mem_lower, mb->mem_upper);
-	term_printf("modules: %d @ %08x\n", mb->mods_count, mb->mods_addr);
+	printf("kernel main at %08x\n", kernel_main);
+	printf("Multiboot magic: %08x (%s)\n", mb_magic, (char *) mb->boot_loader_name);
+	printf("Multiboot info at %08x (%08x)\n", mb, &mb);
+	printf("mem range: %08x-%08x\n", mb->mem_lower, mb->mem_upper);
+	printf("modules: %d @ %08x\n", mb->mods_count, mb->mods_addr);
 	
 	multiboot_module_t *mods = (void *)mb->mods_addr;
 	for (int mod = 0; mod < mb->mods_count; ++mod) {
-		term_printf("Module %d (%s):\n 0x%08x-0x%08x\n", mod, mods[mod].cmdline, mods[mod].mod_start, mods[mod].mod_end);
+		printf("Module %d (%s):\n 0x%08x-0x%08x\n", mod, mods[mod].cmdline, mods[mod].mod_start, mods[mod].mod_end);
 		load_module(mods[mod]);
 	}
 	
 	
 	
 	if (entrypoint) {
-		term_printf ("jumping to %08x\n", entrypoint);
+		printf ("jumping to %08x\n", entrypoint);
 		uint32_t new_top = max_addr & 0xFFFFFFFC;
 		max_addr -= 1024 * 1024; // 1 MB stack should be good for now?
 		start_entrypoint(new_top, entrypoint, 1, "beam", 
