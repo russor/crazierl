@@ -12,6 +12,10 @@ extern void start_entrypoint();
 char **environ = {NULL};
 char *__progname = "crazierlkernel";
 
+int16_t FDS[1024];
+uint16_t next_fd;
+
+
 #define PORT 0x3f8   /* COM1 */
 
 // First, let's do some basic checks to make sure we are using our x86-elf cross-compiler correctly
@@ -345,6 +349,10 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 		case SYS_madvise: //ignore
 			call = 0;
 			return 0;
+		case SYS_fcntl:
+			printf("fcntl (%d, %08x)\n", frame[0], frame[1]);
+			call = 0;
+			return 1;
 		case SYS_getrlimit: {
 			struct rlimit *rlp = (struct rlimit *) frame[1];
 			switch (frame[0]) {
@@ -353,8 +361,8 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 					rlp->rlim_max = 1024 * 1024;
 					break;
 				case RLIMIT_NOFILE:
-					rlp->rlim_cur = 1024 * 1024;
-					rlp->rlim_max = 1024 * 1024;
+					rlp->rlim_cur = sizeof(FDS);
+					rlp->rlim_max = sizeof(FDS);
 					break;
 				default:
 					rlp->rlim_cur = RLIM_INFINITY;
@@ -476,6 +484,15 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 				free_addr += frame[1];
 				return 1;
 			}
+		case SYS_pipe2:
+			printf("pipe2 (%08x, %08x)\n", frame[0], frame[1]);
+			FDS[next_fd] = next_fd + 1;
+			FDS[next_fd + 1] = next_fd;
+			*((int *)frame[0]) = next_fd;
+			*(((int *)frame[0]) + 1) = next_fd + 1;
+			next_fd += 2;
+			call = 0;
+			return 1;
 		case SYS_fstat:
 			printf("fstat (%d)\n", frame[0]);
 			if (frame[0] == 1) {
@@ -630,11 +647,21 @@ void enable_sse() {
 	asm volatile("mov %0, %%cr4" :: "a"(a));
 }
 
+void setup_fds() 
+{
+	FDS[0] = 0;
+	FDS[1] = 1;
+	FDS[2] = 2;
+	next_fd = 3;
+	for (int i = 0; i < sizeof(FDS); ++i) {
+		FDS[i] = -1;
+	}
+}
+
 // This is our kernel's main function
 void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 {
 	// We're here! Let's initiate the terminal and display a message to show we got here.
- 
 	// Initiate terminal
 	term_init();
  
@@ -643,6 +670,9 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 	term_print("Welcome to the kernel at ");
 	enable_sse();
 	interrupt_setup();
+
+	setup_fds();
+
 	get_time(last_time);
 	print_time(last_time);
 
