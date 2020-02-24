@@ -29,7 +29,8 @@ uint16_t next_fd;
 #include "/usr/src/stand/i386/libi386/multiboot.h"
 typedef uint32_t u_int32_t;
  
-#include <sys/elf32.h>
+#include <x86/elf.h>
+//#include <sys/elf32.h>
 
 #include <errno.h>
 #include <sys/sysctl.h>
@@ -482,13 +483,13 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 				free_addr = (free_addr & 0xFFFFF000) + 4096;
 			}
 			if (frame[1] > (max_addr - free_addr + 1)) {
-				printf("mmap (%08x, %d, %08x, %08x, %d, %d) = ENOMEM\n",
+				printf("mmap (%08x, %08x, %08x, %08x, %d, %d) = ENOMEM\n",
 					frame[0], frame[1], frame[2],
 					frame[3], frame[4], frame[5]);
 				call = ENOMEM;
 				return 0;
 			} else {
-				printf("mmap (%08x, %d, %08x, %08x, %d, %d) = %08x @ %08x\n",
+				printf("mmap (%08x, %08x, %08x, %08x, %d, %d) = %08x @ %08x\n",
 					frame[0], frame[1], frame[2],
 					frame[3], frame[4], frame[5],
 					free_addr, frame[-1]);
@@ -517,7 +518,7 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 	}
 				
 	if (call < SYS_MAXSYSCALL) {
-		printf("Got syscall %d (%s)@%08x", call, syscallnames[call], frame[-1]);
+		printf("Got syscall %d (%s) (%08x, %08x) @%08x", call, syscallnames[call], frame[0], frame[1], frame[-1]);
 	} else {
 		printf("got unknown syscall %d", call);
 	}
@@ -616,14 +617,19 @@ unsigned int max(unsigned int a, unsigned int b) {
 	return b;
 }
 void *entrypoint;
+void *phead_start;
+size_t phent, phnum; 
 
 void load_module(multiboot_module_t mod) {
 	Elf32_Ehdr * head = (void *)mod.mod_start;
 	entrypoint = (void *) head->e_entry;
 	printf ("elf entrypoint 0x%08x\n", head->e_entry);
-	printf ("%d program headers of size %d\n", head->e_phnum, head->e_phentsize);
+	phnum = head->e_phnum;
+	phent = head->e_phentsize;
+	Elf32_Phdr *phead = phead_start = (void *)mod.mod_start + head->e_phoff;
+
+	printf ("%d program headers of size %d at %08x\n", phnum, phent, phead_start);
 	
-	Elf32_Phdr *phead = (void *)mod.mod_start + head->e_phoff;
 	for (int i = 0; i < head->e_phnum; ++i) {
 		printf( "  %d: type 0x%x, offset %08x, virt %08x, filesize 0x%08x, memsize 0x%08x\n",
 			i, phead->p_type, phead->p_offset, phead->p_vaddr,
@@ -731,11 +737,41 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 	
 	if (entrypoint) {
 		printf ("jumping to %08x\n", entrypoint);
-		uint32_t new_top = max_addr & 0xFFFFFFFC;
+		void* new_top = (void*) (max_addr & 0xFFFFFFFC);
 		max_addr -= 1024 * 1024; // 1 MB stack should be good for now?
-		start_entrypoint(new_top, entrypoint, 1, "beam", 
-			"--", "-root", "../otp_src_R12B-5/", "-progname", "erl",
-			NULL, "BINDIR=/", NULL);
+
+		// set up elf headers
+		new_top -= sizeof(Elf32_Auxinfo);
+		((Elf32_Auxinfo *)new_top)->a_type = AT_NULL;
+
+		new_top -= sizeof(Elf32_Auxinfo);
+		((Elf32_Auxinfo *)new_top)->a_type = AT_PHNUM;
+		((Elf32_Auxinfo *)new_top)->a_un.a_val = phnum;
+
+		new_top -= sizeof(Elf32_Auxinfo);
+		((Elf32_Auxinfo *)new_top)->a_type = AT_PHENT;
+		((Elf32_Auxinfo *)new_top)->a_un.a_val = phent;
+
+		new_top -= sizeof(Elf32_Auxinfo);
+		((Elf32_Auxinfo *)new_top)->a_type = AT_PHDR;
+		((Elf32_Auxinfo *)new_top)->a_un.a_ptr = phead_start;
+
+		// set up environment
+		char * env[] = {"BINDIR=/", NULL };
+		size_t bytes = sizeof(env);
+		new_top -= bytes;
+		memcpy (new_top, env, bytes);
+		
+		// set up arguments
+		char *argv[] = {"beam",	"--", "-root", "../otp_src_R12B-5/",
+		                "-progname", "erl", NULL};
+		bytes = sizeof(argv);
+		new_top -= bytes;
+		memcpy (new_top, argv, bytes);
+		new_top -= sizeof(char *);
+		*(int *)new_top = (sizeof(argv) / sizeof (char*)) - 1;
+
+		start_entrypoint(new_top, entrypoint);
 	}
 	while (1) {
 		while (TIMER_COUNT) {

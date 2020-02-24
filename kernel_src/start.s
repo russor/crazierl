@@ -125,22 +125,6 @@
 		popl %ebx // new stack top
 		popl %ecx // entrypoint
 
-		popl %eax // argc
-		mov %eax, (%ebx)
-		subl $4, %ebx
-
-	argv:	popl %eax
-		mov %eax, (%ebx)
-		subl $4, %ebx
-		test %eax, %eax
-		jne argv
-
-	env:	popl %eax
-		mov %eax, (%ebx)
-		subl $4, %ebx
-		test %eax, %eax
-		jne env
-
 		mov %ebx, %esp
 		jmp *%ecx
 
