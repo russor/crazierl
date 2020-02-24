@@ -353,6 +353,18 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 			printf("fcntl (%d, %08x)\n", frame[0], frame[1]);
 			call = 0;
 			return 1;
+		case SYS_gettimeofday:
+			printf("gettimeofday (%08x, %08x)\n", frame[0], frame[1]);
+			if (frame[0]) {
+				((struct timeval *) frame[0])->tv_sec = unix_time();
+				((struct timeval *) frame[0])->tv_usec = 0;
+			}
+			if (frame[1]) {
+				((struct timezone *) frame[1])->tz_minuteswest = 0;
+				((struct timezone *) frame[1])->tz_dsttime = 0;
+			}
+			call = 0;
+			return 1;
 		case SYS_getrlimit: {
 			struct rlimit *rlp = (struct rlimit *) frame[1];
 			switch (frame[0]) {
