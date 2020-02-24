@@ -81,7 +81,7 @@ struct IDTRecord {
    uint32_t offset;
 } __attribute((packed));
 
-struct IDTDescr IDT[256]; // need enough to handle General Protection Fault
+struct IDTDescr IDT[256];
 struct IDTRecord IDTR;
 
 volatile uint32_t TIMER_COUNT = 0;
@@ -324,6 +324,14 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 				call = EBADF;
 				return 0;
 			}
+		case SYS_open:
+			printf ("open (%s, %d)\n", frame[0], frame[1]);
+			call = ENOENT;
+			return 0;
+		case SYS_access:
+			printf ("access (%s, %d)\n", frame[0], frame[1]);
+			call = ENOENT;
+			return 0;
 		case SYS_ioctl:
 			printf("ioctl (%d, %08x, ...)\n", frame[0], frame[1]);
 			switch (frame[1]) {
@@ -419,6 +427,22 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 				uint32_t *buffer = (uint32_t *)frame[0];
 				switch (buffer[0]) {
 					case CTL_KERN: switch(buffer[1]) {
+						case KERN_OSTYPE:
+							strlcpy((char *)frame[2], "FreeBSD", frame[3]);
+							call = 0;
+							return 1;
+						case KERN_OSRELEASE:
+							strlcpy((char *)frame[2], "12.1-RELEASE-p1", frame[3]);
+							call = 0;
+							return 1;
+						case KERN_VERSION:
+							strlcpy((char *)frame[2], "FreeBSD 12.1-RELEASE-p1 GENERIC", frame[3]);
+							call = 0;
+							return 1;
+						case KERN_HOSTNAME:
+							strlcpy((char *)frame[2], "node0.crazierl.org", frame[3]);
+							call = 0;
+							return 1;
 						case KERN_ARND:
 							{
 								uint8_t *r = (uint8_t *)frame[2];
@@ -445,6 +469,10 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 							return 1;
 						}
 					case CTL_HW: switch (buffer[1]) {
+						case HW_MACHINE:
+							strlcpy((char *)frame[2], "i386", frame[3]);
+							call = 0;
+							return 1;
 						case HW_NCPU:
 							printf("hw.ncpu\n");
 							*(uint32_t *)frame[2] = 1;
@@ -477,7 +505,6 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 			}
 			call = ENOENT;
 			return 0;
-			break;
 		case SYS_clock_gettime:
 			printf("clock_gettime(%d, %08x)\n", frame[0], frame[1]);
 			((struct timespec *) frame[1])->tv_sec = unix_time();
@@ -486,6 +513,10 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 			return 1;
 		case SYS_issetugid:
 			printf("issetugid()\n");
+			call = 0;
+			return 1;
+		case SYS___getcwd:
+			strlcpy((char *)frame[0], "/", frame[1]);
 			call = 0;
 			return 1;
 		case SYS_sigprocmask:
@@ -506,7 +537,6 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 			break;
 			call = 0;
 			return 1;
-			
 		case SYS_mmap:
 			// round up to 4k page
 			if (free_addr & 0x0FFF) {
@@ -527,6 +557,10 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 				free_addr += frame[1];
 				return 1;
 			}
+		case SYS_openat:
+			printf("openat (%d, %s, %d)\n", frame[0], frame[1], frame[2]);
+			call = ENOENT;
+			return 0;
 		case SYS_pipe2:
 			printf("pipe2 (%08x, %08x)\n", frame[0], frame[1]);
 			FDS[next_fd] = next_fd + 1;
@@ -545,6 +579,10 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 				return 1;
 			}
 			break;
+		case SYS_fstatat:
+			printf("fstatat (%d, %s)\n", frame[0], frame[1]);
+			call = ENOENT;
+			return 0;
 	}
 				
 	if (call < SYS_MAXSYSCALL) {
@@ -793,7 +831,7 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 		memcpy (new_top, env, bytes);
 		
 		// set up arguments
-		char *argv[] = {"beam",	"--", "-root", "../otp_src_R12B-5/",
+		char *argv[] = {"beam",	"--", "-root", "/root/",
 		                "-progname", "erl", NULL};
 		bytes = sizeof(argv);
 		new_top -= bytes;
