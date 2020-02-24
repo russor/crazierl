@@ -42,6 +42,7 @@ typedef uint32_t u_int32_t;
 #include <sys/ioctl.h>
 #include <term.h>
 #include <sys/resource.h>
+#include <machine/sysarch.h>
 
 uint8_t WANT_NMI = 0;
  
@@ -55,6 +56,17 @@ const int VGA_ROWS = 25;
 int term_col = 0;
 int term_row = 0;
 uint8_t term_color = 0x0F; // Black background, White foreground
+
+struct GDTDescr {
+   uint16_t limit_1;
+   uint16_t base_1;
+   uint8_t base_2;
+   uint8_t access;
+   uint8_t limit_2;
+   uint8_t base_3;
+} __attribute((packed));
+
+extern struct GDTDescr gs_base;
 
 struct IDTDescr {
    uint16_t offset_1; // offset bits 0..15
@@ -366,6 +378,24 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 			}
 			call = 0;
 			return 1;
+		case SYS_sysarch: {
+			switch (frame[0]) {
+				case I386_SET_GSBASE: {
+					uint32_t base = *((uint32_t *) frame[1]);
+					gs_base.base_1 = base & 0xFFFF;
+					base >>= 16;
+					gs_base.base_2 = base & 0xFF;
+					base >>= 8;
+					gs_base.base_3 = base & 0xFF;
+					base = 0x18;
+					asm volatile ( "movw %0, %%gs" :: "rm" (base));
+					call = 0;
+					return 1;
+				}
+				
+				
+				}
+			}
 		case SYS_getrlimit: {
 			struct rlimit *rlp = (struct rlimit *) frame[1];
 			switch (frame[0]) {

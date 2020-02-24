@@ -9,6 +9,7 @@
 .global handle_int_80
 .global start_entrypoint
 .global unknown_int
+.global gs_base
  
 // Our bootloader, GRUB, needs to know some basic information about our kernel before it can boot it.
 // We give GRUB this information using a standard known as 'Multiboot'.
@@ -39,6 +40,12 @@
 	          .byte 0xCF    // 4K blocks, 32-bit selector, 2x reserved; limit 16:19
 	          .byte 0       // base 24:31
 	data_gdt: .short 0xFFFF // limit 0:15
+	          .short 0      // base 0:15
+	          .byte 0       // base 16:23
+	          .byte 0x92    // Present, Ring 0, Normal, Data, Grows up, Writable, Not accessed
+	          .byte 0xCF    // 4K blocks, 32-bit selector, 2x reserved; limit 16:19
+	          .byte 0       // base 24:31
+	gs_base:  .short 0xFFFF // limit 0:15
 	          .short 0      // base 0:15
 	          .byte 0       // base 16:23
 	          .byte 0x92    // Present, Ring 0, Normal, Data, Grows up, Writable, Not accessed
