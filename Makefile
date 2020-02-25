@@ -14,8 +14,8 @@ clean:
 	rm -f mykernel.elf start.o kernel.o
 
 # use wrong target for linking, so clang does the linking instead of calling into gcc
-mykernel.elf: start.o kernel.o printf.o linker.ld syscalls.o
-	clang -g -fuse-ld=bfd --target=i386-freebsd-elf -static -ffreestanding -nostdlib -g -T linker.ld start.o kernel.o printf.o syscalls.o -o mykernel.elf -gdwarf-2 -lc
+mykernel.elf: start.o kernel.o printf.o linker.ld syscalls.o files.o
+	clang -g -fuse-ld=bfd --target=i386-freebsd-elf -static -ffreestanding -nostdlib -g -T linker.ld start.o kernel.o printf.o syscalls.o files.o fs_obj/*.o -o mykernel.elf -gdwarf-2 -lc
 
 start.o: start.s
 	clang -m32 -g -gdwarf-2 -c start.s -o start.o
@@ -31,3 +31,9 @@ printf.o: ../libc/printf/printf.c
 
 debugnative:
 	BINDIR=`pwd`/../otp_src_R12B-5/bin/ gdb ../otp_src_R12B-5/bin/i386-none-elf/beam.static -ex 'break _start' -ex 'run -- -root `pwd`/../otp_src_R12B-5 -progname erl -- -home /home/toast'
+
+files.c: hardcode_files.pl hardcoded_files
+	./hardcode_files.pl
+
+files.o:
+	clang -m32 -mno-sse -g -c files.c -o files.o -gdwarf-2

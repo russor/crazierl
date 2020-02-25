@@ -44,6 +44,8 @@ typedef uint32_t u_int32_t;
 #include <sys/resource.h>
 #include <machine/sysarch.h>
 
+#include "files.h"
+
 uint8_t WANT_NMI = 0;
  
 // This is the x86's VGA textmode buffer. To display text, we write data to this memory location
@@ -559,6 +561,13 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 			}
 		case SYS_openat:
 			printf("openat (%d, %s, %d)\n", frame[0], frame[1], frame[2]);
+			struct hardcoded_file * file;
+			file = find_file((char *)frame[1]);
+			if (file != NULL) {
+				printf("halting\n");
+				while (1) { }
+			}
+			
 			call = ENOENT;
 			return 0;
 		case SYS_pipe2:
@@ -758,6 +767,7 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 	interrupt_setup();
 
 	setup_fds();
+	init_files();
 
 	get_time(last_time);
 	print_time(last_time);
@@ -831,7 +841,7 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 		memcpy (new_top, env, bytes);
 		
 		// set up arguments
-		char *argv[] = {"beam",	"--", "-root", "/root/",
+		char *argv[] = {"beam",	"--", "-root", "",
 		                "-progname", "erl", NULL};
 		bytes = sizeof(argv);
 		new_top -= bytes;
