@@ -12,8 +12,22 @@ extern void start_entrypoint();
 char **environ = {NULL};
 char *__progname = "crazierlkernel";
 
-int16_t FDS[1024];
-uint16_t next_fd;
+#define BOGFD_CLOSED 0
+#define BOGFD_TERMIN 1
+#define BOGFD_TERMOUT 2
+#define BOGFD_PIPE 3
+#define BOGFD_FILE 4
+
+
+struct BogusFD {
+	int type;
+	void* data;
+	void* offset;
+};
+
+#define BOGFD_MAX 1024
+struct BogusFD FDS[BOGFD_MAX];
+size_t next_fd;
 
 
 #define PORT 0x3f8   /* COM1 */
@@ -109,6 +123,16 @@ static inline uint8_t inb(uint16_t port)
 	               : "=a"(ret)
 	               : "Nd"(port) );
 	return ret;
+}
+
+unsigned int min(unsigned int a, unsigned int b) {
+	if (a < b) { return a; }
+	return b;
+}
+
+unsigned int max(unsigned int a, unsigned int b) {
+	if (a > b) { return a; }
+	return b;
 }
  
 // This function initiates the terminal by clearing it
@@ -310,8 +334,20 @@ void handle_timer(struct interrupt_frame *frame)
 uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 {	
 	switch(call) {
+		case SYS_read:
+			printf("read (%d, %08x, %d)\n", frame[0], frame[1], frame[2]);
+			if (frame[0] < BOGFD_MAX && FDS[frame[0]].type == BOGFD_FILE) {
+				struct BogusFD *fd = &FDS[frame[0]];
+				struct hardcoded_file * file = (struct hardcoded_file *)fd->data;
+				call = min(frame[2], file->end - fd->offset);
+				memcpy((void *)frame[1], fd->offset, call);
+				fd->offset += call;
+				return 1;
+			}
+			call = EBADF;
+			return 0;
 		case SYS_write:
-			if (frame[0] == 1 || frame[0] == 2) { // stdout/stderr
+			if (frame[0] < BOGFD_MAX && FDS[frame[0]].type == BOGFD_TERMOUT) {
 				uint8_t *buffer = (uint8_t *)frame[1];
 				call = frame[2];
 				size_t nbyte = call;
@@ -330,6 +366,16 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 			printf ("open (%s, %d)\n", frame[0], frame[1]);
 			call = ENOENT;
 			return 0;
+		case SYS_close:
+			if (FDS[frame[0]].type != BOGFD_CLOSED) { 
+				printf("close (%d)\n", frame[0]);
+			}
+			FDS[frame[0]].type = BOGFD_CLOSED;
+			if (frame[0] + 1 == next_fd) {
+				--next_fd;
+			}
+			call = 0;
+			return 1;
 		case SYS_access:
 			printf ("access (%s, %d)\n", frame[0], frame[1]);
 			call = ENOENT;
@@ -414,8 +460,8 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 					rlp->rlim_max = 1024 * 1024;
 					break;
 				case RLIMIT_NOFILE:
-					rlp->rlim_cur = sizeof(FDS);
-					rlp->rlim_max = sizeof(FDS);
+					rlp->rlim_cur = BOGFD_MAX;
+					rlp->rlim_max = BOGFD_MAX;
 					break;
 				default:
 					rlp->rlim_cur = RLIM_INFINITY;
@@ -559,21 +605,27 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 				free_addr += frame[1];
 				return 1;
 			}
-		case SYS_openat:
+		case SYS_openat: {
 			printf("openat (%d, %s, %d)\n", frame[0], frame[1], frame[2]);
 			struct hardcoded_file * file;
 			file = find_file((char *)frame[1]);
 			if (file != NULL) {
-				printf("halting\n");
-				while (1) { }
+				FDS[next_fd].type = BOGFD_FILE;
+				FDS[next_fd].data = file;
+				FDS[next_fd].offset = file->start;
+				call = next_fd;
+				++next_fd;
+				return 1;
 			}
-			
 			call = ENOENT;
 			return 0;
+			}
 		case SYS_pipe2:
 			printf("pipe2 (%08x, %08x)\n", frame[0], frame[1]);
-			FDS[next_fd] = next_fd + 1;
-			FDS[next_fd + 1] = next_fd;
+			FDS[next_fd].type = BOGFD_PIPE;
+			FDS[next_fd + 1].type = BOGFD_PIPE;
+			FDS[next_fd].data = &(FDS[next_fd + 1]);
+			FDS[next_fd + 1].data = &(FDS[next_fd]);
 			*((int *)frame[0]) = next_fd;
 			*(((int *)frame[0]) + 1) = next_fd + 1;
 			next_fd += 2;
@@ -583,15 +635,28 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 			printf("fstat (%d)\n", frame[0]);
 			if (frame[0] == 1) {
 				struct stat* s = (struct stat*)frame[1];
-				s->st_mode = 8592;
+				s->st_mode = S_IWUSR | S_IRUSR | S_IFCHR;
 				call = 0;
 				return 1;
 			}
 			break;
-		case SYS_fstatat:
-			printf("fstatat (%d, %s)\n", frame[0], frame[1]);
+		case SYS_fstatat: {
+			printf("fstatat (%d, %s, %d)\n", frame[0], frame[1], frame[2]);
+			struct hardcoded_file * file;
+			file = find_file((char *)frame[1]);
+			if (file != NULL) {
+				struct stat* s = (struct stat *)frame[2];
+				s->st_dev = BOGFD_FILE;
+				s->st_ino = (ino_t) file;
+				s->st_nlink = 1;
+				s->st_size = file->size;
+				s->st_mode = S_IRUSR | S_IFREG;
+				call = 0;
+				return 1;
+			}
 			call = ENOENT;
 			return 0;
+			}
 	}
 				
 	if (call < SYS_MAXSYSCALL) {
@@ -684,15 +749,6 @@ void interrupt_setup()
 	asm volatile ( "sti" :: );
 }
 
-unsigned int min(unsigned int a, unsigned int b) {
-	if (a < b) { return a; }
-	return b;
-}
-
-unsigned int max(unsigned int a, unsigned int b) {
-	if (a > b) { return a; }
-	return b;
-}
 void *entrypoint;
 void *phead_start;
 size_t phent, phnum; 
@@ -744,12 +800,12 @@ void enable_sse() {
 
 void setup_fds() 
 {
-	FDS[0] = 0;
-	FDS[1] = 1;
-	FDS[2] = 2;
+	FDS[0].type = BOGFD_TERMIN;
+	FDS[1].type = BOGFD_TERMOUT;
+	FDS[2].type = BOGFD_TERMOUT;
 	next_fd = 3;
-	for (int i = 0; i < sizeof(FDS); ++i) {
-		FDS[i] = -1;
+	for (int i = next_fd; i < BOGFD_MAX; ++i) {
+		FDS[i].type = BOGFD_CLOSED;
 	}
 }
 

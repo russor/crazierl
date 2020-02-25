@@ -33,10 +33,10 @@ my @TOKENS;
 foreach my $f (@FILES) {
 	my $token = $f;
 	$token =~ s@[\./]@_@g;
+	$f =~ s@^/@@g;
 	push @TOKENS, $token;
-	print $out "extern uint32_t _binary_${token}_start;\n";
-	print $out "extern uint32_t _binary_${token}_end;\n";
-	print $out "extern uint32_t _binary_${token}_size;\n";
+	print $out "extern void _binary_${token}_start;\n";
+	print $out "extern void _binary_${token}_end;\n";
 }
 
 print $out "struct hardcoded_file hardcoded_files[" . scalar(@FILES) ."];\n";
@@ -49,7 +49,7 @@ for (my $i = 0; $i < @FILES; ++$i) {
 	hardcoded_files[$i].name = \"/${f}\";
 	hardcoded_files[$i].start = &_binary_${token}_start;
 	hardcoded_files[$i].end = &_binary_${token}_end;
-	hardcoded_files[$i].size = &_binary_${token}_size;
+	hardcoded_files[$i].size = hardcoded_files[$i].end - hardcoded_files[$i].start;
 EOS
 }
 print $out <<'EOS';

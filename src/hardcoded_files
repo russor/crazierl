@@ -24,3 +24,4 @@ lib/kernel/ebin/inet_udp.beam
 lib/kernel/ebin/inet.beam
 lib/kernel/ebin/inet_parse.beam
 lib/kernel/ebin/inet_gethost_native.beam
+/dev/null
