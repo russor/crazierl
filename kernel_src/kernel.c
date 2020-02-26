@@ -891,7 +891,7 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 		((Elf32_Auxinfo *)new_top)->a_un.a_ptr = phead_start;
 
 		// set up environment
-		char * env[] = {"BINDIR=/", NULL };
+		char * env[] = {"BINDIR=/", "ERL_INETRC=/cfg/inetrc", NULL };
 		size_t bytes = sizeof(env);
 		new_top -= bytes;
 		memcpy (new_top, env, bytes);

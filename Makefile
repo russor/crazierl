@@ -32,7 +32,7 @@ printf.o: ../libc/printf/printf.c
 debugnative:
 	BINDIR=`pwd`/../otp_src_R12B-5/bin/ gdb ../otp_src_R12B-5/bin/i386-none-elf/beam.static -ex 'break _start' -ex 'run -- -root `pwd`/../otp_src_R12B-5 -progname erl -- -home /home/toast'
 
-files.c: hardcode_files.pl hardcoded_files
+files.c: hardcode_files.pl preload_local_files preload_otp_files
 	./hardcode_files.pl
 
 files.o:

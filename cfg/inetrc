@@ -1,0 +1,3 @@
+%{resolv_conf, ""}.
+%{hosts_file, ""}.
+{lookup, [file, dns]}.
