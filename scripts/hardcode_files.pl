@@ -43,6 +43,7 @@ print $out <<'EOS';
 #include <string.h>
 
 EOS
+@FILES = sort (@FILES);
 my @TOKENS;
 foreach my $f (@FILES) {
 	my $token = $f;
@@ -70,9 +71,27 @@ print $out <<'EOS';
 };
 
 struct hardcoded_file * find_file(const char * name) {
-	for (int i = 0; i < sizeof(hardcoded_files); ++i) {
-		if (strcmp(name, hardcoded_files[i].name) == 0) {
+	for (int i = 0; i < sizeof(hardcoded_files) / sizeof(*hardcoded_files); ++i) {
+		int cmp = strcmp(name, hardcoded_files[i].name);
+		if (cmp == 0) {
 			return &(hardcoded_files[i]);
+		} else if (cmp < 0) {
+			return NULL;
+		}
+	} 
+	return NULL;
+}
+
+struct hardcoded_file * find_dir(const char * name) {
+	size_t len = strlen(name);
+	for (int i = 0; i < sizeof(hardcoded_files) / sizeof(*hardcoded_files); ++i) {
+		int cmp = strncmp(name, hardcoded_files[i].name, len);
+		if (cmp == 0) {
+			if (hardcoded_files[i].name[len] == '/') {
+				return &(hardcoded_files[i]);
+			}
+		} else if (cmp < 0) {
+			return NULL;
 		}
 	} 
 	return NULL;

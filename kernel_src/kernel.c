@@ -17,6 +17,7 @@ char *__progname = "crazierlkernel";
 #define BOGFD_TERMOUT 2
 #define BOGFD_PIPE 3
 #define BOGFD_FILE 4
+#define BOGFD_DIR 5
 
 
 struct BogusFD {
@@ -57,6 +58,9 @@ typedef uint32_t u_int32_t;
 #include <term.h>
 #include <sys/resource.h>
 #include <machine/sysarch.h>
+#include <fcntl.h>
+#include <sys/param.h>
+#include <sys/mount.h>
 
 #include "files.h"
 
@@ -363,10 +367,34 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 				call = EBADF;
 				return 0;
 			}
-		case SYS_open:
-			printf ("open (%s, %d)\n", frame[0], frame[1]);
+		case SYS_openat:
+			printf("openat (%d, %s, %d)\n", frame[0], frame[1], frame[2]);
+			frame += 1;
+		case SYS_open: {
+			printf ("open (%s, %08x)\n", frame[0], frame[1]);
+			int type;
+			struct hardcoded_file * file;
+			void * offset;
+			if (frame[1] & O_DIRECTORY) {
+				type = BOGFD_DIR;
+				file = find_dir((char *)frame[0]);
+				offset = strlen(frame[0]);
+			} else {
+				type = BOGFD_FILE;
+				file = find_file((char *)frame[0]);
+				offset = file->start;
+			}
+			if (file != NULL) {
+				FDS[next_fd].type = type;
+				FDS[next_fd].data = file;
+				FDS[next_fd].offset = offset;
+				call = next_fd;
+				++next_fd;
+				return 1;
+			}
 			call = ENOENT;
 			return 0;
+			}
 		case SYS_close:
 			if (FDS[frame[0]].type != BOGFD_CLOSED) { 
 				printf("close (%d)\n", frame[0]);
@@ -625,21 +653,6 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 				free_addr += frame[1];
 				return 1;
 			}
-		case SYS_openat: {
-			printf("openat (%d, %s, %d)\n", frame[0], frame[1], frame[2]);
-			struct hardcoded_file * file;
-			file = find_file((char *)frame[1]);
-			if (file != NULL) {
-				FDS[next_fd].type = BOGFD_FILE;
-				FDS[next_fd].data = file;
-				FDS[next_fd].offset = file->start;
-				call = next_fd;
-				++next_fd;
-				return 1;
-			}
-			call = ENOENT;
-			return 0;
-			}
 		case SYS_pipe2:
 			printf("pipe2 (%08x, %08x)\n", frame[0], frame[1]);
 			FDS[next_fd].type = BOGFD_PIPE;
@@ -675,6 +688,18 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 				return 1;
 			}
 			call = ENOENT;
+			return 0;
+			}
+		case SYS_fstatfs: {
+			if (frame[0] < BOGFD_MAX && FDS[frame[0]].type == BOGFD_DIR) {
+				struct statfs *buf = (struct statfs*) frame[1];
+				bzero(buf, sizeof(struct statfs));
+				buf->f_version = STATFS_VERSION;
+				strlcpy(buf->f_fstypename, "BogusFS", sizeof(buf->f_fstypename));
+				call = 0;
+				return 1;
+			}
+			call = EBADF;
 			return 0;
 			}
 	}

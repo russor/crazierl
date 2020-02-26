@@ -9,3 +9,4 @@ struct hardcoded_file {
 
 void init_files();
 struct hardcoded_file * find_file(const char *);
+struct hardcoded_file * find_dir(const char *);
