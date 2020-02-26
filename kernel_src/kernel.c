@@ -325,6 +325,7 @@ void handle_timer(struct interrupt_frame *frame)
 		printf("Got RTC interrupt IP: %08x at ", frame->ip);
 		print_time(last_time);
 	}
+	outb(0x20,0x20);
 	// clear RTC flag
 	//outb(0x70, 0x0C);	// select register C
 	//inb(0x71);		// just throw away contents
@@ -422,8 +423,12 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 			printf("fcntl (%d, %08x)\n", frame[0], frame[1]);
 			call = 0;
 			return 1;
+		case SYS_socket:
+			printf("socket(%d, %d, %d)\n", frame[0], frame[1], frame[2]);
+			call = EACCES;
+			return 0;
 		case SYS_gettimeofday:
-			printf("gettimeofday (%08x, %08x)\n", frame[0], frame[1]);
+			//printf("gettimeofday (%08x, %08x)\n", frame[0], frame[1]);
 			if (frame[0]) {
 				((struct timeval *) frame[0])->tv_sec = unix_time();
 				((struct timeval *) frame[0])->tv_usec = 0;
@@ -553,6 +558,21 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 			}
 			call = ENOENT;
 			return 0;
+		case SYS_poll: {
+			printf("poll (%08x, %d, %d)\n", frame[0], frame[1], frame[2]);
+			int wait = frame[2];
+			int lastsecond = last_time[1];
+			while (wait > 0) {
+				// enable interrupts, and wait for one; time keeping interrupts will move us forward
+				asm volatile ( "sti; hlt" :: );
+				if (last_time[1] != lastsecond) {
+					lastsecond = last_time[1];
+					wait -= 1000;
+				}
+			}
+			call = 0;
+			return 1;
+			}
 		case SYS_clock_gettime:
 			printf("clock_gettime(%d, %08x)\n", frame[0], frame[1]);
 			((struct timespec *) frame[1])->tv_sec = unix_time();
