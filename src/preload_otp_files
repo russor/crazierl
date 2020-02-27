@@ -56,3 +56,10 @@ lib/stdlib/ebin/orddict.beam
 lib/kernel/ebin/file_io_server.beam
 lib/stdlib/ebin/io.beam
 lib/stdlib/ebin/io_lib_format.beam
+lib/stdlib/ebin/erl_lint.beam
+lib/stdlib/ebin/lib.beam
+lib/stdlib/ebin/io_lib_pretty.beam
+lib/stdlib/ebin/ordsets.beam
+lib/stdlib/ebin/erl_internal.beam
+lib/stdlib/ebin/sets.beam
+lib/stdlib/ebin/otp_internal.beam

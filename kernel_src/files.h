@@ -2,8 +2,8 @@
 
 struct hardcoded_file {
 	char* name;
-	void* start;
-	void* end;
+	uint8_t* start;
+	uint8_t* end;
 	size_t size;
 };
 

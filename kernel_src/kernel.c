@@ -18,26 +18,12 @@ extern void start_entrypoint();
 char **environ = {NULL};
 char *__progname = "crazierlkernel";
 
-#define BOGFD_CLOSED 0
-#define BOGFD_TERMIN 1
-#define BOGFD_TERMOUT 2
-#define BOGFD_PIPE 3
-#define BOGFD_FILE 4
-#define BOGFD_DIR 5
 
 
-struct BogusFD {
-	int type;
-	void* data;
-	void* offset;
-};
+#define PORT_PIC1 0x20
+#define PORT_COM1 0x3f8   /* COM1 */
 
-#define BOGFD_MAX 1024
-struct BogusFD FDS[BOGFD_MAX];
-size_t next_fd;
-
-
-#define PORT 0x3f8   /* COM1 */
+#define PIC_INTERRUPT_ACK 0x20
 
 // First, let's do some basic checks to make sure we are using our x86-elf cross-compiler correctly
 #if defined(__linux__)
@@ -69,8 +55,35 @@ typedef uint32_t u_int32_t;
 #include <sys/mount.h>
 #include <sys/dirent.h>
 #include <sys/uio.h>
+#include <poll.h>
 
 #include "files.h"
+
+#define BOGFD_CLOSED 0
+#define BOGFD_TERMIN 1
+#define BOGFD_TERMOUT 2
+#define BOGFD_PIPE 3
+#define BOGFD_FILE 4
+#define BOGFD_DIR 5
+
+
+struct BogusFD {
+	int type;
+	union {
+		struct hardcoded_file * file;
+		struct BogusFD * pipe;
+		char * buffer;
+	};
+	union {
+		uint8_t * pos;
+		size_t namelen;
+		uint8_t status[4];
+	};
+};
+
+#define BOGFD_MAX 1024
+struct BogusFD FDS[BOGFD_MAX];
+size_t next_fd;
 
 uint8_t WANT_NMI = 0;
  
@@ -118,6 +131,9 @@ uint8_t last_time[9];
 
 uint32_t free_addr;
 uint32_t max_addr;
+
+char INPUTBUFFER[16]; // must be a power of 2!
+size_t INPUT_FD;
 
 static inline void outb(uint16_t port, uint8_t val)
 {
@@ -186,23 +202,24 @@ void term_init()
 	move_cursor();
 
 	// init com port
-	outb(PORT + 1, 0x00);    // Disable all interrupts
-	outb(PORT + 3, 0x80);    // Enable DLAB (set baud rate divisor)
-	outb(PORT + 0, 0x03);    // Set divisor to 3 (lo byte) 38400 baud
-	outb(PORT + 1, 0x00);    //                  (hi byte)
-	outb(PORT + 3, 0x03);    // 8 bits, no parity, one stop bit
-	outb(PORT + 2, 0xC7);    // Enable FIFO, clear them, with 14-byte threshold
-	outb(PORT + 4, 0x0B);    // IRQs enabled, RTS/DSR set
+	outb(PORT_COM1 + 1, 0x00);    // Disable all interrupts
+	outb(PORT_COM1 + 3, 0x80);    // Enable DLAB (set baud rate divisor)
+	outb(PORT_COM1 + 0, 0x03);    // Set divisor to 3 (lo byte) 38400 baud
+	outb(PORT_COM1 + 1, 0x00);    //                  (hi byte)
+	outb(PORT_COM1 + 3, 0x03);    // 8 bits, no parity, one stop bit
+	outb(PORT_COM1 + 2, 0xC7);    // Enable FIFO, clear them, with 14-byte threshold
+	outb(PORT_COM1 + 4, 0x0B);    // IRQs enabled, RTS/DSR set
+	outb(PORT_COM1 + 1, 0x01);
 }
 
 int is_transmit_empty() {
-   return inb(PORT + 5) & 0x20;
+   return inb(PORT_COM1 + 5) & 0x20;
 }
 
 void write_serial(char a) {
    while (is_transmit_empty() == 0);
  
-   outb(PORT,a);
+   outb(PORT_COM1,a);
 }
 
 // This function places a single character onto the screen
@@ -356,11 +373,39 @@ void handle_timer(struct interrupt_frame *frame)
 	if (memcmp(last_time, new_time, sizeof(last_time)) != 0) {
 		memcpy(last_time, new_time, sizeof(new_time));
 	}
-	outb(0x20,0x20);
+	outb(PORT_PIC1, PIC_INTERRUPT_ACK);
 	// clear RTC flag
 	//outb(0x70, 0x0C);	// select register C
 	//inb(0x71);		// just throw away contents
 	++TIMER_COUNT;
+}
+
+void read_com(struct BogusFD * fd, uint16_t port)
+{
+	fd->status[3] &= ~ 0x01; // clear data pending flag
+	while (inb(port + 5) & 1) {
+		if (((fd->status[0] + 1) & fd->status[2]) != fd->status[1]) {
+			uint8_t c = inb(port);
+			if (c == '\r') { c = '\n'; }
+			fd->buffer[fd->status[0]] = c;
+			++fd->status[0];
+			fd->status[0] &= fd->status[2];
+		} else {
+			ERROR_PRINTF("com 0x%x buffer full\n", port);
+			fd->status[3] |= 0x01;
+			return;
+		}
+	} 
+}
+
+__attribute__ ((interrupt))
+void handle_com1(struct interrupt_frame *frame)
+{
+	struct BogusFD *fd = &FDS[INPUT_FD];
+	if (fd->type == BOGFD_TERMIN) {
+		read_com(fd, PORT_COM1);
+	}
+	outb(PORT_PIC1, PIC_INTERRUPT_ACK);
 }
 
 uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
@@ -370,13 +415,37 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 			if (frame[0] < BOGFD_MAX && FDS[frame[0]].type == BOGFD_FILE) {
 				DEBUG_PRINTF("read (%d, %08x, %d)\n", frame[0], frame[1], frame[2]);
 				struct BogusFD *fd = &FDS[frame[0]];
-				struct hardcoded_file * file = (struct hardcoded_file *)fd->data;
-				call = min(frame[2], file->end - fd->offset);
-				memcpy((void *)frame[1], fd->offset, call);
-				fd->offset += call;
+				call = min(frame[2], fd->file->end - fd->pos);
+				memcpy((void *)frame[1], fd->pos, call);
+				fd->pos += call;
 				return 1;
+			} else if (frame[0] < BOGFD_MAX && FDS[frame[0]].type == BOGFD_TERMIN) {
+				struct BogusFD *fd = &FDS[frame[0]];
+				call = 0;
+				uint8_t * buffer = (uint8_t *)frame[1];
+				while (call < frame[2]) {
+					if (fd->status[0] == fd->status[1]) {
+						if (fd->status[3] & 0x01) {
+							ERROR_PRINTF("com 0x%x buffer empty\n", PORT_COM1);
+							read_com(fd, PORT_COM1);
+						} else {
+							break;
+						}
+					} else {
+						buffer[call] = fd->buffer[fd->status[1]];
+						++call;
+						++fd->status[1];
+						fd->status[1] &= fd->status[2];
+					}
+				}
+				if (call) {
+					return 1;
+				} else {
+					call = EAGAIN;
+					return 0;
+				}
 			}
-			ERROR_PRINTF("read (%d, %08x, %d)\n", frame[0], frame[1], frame[2]);
+			ERROR_PRINTF("read (%d, %08x, %d) = EBADF\n", frame[0], frame[1], frame[2]);
 			call = EBADF;
 			return 0;
 		case SYS_write:
@@ -425,27 +494,30 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 			frame += 1;
 		case SYS_open: {
 			DEBUG_PRINTF ("open (%s, %08x)\n", frame[0], frame[1]);
-			int type;
 			struct hardcoded_file * file;
-			void * offset;
 			if (frame[1] & O_DIRECTORY) {
-				type = BOGFD_DIR;
 				size_t len = strlen((char *)frame[0]);
 				file = find_dir((char *)frame[0], len, 0);
-				offset = (void *) len;
+				if (file) {
+					FDS[next_fd].type = BOGFD_DIR;
+					FDS[next_fd].file = file;
+					FDS[next_fd].namelen = len;
+					call = next_fd;
+					++next_fd;
+					return 1;
+				}
 			} else {
-				type = BOGFD_FILE;
 				file = find_file((char *)frame[0]);
-				offset = file->start;
+				if (file != NULL) {
+					FDS[next_fd].type = BOGFD_FILE;
+					FDS[next_fd].file = file;
+					FDS[next_fd].pos = file->start;
+					call = next_fd;
+					++next_fd;
+					return 1;
+				}
 			}
-			if (file != NULL) {
-				FDS[next_fd].type = type;
-				FDS[next_fd].data = file;
-				FDS[next_fd].offset = offset;
-				call = next_fd;
-				++next_fd;
-				return 1;
-			}
+			//ERROR_PRINTF ("open (%s, %08x) = ENOENT\n", frame[0], frame[1]);
 			call = ENOENT;
 			return 0;
 			}
@@ -466,22 +538,31 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 		case SYS_ioctl:
 			DEBUG_PRINTF("ioctl (%d, %08x, ...)\n", frame[0], frame[1]);
 			switch (frame[1]) {
-				case TIOCGETA:
-					if (frame[0] < BOGFD_MAX && (FDS[frame[0]].type == BOGFD_TERMIN || FDS[frame[0]].type == BOGFD_TERMOUT)) {
-						struct termios *t = (struct termios *)frame[2];
-						t->c_iflag = 11010;
-						t->c_oflag = 3;
-						t->c_cflag = 19200;
-						t->c_lflag = 1483;
-						//t->c_cc = "\004\377\377\177\027\025\022\b\003\034\032\031\021\023\026\017\001\000\024\377";
-						t->c_ispeed = 38400;
-						t->c_ospeed = 38400;
-						call = 0;
-						return 1;
-					} else {
-						ERROR_PRINTF("TIOCGETA\n");
+				case TIOCGETA: {
+					if (frame[0] >= BOGFD_MAX || (FDS[frame[0]].type != BOGFD_TERMIN && FDS[frame[0]].type != BOGFD_TERMOUT)) {
+						break;
 					}
-					break;
+					struct termios *t = (struct termios *)frame[2];
+					t->c_iflag = 11010;
+					t->c_oflag = 3;
+					t->c_cflag = 19200;
+					t->c_lflag = 1483;
+					//t->c_cc = "\004\377\377\177\027\025\022\b\003\034\032\031\021\023\026\017\001\000\024\377";
+					t->c_ispeed = 38400;
+					t->c_ospeed = 38400;
+					call = 0;
+					return 1;
+					}
+				case TIOCGWINSZ: {
+					if (frame[0] >= BOGFD_MAX || (FDS[frame[0]].type != BOGFD_TERMIN && FDS[frame[0]].type != BOGFD_TERMOUT)) {
+						break;
+					}
+					struct winsize *w = (struct winsize *)frame[2];
+					w->ws_row = 25;
+					w->ws_col = 80;
+					call = 0;
+					return 1;
+					}
 			}
 			ERROR_PRINTF("parm_len %d, cmd %d, group %c\n", IOCPARM_LEN(frame[1]), frame[1] & 0xff, IOCGROUP(frame[1]));
 			break;
@@ -641,9 +722,28 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 			return 0;
 		case SYS_poll: {
 			DEBUG_PRINTF("poll (%08x, %d, %d)\n", frame[0], frame[1], frame[2]);
+			struct pollfd *fds = (struct pollfd *)frame[0];
 			int wait = frame[2];
 			int lastsecond = last_time[1];
+			int printed = 0;
+			call = 0;
 			while (wait > 0) {
+				for (int i = 0; i < frame[1]; ++i) {
+					if (fds[i].fd >= BOGFD_MAX) { continue; } // no EBADF?
+					struct BogusFD *fd = &FDS[fds[i].fd];
+					if (fds[i].events & POLLIN && fd->type == BOGFD_TERMIN && fd->status[0] != fd->status[1]) {
+						fds[i].revents = POLLIN;
+						++call;
+					}
+				}
+				if (call) { return 1; }
+				if (!printed && wait > 60000) {
+					printed = 1;
+					DEBUG_PRINTF("waiting for %d fds, timeout %d\n", frame[1], frame[2]);
+					for (int i = 0; i < frame[1]; ++i) {
+						DEBUG_PRINTF("  FD %d: events %08x\n", fds[i].fd, fds[i].events);
+					}
+				}
 				// enable interrupts, and wait for one; time keeping interrupts will move us forward
 				asm volatile ( "sti; hlt" :: );
 				if (last_time[1] != lastsecond) {
@@ -709,8 +809,8 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 			DEBUG_PRINTF("pipe2 (%08x, %08x)\n", frame[0], frame[1]);
 			FDS[next_fd].type = BOGFD_PIPE;
 			FDS[next_fd + 1].type = BOGFD_PIPE;
-			FDS[next_fd].data = &(FDS[next_fd + 1]);
-			FDS[next_fd + 1].data = &(FDS[next_fd]);
+			FDS[next_fd].pipe = &(FDS[next_fd + 1]);
+			FDS[next_fd + 1].pipe = &(FDS[next_fd]);
 			*((int *)frame[0]) = next_fd;
 			*(((int *)frame[0]) + 1) = next_fd + 1;
 			next_fd += 2;
@@ -745,31 +845,31 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 		case SYS_getdirentries: {
 			if (frame[0] < BOGFD_MAX && FDS[frame[0]].type == BOGFD_DIR) {
 				struct BogusFD *fd = &FDS[frame[0]];
-				struct hardcoded_file *file = (struct hardcoded_file *)fd->data;
 				struct dirent *buf = (struct dirent*) frame[1];
 				if (frame[3]) {
-					*(off_t *)frame[3] = (off_t) file;
+					*(off_t *)frame[3] = (off_t) fd->file;
 				}
-				if (fd->data == NULL) {
+				if (fd->file == NULL) {
 					call = 0;
 					return 1;
 				}
 				bzero(buf, sizeof(*buf));
-				buf->d_fileno = (ino_t) file;
+				buf->d_fileno = (ino_t) fd->file;
 				buf->d_reclen = sizeof(*buf);
-				char * start = file->name + (uint32_t)fd->offset + 1;
+				char * start = fd->file->name + fd->namelen + 1;
 				char * nextslash = strchr(start, '/');
 				
 				if (nextslash != NULL) {
 					buf->d_type = DT_DIR;
 					buf->d_namlen = nextslash - start;
 					strlcpy(buf->d_name, start, buf->d_namlen + 1);
-					while (fd->data != NULL && strncmp(
-							((struct hardcoded_file *)fd->data)->name + (uint32_t)fd->offset + 1,
-							file->name + (uint32_t)fd->offset + 1,
+					struct hardcoded_file * file = fd->file;
+					while (fd->file != NULL && strncmp(
+							fd->file->name + fd->namelen + 1,
+							file->name + fd->namelen + 1,
 							buf->d_namlen + 1) == 0) {
-						file = (struct hardcoded_file *) fd->data;
-						fd->data = find_dir(file->name, (size_t)fd->offset, file + 1);
+						file = fd->file;
+						fd->file = find_dir(file->name, fd->namelen, file + 1);
 					}
 
 					
@@ -777,14 +877,15 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 					buf->d_type = DT_REG;
 					strlcpy(buf->d_name, start, sizeof(buf->d_name));
 					buf->d_namlen = strlen(buf->d_name);
-					fd->data = find_dir(file->name, (size_t)fd->offset, file + 1);
+					fd->file = find_dir(fd->file->name, fd->namelen, fd->file + 1);
 					
 				}
-				buf->d_off = (off_t) fd->data;
+				buf->d_off = (off_t) fd->file;
 				
 				call = buf->d_reclen;
 				return 1;
 			}
+			ERROR_PRINTF("getdirentries (%d)\n", frame[0]);
 			call = EBADF;
 			return 0;
 			}
@@ -797,6 +898,7 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 				call = 0;
 				return 1;
 			}
+			ERROR_PRINTF("fstatfs (%d)\n", frame[0]);
 			call = EBADF;
 			return 0;
 			}
@@ -837,52 +939,46 @@ void interrupt_setup()
 	// remap primary PIC so that the interrupts don't conflict with Intel exceptions
 	
 	uint8_t mask = inb(0x21); // read current mask from PIC
-	outb(0x20, 0x11); // request initialization
+	ERROR_PRINTF("interrupt mask was %x;", mask);
+	mask &= (~0x01); // enable irq 0 -> PIT timer
+	mask &= (~0x10); // enable irq 4 -> COM1
+	ERROR_PRINTF(" now %x\n", mask);
+
+	outb(PORT_PIC1, 0x11); // request initialization
 	outb(0x80, 0); // wait cycle
-	outb(0x21, 0x20); // offset interrupts by 0x20
+	outb(PORT_PIC1 + 1, 0x20); // offset interrupts by 0x20
 	outb(0x80, 0); // wait
-	outb(0x21, 0x4); // indicate slave PIC on IRQ 2
+	outb(PORT_PIC1 + 1, 0x4); // indicate slave PIC on IRQ 2
 	outb(0x80, 0); //wait
-	outb(0x21, 0x01); // set to 8086 mode
+	outb(PORT_PIC1 + 1, 0x01); // set to 8086 mode
 	outb(0x80, 0); //wait
-	outb(0x21, mask); // reset interrupt mask
+	outb(PORT_PIC1 + 1, mask); // reset interrupt mask
 
 	// ensure IDT entries are not present
 	for (int i = 0; i < (sizeof(IDT) / sizeof(IDT[0])); ++i) {
 		IDT[i].type_attr = 0;
-		if (i < 0x20) {
-			uint32_t handler = (uint32_t)(&unknown_int);
-			handler +=(i * 5);
-			IDT[i].offset_1 = handler & 0xFFFF;
-			IDT[i].selector = 0x08;
-			IDT[i].zero = 0;
-			IDT[i].type_attr = 0x8E;
-			IDT[i].offset_2 = handler >> 16;
-		}
+		uint32_t handler = (uint32_t)(&unknown_int);
+		handler +=(i * 5);
+		IDT[i].offset_1 = handler & 0xFFFF;
+		IDT[i].selector = 0x08;
+		IDT[i].zero = 0;
+		IDT[i].type_attr = 0x8E;
+		IDT[i].offset_2 = handler >> 16;
 	}
 
 	IDT[0x06].offset_1 = ((uint32_t) &handle_ud) & 0xFFFF;
-	IDT[0x06].selector = 0x08;
-	IDT[0x06].zero = 0;
-	IDT[0x06].type_attr = 0x8E;
 	IDT[0x06].offset_2 = ((uint32_t) &handle_ud) >> 16;
 
 	IDT[0x0D].offset_1 = ((uint32_t) &handle_gp) & 0xFFFF;
-	IDT[0x0D].selector = 0x08;
-	IDT[0x0D].zero = 0;
-	IDT[0x0D].type_attr = 0x8E;
 	IDT[0x0D].offset_2 = ((uint32_t) &handle_gp) >> 16;
 
 	IDT[0x20].offset_1 = ((uint32_t) &handle_timer) & 0xFFFF;
-	IDT[0x20].selector = 0x08;
-	IDT[0x20].zero = 0;
-	IDT[0x20].type_attr = 0x8E;
 	IDT[0x20].offset_2 = ((uint32_t) &handle_timer) >> 16;
 
+	IDT[0x24].offset_1 = ((uint32_t) &handle_com1) & 0xFFFF;
+	IDT[0x24].offset_2 = ((uint32_t) &handle_com1) >> 16;
+
 	IDT[0x80].offset_1 = ((uint32_t) &handle_int_80) & 0xFFFF;
-	IDT[0x80].selector = 0x08;
-	IDT[0x80].zero = 0;
-	IDT[0x80].type_attr = 0x8E;
 	IDT[0x80].offset_2 = ((uint32_t) &handle_int_80) >> 16;
 	
 	IDTR.size = sizeof(IDT) - 1;
@@ -944,6 +1040,12 @@ void enable_sse() {
 void setup_fds() 
 {
 	FDS[0].type = BOGFD_TERMIN;
+	FDS[0].buffer = INPUTBUFFER;
+	FDS[0].status[0] = 0;
+	FDS[0].status[1] = 0;
+	FDS[0].status[2] = sizeof(INPUTBUFFER) -1; // hope this is a power of two
+	
+	INPUT_FD = 0;
 	FDS[1].type = BOGFD_TERMOUT;
 	FDS[2].type = BOGFD_TERMOUT;
 	next_fd = 3;
@@ -1052,7 +1154,6 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 	}
 	while (1) {
 		while (TIMER_COUNT) {
-			outb(0x20,0x20);
 			term_print(".");
 			--TIMER_COUNT;
 		}
