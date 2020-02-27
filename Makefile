@@ -20,7 +20,7 @@ mykernel.elf: start.o kernel.o printf.o linker.ld syscalls.o files.o
 start.o: start.s
 	clang -m32 -g -gdwarf-2 -c start.s -o start.o
 
-kernel.o: kernel.c sysctl.h
+kernel.o: kernel.c files.h
 	clang -m32 -mrdrnd -mno-sse -g -ffreestanding kernel.c -c -o kernel.o -gdwarf-2 -I ../libc/printf
 
 syscalls.o: /usr/src/sys/kern/syscalls.c
@@ -35,5 +35,5 @@ debugnative:
 files.c: hardcode_files.pl preload_local_files preload_otp_files
 	./hardcode_files.pl
 
-files.o:
+files.o: files.c files.h
 	clang -m32 -mno-sse -g -c files.c -o files.o -gdwarf-2

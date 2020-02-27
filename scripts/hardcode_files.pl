@@ -82,13 +82,15 @@ struct hardcoded_file * find_file(const char * name) {
 	return NULL;
 }
 
-struct hardcoded_file * find_dir(const char * name) {
-	size_t len = strlen(name);
-	for (int i = 0; i < sizeof(hardcoded_files) / sizeof(*hardcoded_files); ++i) {
-		int cmp = strncmp(name, hardcoded_files[i].name, len);
+struct hardcoded_file * find_dir(const char * name, size_t len, struct hardcoded_file *i) {
+	if (i == NULL) {
+		i = &hardcoded_files[0];
+	}
+	for (; i <= &hardcoded_files[sizeof(hardcoded_files) / sizeof(*hardcoded_files) -1]; ++i) {
+		int cmp = strncmp(name, i->name, len);
 		if (cmp == 0) {
-			if (hardcoded_files[i].name[len] == '/') {
-				return &(hardcoded_files[i]);
+			if (i->name[len] == '/') {
+				return i;
 			}
 		} else if (cmp < 0) {
 			return NULL;

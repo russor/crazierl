@@ -61,6 +61,8 @@ typedef uint32_t u_int32_t;
 #include <fcntl.h>
 #include <sys/param.h>
 #include <sys/mount.h>
+#include <sys/dirent.h>
+#include <sys/uio.h>
 
 #include "files.h"
 
@@ -367,6 +369,29 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 				call = EBADF;
 				return 0;
 			}
+		case SYS_writev:
+			if (frame[0] < BOGFD_MAX && FDS[frame[0]].type == BOGFD_TERMOUT) {
+				struct iovec *iov = (struct iovec *)frame[1];
+				int iovcnt = frame[2];
+				call = 0;
+				while (iovcnt) {
+					uint8_t *buffer = (uint8_t *) iov->iov_base;
+					size_t nbyte = iov->iov_len;
+					call += nbyte;
+					while (nbyte) {
+						_putchar(*buffer);
+						++buffer;
+						--nbyte;
+					}
+					++iov;
+					--iovcnt;
+				}
+				return 1;
+			} else {
+				printf("write (%d, %08x, %d)\n", frame[0], frame[1], frame[2]);
+				call = EBADF;
+				return 0;
+			}
 		case SYS_openat:
 			printf("openat (%d, %s, %d)\n", frame[0], frame[1], frame[2]);
 			frame += 1;
@@ -377,8 +402,9 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 			void * offset;
 			if (frame[1] & O_DIRECTORY) {
 				type = BOGFD_DIR;
-				file = find_dir((char *)frame[0]);
-				offset = strlen(frame[0]);
+				size_t len = strlen((char *)frame[0]);
+				file = find_dir((char *)frame[0], len, 0);
+				offset = (void *) len;
 			} else {
 				type = BOGFD_FILE;
 				file = find_file((char *)frame[0]);
@@ -413,7 +439,7 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 			printf("ioctl (%d, %08x, ...)\n", frame[0], frame[1]);
 			switch (frame[1]) {
 				case TIOCGETA:
-					if (frame[0] == 0) {
+					if (frame[0] < BOGFD_MAX && (FDS[frame[0]].type == BOGFD_TERMIN || FDS[frame[0]].type == BOGFD_TERMOUT)) {
 						struct termios *t = (struct termios *)frame[2];
 						t->c_iflag = 11010;
 						t->c_oflag = 3;
@@ -688,6 +714,52 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 				return 1;
 			}
 			call = ENOENT;
+			return 0;
+			}
+		case SYS_getdirentries: {
+			if (frame[0] < BOGFD_MAX && FDS[frame[0]].type == BOGFD_DIR) {
+				struct BogusFD *fd = &FDS[frame[0]];
+				struct hardcoded_file *file = (struct hardcoded_file *)fd->data;
+				struct dirent *buf = (struct dirent*) frame[1];
+				if (frame[3]) {
+					*(off_t *)frame[3] = (off_t) file;
+				}
+				if (fd->data == NULL) {
+					call = 0;
+					return 1;
+				}
+				bzero(buf, sizeof(*buf));
+				buf->d_fileno = (ino_t) file;
+				buf->d_reclen = sizeof(*buf);
+				char * start = file->name + (uint32_t)fd->offset + 1;
+				char * nextslash = strchr(start, '/');
+				
+				if (nextslash != NULL) {
+					buf->d_type = DT_DIR;
+					buf->d_namlen = nextslash - start;
+					strlcpy(buf->d_name, start, buf->d_namlen + 1);
+					while (fd->data != NULL && strncmp(
+							((struct hardcoded_file *)fd->data)->name + (uint32_t)fd->offset + 1,
+							file->name + (uint32_t)fd->offset + 1,
+							buf->d_namlen + 1) == 0) {
+						file = (struct hardcoded_file *) fd->data;
+						fd->data = find_dir(file->name, (size_t)fd->offset, file + 1);
+					}
+
+					
+				} else {
+					buf->d_type = DT_REG;
+					strlcpy(buf->d_name, start, sizeof(buf->d_name));
+					buf->d_namlen = strlen(buf->d_name);
+					fd->data = find_dir(file->name, (size_t)fd->offset, file + 1);
+					
+				}
+				buf->d_off = (off_t) fd->data;
+				
+				call = buf->d_reclen;
+				return 1;
+			}
+			call = EBADF;
 			return 0;
 			}
 		case SYS_fstatfs: {
