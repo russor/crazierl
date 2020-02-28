@@ -939,10 +939,8 @@ void interrupt_setup()
 	// remap primary PIC so that the interrupts don't conflict with Intel exceptions
 	
 	uint8_t mask = inb(0x21); // read current mask from PIC
-	ERROR_PRINTF("interrupt mask was %x;", mask);
 	mask &= (~0x01); // enable irq 0 -> PIT timer
 	mask &= (~0x10); // enable irq 4 -> COM1
-	ERROR_PRINTF(" now %x\n", mask);
 
 	outb(PORT_PIC1, 0x11); // request initialization
 	outb(0x80, 0); // wait cycle
@@ -1007,12 +1005,21 @@ void load_module(multiboot_module_t mod) {
 			i, phead->p_type, phead->p_offset, phead->p_vaddr,
 			phead->p_filesz, phead->p_memsz);
 		if (phead->p_type == PT_LOAD) {
-			unsigned int count = min(phead->p_filesz, phead->p_memsz);
+			if (phead->p_filesz > phead->p_memsz) {
+				ERROR_PRINTF("elf header %d has p_filesz > p_memsz; halting\n", i);
+				while (1) { }
+			}
 			uint8_t *src = (void*) mod.mod_start + phead->p_offset;
 			uint8_t *dst = (void*) phead->p_vaddr;
-			DEBUG_PRINTF("copying %d bytes from %08x to %08x\n", count, src, dst);
-			memcpy(dst, src, count);
-			uint32_t next_addr = max(phead->p_filesz, phead->p_memsz) + phead->p_vaddr;
+			ERROR_PRINTF("copying %d bytes from %08x to %08x\n", phead->p_filesz, src, dst);
+			memcpy(dst, src, phead->p_filesz);
+			unsigned int count = phead->p_memsz - phead->p_filesz;
+			if (count) {
+				dst += phead->p_filesz;
+				ERROR_PRINTF("zeroing %d bytes from %08x\n", count, dst);
+				explicit_bzero(dst, count);
+			}
+			uint32_t next_addr = phead->p_memsz + phead->p_vaddr;
 			if (next_addr > free_addr && next_addr < max_addr) {
 				DEBUG_PRINTF("moving free address from %08x to %08x\n", free_addr, next_addr);
 				free_addr = next_addr;
