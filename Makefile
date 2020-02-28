@@ -1,11 +1,12 @@
+BEAM=../otp_src_R12B-5/bin/i386-none-elf/beam.static
 run: mykernel.elf
-	qemu-system-i386 -s -m 256 -serial mon:stdio -kernel mykernel.elf -initrd ../otp_src_R12B-5/bin/i386-none-elf/beam.static
+	qemu-system-i386 -s -m 256 -serial mon:stdio -kernel mykernel.elf -initrd $(BEAM)
 
 debug: mykernel.elf
-	qemu-system-i386 -S -s  -m 256 -serial mon:stdio -kernel mykernel.elf -initrd ../otp_src_R12B-5/bin/i386-none-elf/beam.static
+	qemu-system-i386 -S -s  -m 256 -serial mon:stdio -kernel mykernel.elf -initrd $(BEAM)
 
 debugger:
-	gdb -ex "set confirm off" -ex "add-symbol-file mykernel.elf" -ex "add-symbol-file ../otp_src_R12B-5/bin/i386-none-elf/beam.static" -ex "set confirm on" -ex "target remote localhost:1234"
+	gdb -ex "set confirm off" -ex "add-symbol-file mykernel.elf" -ex "add-symbol-file $(BEAM)" -ex "set confirm on" -ex "target remote localhost:1234"
 
 run2: mykernel.elf
 	qemu-system-i386 -m 256 -serial mon:stdio -kernel mykernel.elf
@@ -30,7 +31,7 @@ printf.o: ../libc/printf/printf.c
 	clang -m32 -mno-sse -g -c ../libc/printf/printf.c -o printf.o -gdwarf-2
 
 debugnative:
-	BINDIR=`pwd`/../otp_src_R12B-5/bin/ gdb ../otp_src_R12B-5/bin/i386-none-elf/beam.static -ex 'break _start' -ex 'run -- -root `pwd`/../otp_src_R12B-5 -progname erl -- -home /home/toast'
+	BINDIR=`pwd`/../otp_src_R12B-5/bin/ gdb $(BEAM) -ex 'break _start' -ex 'run -- -root `pwd`/../otp_src_R12B-5 -progname erl -- -home /home/toast'
 
 files.c: hardcode_files.pl preload_local_files preload_otp_files
 	./hardcode_files.pl
