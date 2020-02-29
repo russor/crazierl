@@ -1,4 +1,4 @@
 *.o
 *.elf
 *~
-files.c
+initrd

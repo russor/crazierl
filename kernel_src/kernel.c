@@ -1064,6 +1064,7 @@ void load_file(struct hardcoded_file * file) {
 	phent = head->e_phentsize;
 	Elf32_Phdr *phead = phead_start = (void *)file->start + head->e_phoff;
 
+	DEBUG_PRINTF ("program binary size %d (0x%08x - 0x%08x)\n", file->size, file->start, file->end);
 	DEBUG_PRINTF ("%d program headers of size %d at %08x\n", phnum, phent, phead_start);
 
 	size_t lastoffset = 0;
@@ -1174,7 +1175,6 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 	interrupt_setup();
 
 	setup_fds();
-	init_files();
 
 	get_time(last_time);
 	print_time(last_time);
@@ -1213,6 +1213,13 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 	DEBUG_PRINTF("modules: %d @ %08x\n", mb->mods_count, mb->mods_addr);
 
 	DEBUG_PRINTF("command line: %s\n", mb->cmdline);
+
+	multiboot_module_t *mods = (void *)mb->mods_addr;
+	for (int mod = 0; mod < mb->mods_count; ++mod) {
+		DEBUG_PRINTF("Module %d (%s):\n 0x%08x-0x%08x\n", mod, mods[mod].cmdline, mods[mod].mod_start, mods[mod].mod_end);
+		init_files(&mods[mod], &max_addr);
+		free_addr = mods[mod].mod_start;
+	}
 	
 	char * filestart = strchrnul((char *)mb->cmdline, ' ');
 	while (*filestart == ' ') { ++filestart; }

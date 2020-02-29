@@ -1,3 +1,4 @@
+#include "/usr/src/stand/i386/libi386/multiboot.h"
 #include <sys/types.h>
 
 struct hardcoded_file {
@@ -7,6 +8,6 @@ struct hardcoded_file {
 	size_t size;
 };
 
-void init_files();
+void init_files(multiboot_module_t *, uintptr_t *);
 struct hardcoded_file * find_file(const char *);
 struct hardcoded_file * find_dir(const char *, size_t, struct hardcoded_file *);

@@ -1,11 +1,11 @@
 #BEAM=../otp_src_R12B-5/bin/i386-none-elf/beam.static
 BEAM=/libexec/ld-elf32.so.1
 
-run: mykernel.elf
-	qemu-system-i386 -s -m 256 -serial mon:stdio -kernel mykernel.elf -append $(BEAM)
+run: mykernel.elf initrd
+	qemu-system-i386 -s -m 256 -serial mon:stdio -kernel mykernel.elf -append $(BEAM) -initrd initrd
 
-debug: mykernel.elf
-	qemu-system-i386 -S -s  -m 256 -serial mon:stdio -kernel mykernel.elf -append $(BEAM)
+debug: mykernel.elf initrd
+	qemu-system-i386 -S -s  -m 256 -serial mon:stdio -kernel mykernel.elf -append $(BEAM) -initrd initrd
 
 debugger:
 	gdb -ex "target remote localhost:1234"
@@ -15,7 +15,7 @@ clean:
 
 # use wrong target for linking, so clang does the linking instead of calling into gcc
 mykernel.elf: start.o kernel.o printf.o linker.ld syscalls.o files.o
-	clang -g -fuse-ld=bfd --target=i386-freebsd-elf -static -ffreestanding -nostdlib -g -T linker.ld start.o kernel.o printf.o syscalls.o files.o fs_obj/*.o -o mykernel.elf -gdwarf-2 -lc
+	clang -g -fuse-ld=bfd --target=i386-freebsd-elf -static -ffreestanding -nostdlib -g -T linker.ld start.o kernel.o printf.o syscalls.o files.o -o mykernel.elf -gdwarf-2 -lc
 
 start.o: start.s
 	clang -m32 -g -gdwarf-2 -c start.s -o start.o
@@ -32,8 +32,9 @@ printf.o: ../libc/printf/printf.c
 debugnative:
 	BINDIR=`pwd`/../otp_src_R12B-5/bin/ gdb $(BEAM) -ex 'break _start' -ex 'run -- -root `pwd`/../otp_src_R12B-5 -progname erl -- -home /home/toast'
 
-files.c: hardcode_files.pl preload_local_files preload_otp_files Makefile
-	./hardcode_files.pl $(BEAM)
+initrd: hardcode_files.pl preload_local_files preload_otp_files Makefile
+	./hardcode_files.pl $(BEAM) > initrd.tmp
+	mv initrd.tmp initrd
 
 files.o: files.c files.h
 	clang -m32 -mno-sse -g -c files.c -o files.o -gdwarf-2
