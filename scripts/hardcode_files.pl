@@ -19,12 +19,31 @@ open my $out, '>', 'files.c' or die "couldn't open output file";
 my $curdir = cwd();
 chdir "../otp_src_R12B-5" || die "couldn't chdir";
 
+my @FULL_PATH_FILES = @ARGV;
+
 foreach my $f (@OTP_FILES) {
 	next unless $f;
 	push @FILES, $f;
 	my $base = basename($f);
 	system("objcopy -I binary -O elf32-i386-freebsd $f $OUTPUTDIR/$base.o") == 0 || die "couldn't objcopy $f";
+	if ($f =~ m@/beam@) { # beam executable
+		my @LDD = `/usr/bin/ldd $f`;
+		foreach my $l (@LDD) {
+			if ($l =~ m@ => (.*) \(@) {
+				push @FULL_PATH_FILES, $1;
+			}
+		}
+	}
 }
+
+chdir "/" || die "couldn't chdir";
+foreach my $f (@FULL_PATH_FILES) {
+	next unless $f;
+	$f =~ s@^/@@;
+	push @FILES, $f;
+	my $base = basename($f);
+	system("objcopy -I binary -O elf32-i386-freebsd $f $OUTPUTDIR/$base.o") == 0 || die "couldn't objcopy $f";
+}	
 
 chdir $curdir || die "couldn't chdir back to $curdir";
 my @LOCAL_FILES=`cat preload_local_files`;
@@ -47,7 +66,7 @@ EOS
 my @TOKENS;
 foreach my $f (@FILES) {
 	my $token = $f;
-	$token =~ s@[\./]@_@g;
+	$token =~ s@[\./-]@_@g;
 	$f =~ s@^/@@g;
 	push @TOKENS, $token;
 	print $out "extern void _binary_${token}_start;\n";

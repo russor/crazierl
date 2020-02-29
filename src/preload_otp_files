@@ -1,3 +1,4 @@
+bin/i386-none-elf/beam
 bin/start.boot
 lib/kernel/ebin/error_handler.beam
 lib/kernel/ebin/heart.beam

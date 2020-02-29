@@ -1,6 +1,6 @@
 
-//#define DEBUG_PRINTF(...) printf(__VA_ARGS__); move_cursor()
-#define DEBUG_PRINTF(...)
+#define DEBUG_PRINTF(...) printf(__VA_ARGS__); move_cursor()
+//#define DEBUG_PRINTF(...)
 #define ERROR_PRINTF(...) printf(__VA_ARGS__); move_cursor()
 
 #include <sys/types.h>
@@ -56,6 +56,7 @@ typedef uint32_t u_int32_t;
 #include <sys/dirent.h>
 #include <sys/uio.h>
 #include <poll.h>
+#include <sys/mman.h>
 
 #include "files.h"
 
@@ -490,10 +491,8 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 				return 0;
 			}
 		case SYS_openat:
-			DEBUG_PRINTF("openat (%d, %s, %d)\n", frame[0], frame[1], frame[2]);
 			frame += 1;
 		case SYS_open: {
-			DEBUG_PRINTF ("open (%s, %08x)\n", frame[0], frame[1]);
 			struct hardcoded_file * file;
 			if (frame[1] & O_DIRECTORY) {
 				size_t len = strlen((char *)frame[0]);
@@ -517,7 +516,7 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 					return 1;
 				}
 			}
-			//ERROR_PRINTF ("open (%s, %08x) = ENOENT\n", frame[0], frame[1]);
+			DEBUG_PRINTF ("open (%s, %08x) = ENOENT\n", frame[0], frame[1]);
 			call = ENOENT;
 			return 0;
 			}
@@ -530,6 +529,9 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 				--next_fd;
 			}
 			call = 0;
+			return 1;
+		case SYS_geteuid:
+			call = 0; // root
 			return 1;
 		case SYS_access:
 			DEBUG_PRINTF ("access (%s, %d)\n", frame[0], frame[1]);
@@ -579,9 +581,12 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 			}
 			call = 0;
 			return 1;
+		case SYS_mprotect: //ignore
+			call = 0;
+			return 1;
 		case SYS_madvise: //ignore
 			call = 0;
-			return 0;
+			return 1;
 		case SYS_fcntl:
 			ERROR_PRINTF("fcntl (%d, %08x)\n", frame[0], frame[1]);
 			call = 0;
@@ -767,6 +772,9 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 			strlcpy((char *)frame[0], "/", frame[1]);
 			call = 0;
 			return 1;
+		case SYS_utrace:
+			call = 0;
+			return 1;
 		case SYS_sigprocmask:
 			DEBUG_PRINTF("sigprocmask (%d, ...)\n", frame[0]);
 			call = 0;
@@ -785,25 +793,71 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 			break;
 			call = 0;
 			return 1;
-		case SYS_mmap:
+		case SYS_mmap: {
 			// round up to 4k page
-			if (free_addr & 0x0FFF) {
-				free_addr = (free_addr & 0xFFFFF000) + 4096;
+			void *addr = (void*)frame[0];
+			size_t len = frame[1];
+			int prot = frame[2];
+			int flags = frame[3];
+			int fd = frame[4];
+			off_t offset = frame[5];
+			if (fd == -1 && offset == 0) {
+				if (free_addr & 0x0FFF) {
+					free_addr = (free_addr & 0xFFFFF000) + 4096;
+				}
+				if (addr != 0 && (uint32_t) addr > free_addr) {
+					free_addr = (uint32_t) addr;
+				}
+				if (len > (max_addr - free_addr + 1)) {
+					ERROR_PRINTF("mmap (%08x, %08x, %08x, %08x, %d, %d) = ENOMEM\n",
+						addr, len, prot,
+						flags, fd, offset);
+					call = ENOMEM;
+					return 0;
+				} else {
+					call = free_addr;
+					free_addr += len;
+					//DEBUG_PRINTF("zeroing %d bytes at %08x\n", len, call);
+					//explicit_bzero(call, len); // zero out new memory!
+					DEBUG_PRINTF("mmap (%08x, %08x, %08x, %08x, %d, %d) = ",
+						addr, len, prot,
+						flags, fd, offset);
+					DEBUG_PRINTF("%08x\n", call);
+					return 1;
+				}
+			} else if (fd < BOGFD_MAX && FDS[fd].type == BOGFD_FILE) {
+				if (addr == 0 && offset + len > FDS[fd].file->size) {
+					ERROR_PRINTF("wants to map past end of file\n");
+				} else if (addr == 0) {
+					call = (uint32_t) FDS[fd].file->start;
+					DEBUG_PRINTF("mmap (%08x, %08x, %08x, %08x, %d, %d) = ",
+						addr, len, prot,
+						flags, fd, offset);
+					DEBUG_PRINTF("%08x\n", call);
+					return 1;
+				} else {
+					if (offset + len > FDS[fd].file->size) {
+						size_t avail = FDS[fd].file->size - offset;
+						memcpy((void *)addr, FDS[fd].file->start + offset, avail);
+						DEBUG_PRINTF("explicit zero %08x, %d\n", (addr + avail), len - avail);
+						explicit_bzero((void*)(addr + avail), len - avail);
+					} else {
+						DEBUG_PRINTF("copying...\n");
+						memcpy((void *)addr, FDS[fd].file->start + offset, len);
+					}
+					call = (uint32_t) addr;
+					DEBUG_PRINTF("mmap (%08x, %08x, %08x, %08x, %d, %d) = ",
+						addr, len, prot,
+						flags, fd, offset);
+					DEBUG_PRINTF("%08x\n", call);
+					return 1;
+				}
 			}
-			if (frame[1] > (max_addr - free_addr + 1)) {
-				ERROR_PRINTF("mmap (%08x, %08x, %08x, %08x, %d, %d) = ENOMEM\n",
-					frame[0], frame[1], frame[2],
-					frame[3], frame[4], frame[5]);
-				call = ENOMEM;
-				return 0;
-			} else {
-				DEBUG_PRINTF("mmap (%08x, %08x, %08x, %08x, %d, %d) = %08x @ %08x\n",
-					frame[0], frame[1], frame[2],
-					frame[3], frame[4], frame[5],
-					free_addr, frame[-1]);
-				call = free_addr;
-				free_addr += frame[1];
-				return 1;
+			
+			ERROR_PRINTF("mmap (%08x, %08x, %08x, %08x, %d, %d)\n",
+						addr, len, prot,
+						flags, fd, offset);
+			break;
 			}
 		case SYS_pipe2:
 			DEBUG_PRINTF("pipe2 (%08x, %08x)\n", frame[0], frame[1]);
@@ -817,13 +871,23 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 			call = 0;
 			return 1;
 		case SYS_fstat:
-			DEBUG_PRINTF("fstat (%d)\n", frame[0]);
-			if (frame[0] == 1) {
+			if (frame[0] < BOGFD_MAX && (FDS[frame[0]].type == BOGFD_TERMIN || FDS[frame[0]].type == BOGFD_TERMOUT)) {
 				struct stat* s = (struct stat*)frame[1];
 				s->st_mode = S_IWUSR | S_IRUSR | S_IFCHR;
 				call = 0;
 				return 1;
+			} else if (frame[0] < BOGFD_MAX && FDS[frame[0]].type == BOGFD_FILE) {
+				struct BogusFD * fd = &FDS[frame[0]];
+				struct stat* s = (struct stat *)frame[1];
+				s->st_dev = BOGFD_FILE;
+				s->st_ino = (ino_t) fd->file;
+				s->st_nlink = 1;
+				s->st_size = fd->file->size;
+				s->st_mode = S_IRUSR | S_IFREG | S_IRWXU;
+				call = 0;
+				return 1;
 			}
+			DEBUG_PRINTF("fstat (%d)\n", frame[0]);
 			break;
 		case SYS_fstatat: {
 			DEBUG_PRINTF("fstatat (%d, %s, %d)\n", frame[0], frame[1], frame[2]);
@@ -990,26 +1054,50 @@ void *entrypoint;
 void *phead_start;
 size_t phent, phnum; 
 
-void load_module(multiboot_module_t mod) {
-	Elf32_Ehdr * head = (void *)mod.mod_start;
+//#define COPY_EXE
+
+void load_file(struct hardcoded_file * file) {
+	Elf32_Ehdr * head = (Elf32_Ehdr *) file->start;
 	entrypoint = (void *) head->e_entry;
 	DEBUG_PRINTF ("elf entrypoint 0x%08x\n", head->e_entry);
 	phnum = head->e_phnum;
 	phent = head->e_phentsize;
-	Elf32_Phdr *phead = phead_start = (void *)mod.mod_start + head->e_phoff;
+	Elf32_Phdr *phead = phead_start = (void *)file->start + head->e_phoff;
 
 	DEBUG_PRINTF ("%d program headers of size %d at %08x\n", phnum, phent, phead_start);
-	
+
+	size_t lastoffset = 0;
 	for (int i = 0; i < head->e_phnum; ++i) {
 		DEBUG_PRINTF( "  %d: type 0x%x, offset %08x, virt %08x, filesize 0x%08x, memsize 0x%08x\n",
 			i, phead->p_type, phead->p_offset, phead->p_vaddr,
 			phead->p_filesz, phead->p_memsz);
 		if (phead->p_type == PT_LOAD) {
+			if (phead->p_offset < lastoffset) {
+				ERROR_PRINTF("elf header %d has p_offset > last_offset; halting\n", i);
+				while (1) {}
+			} else if (phead->p_offset > lastoffset) {
+				size_t count = phead->p_offset - lastoffset;
+#ifdef COPY_EXE				
+				ERROR_PRINTF("zeroing %d bytes from %08x to %08x\n", count, phead->p_vaddr - count, phead->p_vaddr);
+				explicit_bzero((uint8_t *)(phead->p_vaddr - count), count);
+#else
+				ERROR_PRINTF("zeroing %d bytes from %08x to %08x\n", count, lastoffset + file->start, phead->p_offset + file->start);
+				explicit_bzero((uint8_t *)(lastoffset + file->start), count);
+#endif				
+			}
+				
 			if (phead->p_filesz > phead->p_memsz) {
 				ERROR_PRINTF("elf header %d has p_filesz > p_memsz; halting\n", i);
 				while (1) { }
 			}
-			uint8_t *src = (void*) mod.mod_start + phead->p_offset;
+#ifndef COPY_EXE
+			if (phead->p_offset == 0) {
+				entrypoint += (void *)file->start - (void *) phead->p_vaddr;
+				ERROR_PRINTF("elf entrypoint moved to 0x%08x\n", entrypoint);
+			}
+#endif
+#ifdef COPY_EXE
+			uint8_t *src = (void*) file->start + phead->p_offset;
 			uint8_t *dst = (void*) phead->p_vaddr;
 			ERROR_PRINTF("copying %d bytes from %08x to %08x\n", phead->p_filesz, src, dst);
 			memcpy(dst, src, phead->p_filesz);
@@ -1019,6 +1107,10 @@ void load_module(multiboot_module_t mod) {
 				ERROR_PRINTF("zeroing %d bytes from %08x\n", count, dst);
 				explicit_bzero(dst, count);
 			}
+			lastoffset = phead->p_offset + phead->p_memsz;
+#else
+			lastoffset = phead->p_offset + phead->p_filesz;
+#endif
 			uint32_t next_addr = phead->p_memsz + phead->p_vaddr;
 			if (next_addr > free_addr && next_addr < max_addr) {
 				DEBUG_PRINTF("moving free address from %08x to %08x\n", free_addr, next_addr);
@@ -1027,6 +1119,13 @@ void load_module(multiboot_module_t mod) {
 		}
 		++phead;
 	}
+#ifndef COPY_EXE
+	size_t count = file->size - lastoffset;
+	if (count) {
+		ERROR_PRINTF("zeroing %d bytes from %08x to %08x\n", count, lastoffset + file->start, file->end);
+		explicit_bzero((uint8_t*) (file->start + lastoffset), count);
+	}
+#endif
 }
 
 void enable_sse() {
@@ -1112,19 +1211,32 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 	DEBUG_PRINTF("Multiboot info at %08x (%08x)\n", mb, &mb);
 	DEBUG_PRINTF("mem range: %08x-%08x\n", mb->mem_lower, mb->mem_upper);
 	DEBUG_PRINTF("modules: %d @ %08x\n", mb->mods_count, mb->mods_addr);
+
+	DEBUG_PRINTF("command line: %s\n", mb->cmdline);
 	
-	multiboot_module_t *mods = (void *)mb->mods_addr;
-	for (int mod = 0; mod < mb->mods_count; ++mod) {
-		DEBUG_PRINTF("Module %d (%s):\n 0x%08x-0x%08x\n", mod, mods[mod].cmdline, mods[mod].mod_start, mods[mod].mod_end);
-		load_module(mods[mod]);
+	char * filestart = strchrnul((char *)mb->cmdline, ' ');
+	while (*filestart == ' ') { ++filestart; }
+	char * fileend = strchrnul(filestart, ' ');
+	char filename [256];
+	strncpy(filename, filestart, fileend - filestart);
+	DEBUG_PRINTF("file to load %s\n", filename);
+	struct hardcoded_file * file = find_file(filename);
+	if (file) {
+		DEBUG_PRINTF("loading %s at %08x\n", filename, file->start);
+		load_file(file);
 	}
-	
-	
-	
+
 	if (entrypoint) {
 		DEBUG_PRINTF ("jumping to %08x\n", entrypoint);
 		void* new_top = (void*) (max_addr & 0xFFFFFFFC);
 		max_addr -= 1024 * 1024; // 1 MB stack should be good for now?
+
+		// list of page sizes
+		new_top -= sizeof(int);
+		*(int *)new_top = 0;
+		new_top -= sizeof(int);
+		*(int *)new_top = 0x1000;
+		void * page_sizes = new_top;
 
 		// set up elf headers
 		new_top -= sizeof(Elf32_Auxinfo);
@@ -1142,14 +1254,26 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 		((Elf32_Auxinfo *)new_top)->a_type = AT_PHDR;
 		((Elf32_Auxinfo *)new_top)->a_un.a_ptr = phead_start;
 
+		new_top -= sizeof(Elf32_Auxinfo);
+		((Elf32_Auxinfo *)new_top)->a_type = AT_BASE;
+		((Elf32_Auxinfo *)new_top)->a_un.a_ptr = file->start;
+
+		new_top -= sizeof(Elf32_Auxinfo);
+		((Elf32_Auxinfo *)new_top)->a_type = AT_PAGESIZESLEN;
+		((Elf32_Auxinfo *)new_top)->a_un.a_val = 8;
+		
+		new_top -= sizeof(Elf32_Auxinfo);
+		((Elf32_Auxinfo *)new_top)->a_type = AT_PAGESIZES;
+		((Elf32_Auxinfo *)new_top)->a_un.a_ptr = page_sizes;
+
 		// set up environment
-		char * env[] = {"BINDIR=/", "ERL_INETRC=/cfg/inetrc", NULL };
+		char * env[] = {"BINDIR=/", "ERL_INETRC=/cfg/inetrc", "LD_DEBUG=1", "LD_32_DEBUG=1", NULL };
 		size_t bytes = sizeof(env);
 		new_top -= bytes;
 		memcpy (new_top, env, bytes);
 		
 		// set up arguments
-		char *argv[] = {"beam",	"--", "-root", "",
+		char *argv[] = {"rtld", "/bin/i386-none-elf/beam", "--", "-root", "",
 		                "-progname", "erl", NULL};
 		bytes = sizeof(argv);
 		new_top -= bytes;
