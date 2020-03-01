@@ -112,7 +112,8 @@ struct GDTDescr {
    uint8_t base_3;
 } __attribute((packed));
 
-extern struct GDTDescr gs_base;
+extern struct GDTDescr null_gdt;
+extern struct GDTDescr ugs_base;
 
 struct IDTDescr {
    uint16_t offset_1; // offset bits 0..15
@@ -618,12 +619,12 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 			switch (frame[0]) {
 				case I386_SET_GSBASE: {
 					uint32_t base = *((uint32_t *) frame[1]);
-					gs_base.base_1 = base & 0xFFFF;
+					ugs_base.base_1 = base & 0xFFFF;
 					base >>= 16;
-					gs_base.base_2 = base & 0xFF;
+					ugs_base.base_2 = base & 0xFF;
 					base >>= 8;
-					gs_base.base_3 = base & 0xFF;
-					base = 0x18;
+					ugs_base.base_3 = base & 0xFF;
+					base = &ugs_base - &null_gdt;
 					asm volatile ( "movw %0, %%gs" :: "rm" (base));
 					call = 0;
 					return 1;
@@ -1082,6 +1083,7 @@ void interrupt_setup()
 
 	IDT[0x80].offset_1 = ((uint32_t) &handle_int_80) & 0xFFFF;
 	IDT[0x80].offset_2 = ((uint32_t) &handle_int_80) >> 16;
+	IDT[0x80].type_attr = 0xEE; // allow all rings to call in
 	
 	IDTR.size = sizeof(IDT) - 1;
 	IDTR.offset = (uint32_t) &IDT;

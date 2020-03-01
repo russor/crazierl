@@ -6,10 +6,11 @@
 // In a bit, we'll actually take a look at the code that defines this label.
 .global start
 
+.global null_gdt
 .global handle_int_80
 .global start_entrypoint
 .global unknown_int
-.global gs_base
+.global ugs_base
  
 // Our bootloader, GRUB, needs to know some basic information about our kernel before it can boot it.
 // We give GRUB this information using a standard known as 'Multiboot'.
@@ -33,28 +34,47 @@
 	.align 1 // byte backed data here
 	null_gdt: .long 0
 	          .long 0 // required
-	code_gdt: .short 0xFFFF // limit 0:15
+	kcod_gdt: .short 0xFFFF // limit 0:15
 	          .short 0      // base 0:15
 	          .byte 0       // base 16:23
 	          .byte 0x9A    // Present, Ring 0, Normal, Executable, Non Conforming, Readable, Not accessed
 	          .byte 0xCF    // 4K blocks, 32-bit selector, 2x reserved; limit 16:19
 	          .byte 0       // base 24:31
-	data_gdt: .short 0xFFFF // limit 0:15
+	kdat_gdt: .short 0xFFFF // limit 0:15
 	          .short 0      // base 0:15
 	          .byte 0       // base 16:23
 	          .byte 0x92    // Present, Ring 0, Normal, Data, Grows up, Writable, Not accessed
 	          .byte 0xCF    // 4K blocks, 32-bit selector, 2x reserved; limit 16:19
 	          .byte 0       // base 24:31
-	gs_base:  .short 0xFFFF // limit 0:15
+	ucod_gdt: .short 0xFFFF // limit 0:15
 	          .short 0      // base 0:15
 	          .byte 0       // base 16:23
-	          .byte 0x92    // Present, Ring 0, Normal, Data, Grows up, Writable, Not accessed
+	          .byte 0xFA    // Present, Ring 3, Normal, Executable, Non Conforming, Readable, Not accessed
 	          .byte 0xCF    // 4K blocks, 32-bit selector, 2x reserved; limit 16:19
 	          .byte 0       // base 24:31
-//	task_gdt: .long 0
-//	          .long 0 // probably want something here eventually
+	udat_gdt: .short 0xFFFF // limit 0:15
+	          .short 0      // base 0:15
+	          .byte 0       // base 16:23
+	          .byte 0xF2    // Present, Ring 3, Normal, Data, Grows up, Writable, Not accessed
+	          .byte 0xCF    // 4K blocks, 32-bit selector, 2x reserved; limit 16:19
+	          .byte 0       // base 24:31
+	ugs_base: .short 0xFFFF // limit 0:15
+	          .short 0      // base 0:15
+	          .byte 0       // base 16:23
+	          .byte 0xF2    // Present, Ring 3, Normal, Data, Grows up, Writable, Not accessed
+	          .byte 0xCF    // 4K blocks, 32-bit selector, 2x reserved; limit 16:19
+	          .byte 0       // base 24:31
+	tss_dt:   .short 0x000C // limit 0:15 (12 bytes)
+	          .short 0      // base 0:15
+	          .byte 0       // base 16:23
+	          .byte 0x89    // 
+	          .byte 0x40    // 
+	          .byte 0       // base 24:31
 	gdtr:     .short (gdtr - null_gdt - 1) // size (minus one)
 	          .long null_gdt // offset
+	tss:	  .long	0       // back link
+		  .long stack_top // ESP0
+		  .long 0x10    // SS0
 
  
 // This section contains data initialised to zeroes when the kernel is loaded
@@ -79,17 +99,28 @@
 		pushl %ebx // push multiboot header
 		pushl %eax // push multiboot magic
 
+		// fix the Task Segment descriptor
+		mov $tss, %eax
+		mov %ax, tss_dt + 2
+		shr $16, %eax
+		mov %al, tss_dt + 4
+		mov %ah, tss_dt + 7
+
+
 		// setup the Global Descriptor Table with static values
 		lgdtl gdtr
-		jmpl $0x08, $reload_CS
+		jmpl $(kcod_gdt - null_gdt), $reload_CS
 
 		reload_CS:
-		mov $0x10, %ax
+		mov $(kdat_gdt - null_gdt), %ax
 		mov %ax, %ds
 		mov %ax, %es
 		mov %ax, %fs
 		mov %ax, %gs
 		mov %ax, %ss
+
+		mov $((tss_dt - null_gdt) | 0x3), %eax
+		ltr %ax
 		// GDT loaded!
  
 		// Now we have a C-worthy (haha!) environment ready to run the rest of our kernel.
@@ -104,9 +135,9 @@
 	// handle syscall interrupts
 	handle_int_80:
 		pushl %eax // push syscall number
-		mov %esp, %eax
-		addl $20, %eax // move 1 (caller IP) + 3 (interrupt) + 1 (our pushes)32-bit ints up the stack to the caller pushed values
-		pushl %eax 
+		mov 16(%esp), %eax // get stack pointer from interrupt frame
+		addl $4, %eax // because syscalls have an embedded instruction pointer
+		pushl %eax
 		call handle_int_80_impl // call into C now
 		
 		test %eax, %eax
@@ -121,7 +152,7 @@
 
 		done:
 		mov %eax, 16(%esp)
-		addl $4, %esp // skip frame pointer
+		popl %eax // skip frame pointer
 		popl %eax
 		iret
 
@@ -132,8 +163,18 @@
 		popl %ebx // new stack top
 		popl %ecx // entrypoint
 
-		mov %ebx, %esp
-		jmp *%ecx
+		mov $((udat_gdt - null_gdt) | 0x3), %eax
+		mov %ax, %ds
+		mov %ax, %es
+		mov %ax, %fs
+		mov %ax, %gs
+
+		pushl %eax
+		pushl %ebx
+		pushf
+		pushl $((ucod_gdt - null_gdt) | 0x3)
+		pushl %ecx
+		iret
 
 	unknown_int:
 		// repeat 256 times

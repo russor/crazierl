@@ -8,7 +8,7 @@ debug: mykernel.elf initrd
 	qemu-system-i386 -S -s  -m 256 -serial mon:stdio -kernel mykernel.elf -append $(BEAM) -initrd initrd
 
 debugger:
-	gdb -ex "add-symbol-file mykernel.elf"  -ex "set confirm off" -ex "target remote localhost:1234"
+	gdb -ex "set confirm off" -ex "add-symbol-file mykernel.elf" -ex "set confirm on" -ex "target remote localhost:1234"
 
 clean:
 	rm -f mykernel.elf start.o kernel.o
