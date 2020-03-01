@@ -42,7 +42,6 @@ foreach my $f (@LOCAL_FILES) {
 }
 
 foreach my $file (sort keys %FILES) {
-	print STDERR $file, "\n";
 	my $data = $FILES{$file};
 	print "/", $file, "\0", pack('N', length($data)), $data;
 }

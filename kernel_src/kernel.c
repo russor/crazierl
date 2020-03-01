@@ -1,3 +1,5 @@
+#define PAGE_SIZE 4096
+#define USER_STACK_SIZE 1024 * 1024
 
 #define DEBUG_PRINTF(...) printf(__VA_ARGS__); move_cursor()
 //#define DEBUG_PRINTF(...)
@@ -57,6 +59,8 @@ typedef uint32_t u_int32_t;
 #include <sys/uio.h>
 #include <poll.h>
 #include <sys/mman.h>
+#include <sys/rtprio.h>
+#include <sys/umtx.h>
 
 #include "files.h"
 
@@ -132,6 +136,7 @@ uint8_t last_time[9];
 
 uint32_t free_addr;
 uint32_t max_addr;
+intptr_t user_stack;
 
 char INPUTBUFFER[16]; // must be a power of 2!
 size_t INPUT_FD;
@@ -530,6 +535,9 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 			}
 			call = 0;
 			return 1;
+		case SYS_getpid:
+			call = 2;
+			return 1;
 		case SYS_geteuid:
 			call = 0; // root
 			return 1;
@@ -628,8 +636,8 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 			struct rlimit *rlp = (struct rlimit *) frame[1];
 			switch (frame[0]) {
 				case RLIMIT_STACK:
-					rlp->rlim_cur = 1024 * 1024;
-					rlp->rlim_max = 1024 * 1024;
+					rlp->rlim_cur = USER_STACK_SIZE;
+					rlp->rlim_max = USER_STACK_SIZE;
 					break;
 				case RLIMIT_NOFILE:
 					rlp->rlim_cur = BOGFD_MAX;
@@ -680,6 +688,10 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 							*(uint32_t *)frame[3] = sizeof(uint32_t);
 							call = 0;
 							return 1;
+						case KERN_USRSTACK:
+							*(intptr_t *)frame[2] = user_stack;
+							call = 0;
+							return 1;
 						}
 					case CTL_VM: switch (buffer[1]) {
 						case VM_OVERCOMMIT:
@@ -701,7 +713,7 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 							return 1;
 						case HW_PAGESIZE:
 							DEBUG_PRINTF("hw.pagesize\n");
-							*(uint32_t *)frame[2] = 4096;
+							*(uint32_t *)frame[2] = PAGE_SIZE;
 							*(uint32_t *)frame[3] = sizeof(uint32_t);
 							call = 0;
 							return 1;
@@ -709,7 +721,7 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 					case CTL_P1003_1B: switch (buffer[1]) {
 						case CTL_P1003_1B_PAGESIZE:
 							DEBUG_PRINTF("posix.pagesize\n");
-							*(uint32_t *)frame[2] = 4096;
+							*(uint32_t *)frame[2] = PAGE_SIZE;
 							*(uint32_t *)frame[3] = sizeof(uint32_t);
 							call = 0;
 							return 1;
@@ -793,6 +805,30 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 			break;
 			call = 0;
 			return 1;
+		case SYS__umtx_op: {
+			void *obj = (void *)frame[0];
+			int op = frame[1];
+			u_long val = frame[2];
+			void *uaddr = (void *)frame[3];
+			void *uaddr2 = (void *)frame[4];
+			if (op == UMTX_OP_WAKE) {
+				call = 0;
+				return 1;
+			}
+			ERROR_PRINTF("_umtx_op(%08x, %d, %d, %08x, %08x)\n", obj, op, val, uaddr, uaddr2);
+			}
+		case SYS_rtprio_thread:
+			switch (frame[0]) {
+				case RTP_LOOKUP: {
+					struct rtprio *rtp= (struct rtprio *)frame[2];
+					rtp->type = RTP_PRIO_NORMAL;
+					rtp->prio = 0;
+					call = 0;
+					return 1;
+				}
+			}
+			DEBUG_PRINTF("rtrpio_thread(%d, %d, %08x)\n", frame[0], frame[1], frame[2]);
+			break;
 		case SYS_mmap: {
 			// round up to 4k page
 			void *addr = (void*)frame[0];
@@ -803,7 +839,7 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 			off_t offset = frame[5];
 			if (fd == -1 && offset == 0) {
 				if (free_addr & 0x0FFF) {
-					free_addr = (free_addr & 0xFFFFF000) + 4096;
+					free_addr = (free_addr & ~(PAGE_SIZE - 1)) + PAGE_SIZE;
 				}
 				if (addr != 0 && (uint32_t) addr > free_addr) {
 					free_addr = (uint32_t) addr;
@@ -817,8 +853,8 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 				} else {
 					call = free_addr;
 					free_addr += len;
-					//DEBUG_PRINTF("zeroing %d bytes at %08x\n", len, call);
-					//explicit_bzero(call, len); // zero out new memory!
+					DEBUG_PRINTF("zeroing %d bytes at %08x\n", len, call);
+					explicit_bzero((uint8_t *)call, len); // zero out new memory!
 					DEBUG_PRINTF("mmap (%08x, %08x, %08x, %08x, %d, %d) = ",
 						addr, len, prot,
 						flags, fd, offset);
@@ -836,6 +872,10 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 					DEBUG_PRINTF("%08x\n", call);
 					return 1;
 				} else {
+					if (offset == 0) {
+						DEBUG_PRINTF("add-symbol-file %s -o 0x%08x\n", FDS[fd].file->name, addr);
+					}
+
 					if (offset + len > FDS[fd].file->size) {
 						size_t avail = FDS[fd].file->size - offset;
 						memcpy((void *)addr, FDS[fd].file->start + offset, avail);
@@ -1057,6 +1097,7 @@ size_t phent, phnum;
 //#define COPY_EXE
 
 void load_file(struct hardcoded_file * file) {
+	DEBUG_PRINTF("add-symbol-file %s -o 0x%08x\n", file->name, file->start);
 	Elf32_Ehdr * head = (Elf32_Ehdr *) file->start;
 	entrypoint = (void *) head->e_entry;
 	DEBUG_PRINTF ("elf entrypoint 0x%08x\n", head->e_entry);
@@ -1235,8 +1276,10 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 
 	if (entrypoint) {
 		DEBUG_PRINTF ("jumping to %08x\n", entrypoint);
-		void* new_top = (void*) (max_addr & 0xFFFFFFFC);
-		max_addr -= 1024 * 1024; // 1 MB stack should be good for now?
+		user_stack = max_addr = max_addr & ~(PAGE_SIZE - 1);
+		
+		void* new_top = (void*) max_addr;
+		max_addr -= USER_STACK_SIZE; // 1 MB stack should be good for now?
 
 		// list of page sizes
 		new_top -= sizeof(int);
@@ -1274,7 +1317,7 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 		((Elf32_Auxinfo *)new_top)->a_un.a_ptr = page_sizes;
 
 		// set up environment
-		char * env[] = {"BINDIR=/", "ERL_INETRC=/cfg/inetrc", "LD_DEBUG=1", "LD_32_DEBUG=1", NULL };
+		char * env[] = {"BINDIR=/", "ERL_INETRC=/cfg/inetrc", NULL}; // "LD_DEBUG=1", "LD_32_DEBUG=1", NULL };
 		size_t bytes = sizeof(env);
 		new_top -= bytes;
 		memcpy (new_top, env, bytes);
