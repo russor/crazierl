@@ -135,25 +135,8 @@
 	// handle syscall interrupts
 	handle_int_80:
 		pushl %eax // push syscall number
-		mov 16(%esp), %eax // get stack pointer from interrupt frame
-		addl $4, %eax // because syscalls have an embedded instruction pointer
-		pushl %eax
 		call handle_int_80_impl // call into C now
-		
-		test %eax, %eax
-		mov 16(%esp), %eax
-		je error
-		andl $0xFFFFFFFE, %eax
-		jmp done
-		
-		error:
-		orl $1, %eax
-		jmp done
-
-		done:
-		mov %eax, 16(%esp)
-		popl %eax // skip frame pointer
-		popl %eax
+		addl $4, %esp // skip pushed syscall
 		iret
 
 	// handle call from C, adjust the stack a bit, and jump to the

@@ -415,22 +415,26 @@ void handle_com1(struct interrupt_frame *frame)
 	outb(PORT_PIC1, PIC_INTERRUPT_ACK);
 }
 
-uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
+#define CARRY 1
+#define SYSCALL_SUCCESS(ret) { iframe.flags &= ~CARRY; return ret; }
+#define SYSCALL_FAILURE(ret) { iframe.flags |= CARRY; return ret; }
+int handle_int_80_impl(uint32_t call, struct interrupt_frame iframe)
 {	
+	unsigned int *frame = ((unsigned int *)iframe.sp) + 1;
 	switch(call) {
 		case SYS_read:
 			if (frame[0] < BOGFD_MAX && FDS[frame[0]].type == BOGFD_FILE) {
 				DEBUG_PRINTF("read (%d, %08x, %d)\n", frame[0], frame[1], frame[2]);
 				struct BogusFD *fd = &FDS[frame[0]];
-				call = min(frame[2], fd->file->end - fd->pos);
-				memcpy((void *)frame[1], fd->pos, call);
-				fd->pos += call;
-				return 1;
+				int read = min(frame[2], fd->file->end - fd->pos);
+				memcpy((void *)frame[1], fd->pos, read);
+				fd->pos += read;
+				SYSCALL_SUCCESS(read);
 			} else if (frame[0] < BOGFD_MAX && FDS[frame[0]].type == BOGFD_TERMIN) {
 				struct BogusFD *fd = &FDS[frame[0]];
-				call = 0;
+				int read = 0;
 				uint8_t * buffer = (uint8_t *)frame[1];
-				while (call < frame[2]) {
+				while (read < frame[2]) {
 					if (fd->status[0] == fd->status[1]) {
 						if (fd->status[3] & 0x01) {
 							ERROR_PRINTF("com 0x%x buffer empty\n", PORT_COM1);
@@ -439,48 +443,44 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 							break;
 						}
 					} else {
-						buffer[call] = fd->buffer[fd->status[1]];
-						++call;
+						buffer[read] = fd->buffer[fd->status[1]];
+						++read;
 						++fd->status[1];
 						fd->status[1] &= fd->status[2];
 					}
 				}
-				if (call) {
-					return 1;
+				if (read) {
+					SYSCALL_SUCCESS(read);
 				} else {
-					call = EAGAIN;
-					return 0;
+					SYSCALL_FAILURE(EAGAIN);
 				}
 			}
 			ERROR_PRINTF("read (%d, %08x, %d) = EBADF\n", frame[0], frame[1], frame[2]);
-			call = EBADF;
-			return 0;
+			SYSCALL_FAILURE(EBADF);
 		case SYS_write:
 			if (frame[0] < BOGFD_MAX && FDS[frame[0]].type == BOGFD_TERMOUT) {
 				uint8_t *buffer = (uint8_t *)frame[1];
-				call = frame[2];
-				size_t nbyte = call;
+				size_t nbyte = frame[2];
 				while (nbyte) {
 					_putchar(*buffer);
 					++buffer;
 					--nbyte;
 				}
-				return 1;
 				move_cursor();
+				SYSCALL_SUCCESS(frame[2]);
 			} else {
 				ERROR_PRINTF("write (%d, %08x, %d)\n", frame[0], frame[1], frame[2]);
-				call = EBADF;
-				return 0;
+				SYSCALL_FAILURE(EBADF);
 			}
 		case SYS_writev:
 			if (frame[0] < BOGFD_MAX && FDS[frame[0]].type == BOGFD_TERMOUT) {
 				struct iovec *iov = (struct iovec *)frame[1];
 				int iovcnt = frame[2];
-				call = 0;
+				int written = 0;
 				while (iovcnt) {
 					uint8_t *buffer = (uint8_t *) iov->iov_base;
 					size_t nbyte = iov->iov_len;
-					call += nbyte;
+					written += nbyte;
 					while (nbyte) {
 						_putchar(*buffer);
 						++buffer;
@@ -490,11 +490,10 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 					--iovcnt;
 				}
 				move_cursor();
-				return 1;
+				SYSCALL_SUCCESS(written);
 			} else {
 				ERROR_PRINTF("write (%d, %08x, %d)\n", frame[0], frame[1], frame[2]);
-				call = EBADF;
-				return 0;
+				SYSCALL_FAILURE(EBADF);
 			}
 		case SYS_openat:
 			frame += 1;
@@ -507,9 +506,7 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 					FDS[next_fd].type = BOGFD_DIR;
 					FDS[next_fd].file = file;
 					FDS[next_fd].namelen = len;
-					call = next_fd;
-					++next_fd;
-					return 1;
+					SYSCALL_SUCCESS(next_fd++);
 				}
 			} else {
 				file = find_file((char *)frame[0]);
@@ -517,14 +514,11 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 					FDS[next_fd].type = BOGFD_FILE;
 					FDS[next_fd].file = file;
 					FDS[next_fd].pos = file->start;
-					call = next_fd;
-					++next_fd;
-					return 1;
+					SYSCALL_SUCCESS(next_fd++);
 				}
 			}
 			DEBUG_PRINTF ("open (%s, %08x) = ENOENT\n", frame[0], frame[1]);
-			call = ENOENT;
-			return 0;
+			SYSCALL_FAILURE(ENOENT);
 			}
 		case SYS_close:
 			if (FDS[frame[0]].type != BOGFD_CLOSED) { 
@@ -534,18 +528,12 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 			if (frame[0] + 1 == next_fd) {
 				--next_fd;
 			}
-			call = 0;
-			return 1;
-		case SYS_getpid:
-			call = 2;
-			return 1;
-		case SYS_geteuid:
-			call = 0; // root
-			return 1;
+			SYSCALL_SUCCESS(0);
+		case SYS_getpid: SYSCALL_SUCCESS(2);
+		case SYS_geteuid: SYSCALL_SUCCESS(0); // root
 		case SYS_access:
 			DEBUG_PRINTF ("access (%s, %d)\n", frame[0], frame[1]);
-			call = ENOENT;
-			return 0;
+			SYSCALL_FAILURE(ENOENT);
 		case SYS_ioctl:
 			DEBUG_PRINTF("ioctl (%d, %08x, ...)\n", frame[0], frame[1]);
 			switch (frame[1]) {
@@ -561,8 +549,7 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 					//t->c_cc = "\004\377\377\177\027\025\022\b\003\034\032\031\021\023\026\017\001\000\024\377";
 					t->c_ispeed = 38400;
 					t->c_ospeed = 38400;
-					call = 0;
-					return 1;
+					SYSCALL_SUCCESS(0);
 					}
 				case TIOCGWINSZ: {
 					if (frame[0] >= BOGFD_MAX || (FDS[frame[0]].type != BOGFD_TERMIN && FDS[frame[0]].type != BOGFD_TERMOUT)) {
@@ -571,16 +558,14 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 					struct winsize *w = (struct winsize *)frame[2];
 					w->ws_row = 25;
 					w->ws_col = 80;
-					call = 0;
-					return 1;
+					SYSCALL_SUCCESS(0);
 					}
 			}
 			ERROR_PRINTF("parm_len %d, cmd %d, group %c\n", IOCPARM_LEN(frame[1]), frame[1] & 0xff, IOCGROUP(frame[1]));
 			break;
 		case SYS_readlink:
 			DEBUG_PRINTF("readlink (%s, %08x, %d)\n", (char *)frame[0], frame[1], frame[2]);
-			call = ENOENT;
-			return 0;
+			SYSCALL_FAILURE(ENOENT);
 		case SYS_munmap:
 			DEBUG_PRINTF("munmap (%08x, %d)\n",
 				frame[0], frame[1]);
@@ -588,22 +573,15 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 				free_addr = frame[0];
 				DEBUG_PRINTF("free_addr -> %08x\n", free_addr);
 			}
-			call = 0;
-			return 1;
-		case SYS_mprotect: //ignore
-			call = 0;
-			return 1;
-		case SYS_madvise: //ignore
-			call = 0;
-			return 1;
+			SYSCALL_SUCCESS(0);
+		case SYS_mprotect: SYSCALL_SUCCESS(0); //ignore
+		case SYS_madvise: SYSCALL_SUCCESS(0); //ignore
 		case SYS_fcntl:
 			ERROR_PRINTF("fcntl (%d, %08x)\n", frame[0], frame[1]);
-			call = 0;
-			return 1;
+			SYSCALL_SUCCESS(0);
 		case SYS_socket:
 			ERROR_PRINTF("socket(%d, %d, %d)\n", frame[0], frame[1], frame[2]);
-			call = EACCES;
-			return 0;
+			SYSCALL_FAILURE(EACCES);
 		case SYS_gettimeofday:
 			if (frame[0]) {
 				((struct timeval *) frame[0])->tv_sec = unix_time();
@@ -613,8 +591,7 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 				((struct timezone *) frame[1])->tz_minuteswest = 0;
 				((struct timezone *) frame[1])->tz_dsttime = 0;
 			}
-			call = 0;
-			return 1;
+			SYSCALL_SUCCESS(0);
 		case SYS_sysarch: {
 			switch (frame[0]) {
 				case I386_SET_GSBASE: {
@@ -626,11 +603,8 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 					ugs_base.base_3 = base & 0xFF;
 					base = &ugs_base - &null_gdt;
 					asm volatile ( "movw %0, %%gs" :: "rm" (base));
-					call = 0;
-					return 1;
+					SYSCALL_SUCCESS(0);
 				}
-				
-				
 				}
 			}
 		case SYS_getrlimit: {
@@ -648,8 +622,7 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 					rlp->rlim_cur = RLIM_INFINITY;
 					rlp->rlim_max = RLIM_INFINITY;
 			}
-			call = 0;
-			return 1;
+			SYSCALL_SUCCESS(0);
 			}
 		case SYS___sysctl:
 			if (frame[1] == 2) {
@@ -658,20 +631,16 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 					case CTL_KERN: switch(buffer[1]) {
 						case KERN_OSTYPE:
 							strlcpy((char *)frame[2], "FreeBSD", frame[3]);
-							call = 0;
-							return 1;
+							SYSCALL_SUCCESS(0);
 						case KERN_OSRELEASE:
 							strlcpy((char *)frame[2], "12.1-RELEASE-p1", frame[3]);
-							call = 0;
-							return 1;
+							SYSCALL_SUCCESS(0);
 						case KERN_VERSION:
 							strlcpy((char *)frame[2], "FreeBSD 12.1-RELEASE-p1 GENERIC", frame[3]);
-							call = 0;
-							return 1;
+							SYSCALL_SUCCESS(0);
 						case KERN_HOSTNAME:
 							strlcpy((char *)frame[2], "node0.crazierl.org", frame[3]);
-							call = 0;
-							return 1;
+							SYSCALL_SUCCESS(0);
 						case KERN_ARND:
 							{
 								uint8_t *r = (uint8_t *)frame[2];
@@ -681,51 +650,43 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 									*r = rand() & 0xFF;
 									--count;
 								}
-								call = 0;
-								return 1;
+								SYSCALL_SUCCESS(0);
 							}
 						case KERN_OSRELDATE:
 							*(uint32_t *)frame[2] = 1201000; // pretend to be freebsd 12.1 for now
 							*(uint32_t *)frame[3] = sizeof(uint32_t);
-							call = 0;
-							return 1;
+							SYSCALL_SUCCESS(0);
 						case KERN_USRSTACK:
 							*(intptr_t *)frame[2] = user_stack;
-							call = 0;
-							return 1;
+							SYSCALL_SUCCESS(0);
 						}
 					case CTL_VM: switch (buffer[1]) {
 						case VM_OVERCOMMIT:
 							*(uint32_t *)frame[2] = 0;
 							*(uint32_t *)frame[3] = sizeof(uint32_t);
-							call = 0;
-							return 1;
+							SYSCALL_SUCCESS(0);
 						}
 					case CTL_HW: switch (buffer[1]) {
 						case HW_MACHINE:
 							strlcpy((char *)frame[2], "i386", frame[3]);
-							call = 0;
-							return 1;
+							SYSCALL_SUCCESS(0);
 						case HW_NCPU:
 							DEBUG_PRINTF("hw.ncpu\n");
 							*(uint32_t *)frame[2] = 1;
 							*(uint32_t *)frame[3] = sizeof(uint32_t);
-							call = 0;
-							return 1;
+							SYSCALL_SUCCESS(0);
 						case HW_PAGESIZE:
 							DEBUG_PRINTF("hw.pagesize\n");
 							*(uint32_t *)frame[2] = PAGE_SIZE;
 							*(uint32_t *)frame[3] = sizeof(uint32_t);
-							call = 0;
-							return 1;
+							SYSCALL_SUCCESS(0);
 						}
 					case CTL_P1003_1B: switch (buffer[1]) {
 						case CTL_P1003_1B_PAGESIZE:
 							DEBUG_PRINTF("posix.pagesize\n");
 							*(uint32_t *)frame[2] = PAGE_SIZE;
 							*(uint32_t *)frame[3] = sizeof(uint32_t);
-							call = 0;
-							return 1;
+							SYSCALL_SUCCESS(0);
 						}
 				}
 			}
@@ -736,25 +697,24 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 			for (int i = 0; i < frame[1]; ++i) {
 				ERROR_PRINTF("  %d\n", ((uint32_t *)frame[0])[i]);
 			}
-			call = ENOENT;
-			return 0;
+			SYSCALL_FAILURE(ENOENT);
 		case SYS_poll: {
 			DEBUG_PRINTF("poll (%08x, %d, %d)\n", frame[0], frame[1], frame[2]);
 			struct pollfd *fds = (struct pollfd *)frame[0];
 			int wait = frame[2];
 			int lastsecond = last_time[1];
 			int printed = 0;
-			call = 0;
+			int changedfds = 0;
 			while (wait > 0) {
 				for (int i = 0; i < frame[1]; ++i) {
 					if (fds[i].fd >= BOGFD_MAX) { continue; } // no EBADF?
 					struct BogusFD *fd = &FDS[fds[i].fd];
 					if (fds[i].events & POLLIN && fd->type == BOGFD_TERMIN && fd->status[0] != fd->status[1]) {
 						fds[i].revents = POLLIN;
-						++call;
+						++changedfds;
 					}
 				}
-				if (call) { return 1; }
+				if (changedfds) { SYSCALL_SUCCESS(changedfds); }
 				if (!printed && wait > 60000) {
 					printed = 1;
 					DEBUG_PRINTF("waiting for %d fds, timeout %d\n", frame[1], frame[2]);
@@ -769,43 +729,33 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 					wait -= 1000;
 				}
 			}
-			call = 0;
-			return 1;
+			SYSCALL_SUCCESS(0);
 			}
 		case SYS_clock_gettime:
 			((struct timespec *) frame[1])->tv_sec = unix_time();
 			((struct timespec *) frame[1])->tv_nsec = 0;
-			call = 0;
-			return 1;
+			SYSCALL_SUCCESS(0);
 		case SYS_issetugid:
 			DEBUG_PRINTF("issetugid()\n");
-			call = 0;
-			return 1;
+			SYSCALL_SUCCESS(0);
 		case SYS___getcwd:
 			strlcpy((char *)frame[0], "/", frame[1]);
-			call = 0;
-			return 1;
+			SYSCALL_SUCCESS(0);
 		case SYS_utrace:
-			call = 0;
-			return 1;
+			SYSCALL_SUCCESS(0);
 		case SYS_sigprocmask:
 			DEBUG_PRINTF("sigprocmask (%d, ...)\n", frame[0]);
-			call = 0;
-			return 1;
+			SYSCALL_SUCCESS(0);
 		case SYS_sigaction:
 			DEBUG_PRINTF("sigaction (%d, ...)\n", frame[0]);
-			call = 0;
-			return 1;
+			SYSCALL_SUCCESS(0);
 		case SYS_thr_self:
 			DEBUG_PRINTF("thr_self()\n");
 			*((long *)frame[0]) = 100002;
-			call = 0;
-			return 1;
+			SYSCALL_SUCCESS(0);
 		case SYS_thr_kill:
 			DEBUG_PRINTF("thr_kill(%d, %d)\n", frame[0], frame[1]);
 			break;
-			call = 0;
-			return 1;
 		case SYS__umtx_op: {
 			void *obj = (void *)frame[0];
 			int op = frame[1];
@@ -813,8 +763,7 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 			void *uaddr = (void *)frame[3];
 			void *uaddr2 = (void *)frame[4];
 			if (op == UMTX_OP_WAKE) {
-				call = 0;
-				return 1;
+				SYSCALL_SUCCESS(0);
 			}
 			ERROR_PRINTF("_umtx_op(%08x, %d, %d, %08x, %08x)\n", obj, op, val, uaddr, uaddr2);
 			}
@@ -824,8 +773,7 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 					struct rtprio *rtp= (struct rtprio *)frame[2];
 					rtp->type = RTP_PRIO_NORMAL;
 					rtp->prio = 0;
-					call = 0;
-					return 1;
+					SYSCALL_SUCCESS(0);
 				}
 			}
 			DEBUG_PRINTF("rtrpio_thread(%d, %d, %08x)\n", frame[0], frame[1], frame[2]);
@@ -849,29 +797,28 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 					ERROR_PRINTF("mmap (%08x, %08x, %08x, %08x, %d, %d) = ENOMEM\n",
 						addr, len, prot,
 						flags, fd, offset);
-					call = ENOMEM;
-					return 0;
+					SYSCALL_FAILURE(ENOMEM);
 				} else {
-					call = free_addr;
+					int return_addr = free_addr;
 					free_addr += len;
-					DEBUG_PRINTF("zeroing %d bytes at %08x\n", len, call);
-					explicit_bzero((uint8_t *)call, len); // zero out new memory!
+					DEBUG_PRINTF("zeroing %d bytes at %08x\n", len, return_addr);
+					explicit_bzero((uint8_t *)return_addr, len); // zero out new memory!
 					DEBUG_PRINTF("mmap (%08x, %08x, %08x, %08x, %d, %d) = ",
 						addr, len, prot,
 						flags, fd, offset);
-					DEBUG_PRINTF("%08x\n", call);
-					return 1;
+					DEBUG_PRINTF("%08x\n", return_addr);
+					SYSCALL_SUCCESS(return_addr);
 				}
 			} else if (fd < BOGFD_MAX && FDS[fd].type == BOGFD_FILE) {
 				if (addr == 0 && offset + len > FDS[fd].file->size) {
 					ERROR_PRINTF("wants to map past end of file\n");
 				} else if (addr == 0) {
-					call = (uint32_t) FDS[fd].file->start;
+					int return_addr = (uint32_t) FDS[fd].file->start;
 					DEBUG_PRINTF("mmap (%08x, %08x, %08x, %08x, %d, %d) = ",
 						addr, len, prot,
 						flags, fd, offset);
-					DEBUG_PRINTF("%08x\n", call);
-					return 1;
+					DEBUG_PRINTF("%08x\n", return_addr);
+					SYSCALL_SUCCESS(return_addr);
 				} else {
 					if (offset == 0) {
 						DEBUG_PRINTF("add-symbol-file %s -o 0x%08x\n", FDS[fd].file->name, addr);
@@ -886,12 +833,11 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 						DEBUG_PRINTF("copying...\n");
 						memcpy((void *)addr, FDS[fd].file->start + offset, len);
 					}
-					call = (uint32_t) addr;
 					DEBUG_PRINTF("mmap (%08x, %08x, %08x, %08x, %d, %d) = ",
 						addr, len, prot,
 						flags, fd, offset);
-					DEBUG_PRINTF("%08x\n", call);
-					return 1;
+					DEBUG_PRINTF("%08x\n", addr);
+					SYSCALL_SUCCESS((unsigned int)addr);
 				}
 			}
 			
@@ -909,14 +855,12 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 			*((int *)frame[0]) = next_fd;
 			*(((int *)frame[0]) + 1) = next_fd + 1;
 			next_fd += 2;
-			call = 0;
-			return 1;
+			SYSCALL_SUCCESS(0);
 		case SYS_fstat:
 			if (frame[0] < BOGFD_MAX && (FDS[frame[0]].type == BOGFD_TERMIN || FDS[frame[0]].type == BOGFD_TERMOUT)) {
 				struct stat* s = (struct stat*)frame[1];
 				s->st_mode = S_IWUSR | S_IRUSR | S_IFCHR;
-				call = 0;
-				return 1;
+				SYSCALL_SUCCESS(0);
 			} else if (frame[0] < BOGFD_MAX && FDS[frame[0]].type == BOGFD_FILE) {
 				struct BogusFD * fd = &FDS[frame[0]];
 				struct stat* s = (struct stat *)frame[1];
@@ -925,8 +869,7 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 				s->st_nlink = 1;
 				s->st_size = fd->file->size;
 				s->st_mode = S_IRUSR | S_IFREG | S_IRWXU;
-				call = 0;
-				return 1;
+				SYSCALL_SUCCESS(0);
 			}
 			DEBUG_PRINTF("fstat (%d)\n", frame[0]);
 			break;
@@ -941,11 +884,9 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 				s->st_nlink = 1;
 				s->st_size = file->size;
 				s->st_mode = S_IRUSR | S_IFREG;
-				call = 0;
-				return 1;
+				SYSCALL_SUCCESS(0);
 			}
-			call = ENOENT;
-			return 0;
+			SYSCALL_FAILURE(0);
 			}
 		case SYS_getdirentries: {
 			if (frame[0] < BOGFD_MAX && FDS[frame[0]].type == BOGFD_DIR) {
@@ -955,8 +896,7 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 					*(off_t *)frame[3] = (off_t) fd->file;
 				}
 				if (fd->file == NULL) {
-					call = 0;
-					return 1;
+					SYSCALL_SUCCESS(0);
 				}
 				bzero(buf, sizeof(*buf));
 				buf->d_fileno = (ino_t) fd->file;
@@ -976,8 +916,6 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 						file = fd->file;
 						fd->file = find_dir(file->name, fd->namelen, file + 1);
 					}
-
-					
 				} else {
 					buf->d_type = DT_REG;
 					strlcpy(buf->d_name, start, sizeof(buf->d_name));
@@ -986,13 +924,10 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 					
 				}
 				buf->d_off = (off_t) fd->file;
-				
-				call = buf->d_reclen;
-				return 1;
+				SYSCALL_SUCCESS(buf->d_reclen);
 			}
 			ERROR_PRINTF("getdirentries (%d)\n", frame[0]);
-			call = EBADF;
-			return 0;
+			SYSCALL_FAILURE(EBADF);
 			}
 		case SYS_fstatfs: {
 			if (frame[0] < BOGFD_MAX && FDS[frame[0]].type == BOGFD_DIR) {
@@ -1000,12 +935,10 @@ uint32_t handle_int_80_impl(uint32_t *frame, uint32_t call)
 				bzero(buf, sizeof(struct statfs));
 				buf->f_version = STATFS_VERSION;
 				strlcpy(buf->f_fstypename, "BogusFS", sizeof(buf->f_fstypename));
-				call = 0;
-				return 1;
+				SYSCALL_SUCCESS(0);
 			}
 			ERROR_PRINTF("fstatfs (%d)\n", frame[0]);
-			call = EBADF;
-			return 0;
+			SYSCALL_FAILURE(EBADF);
 			}
 	}
 				
