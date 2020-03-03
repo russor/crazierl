@@ -595,6 +595,8 @@ int handle_int_80_impl(uint32_t call, struct interrupt_frame iframe)
 					base >>= 8;
 					ugs_base.base_3 = base & 0xFF;
 					base = &ugs_base - &null_gdt;
+					kern_mmap_debug(frame[1]);
+					DEBUG_PRINTF("Setting GS base to %08x, %d\n", frame[1], base);
 					asm volatile ( "movw %0, %%gs" :: "rm" (base));
 					SYSCALL_SUCCESS(0);
 				}
@@ -793,7 +795,7 @@ int handle_int_80_impl(uint32_t call, struct interrupt_frame iframe)
 					} else {
 						memcpy((void *)ret_addr, FDS[fd].file->start + offset, len);
 					}
-				} else {
+				} else if (prot != PROT_NONE) {
 					explicit_bzero((void*)ret_addr, len);
 				}
 				SYSCALL_SUCCESS(ret_addr);
@@ -1002,12 +1004,10 @@ void interrupt_setup()
 void *entrypoint;
 void *phead_start;
 size_t phent, phnum; 
-
-//#define COPY_EXE
+uintptr_t load_addr;
 
 void load_file(void *start, char *name, size_t size)
 {
-	DEBUG_PRINTF("add-symbol-file %s -o 0x%08x\n", name, start);
 	Elf32_Ehdr * head = (Elf32_Ehdr *) start;
 	entrypoint = (void *) head->e_entry;
 	DEBUG_PRINTF ("elf entrypoint 0x%08x\n", head->e_entry);
@@ -1018,62 +1018,80 @@ void load_file(void *start, char *name, size_t size)
 	DEBUG_PRINTF ("program binary size %d (0x%08x - 0x%08x)\n", size, start, start + size);
 	DEBUG_PRINTF ("%d program headers of size %d at %08x\n", phnum, phent, phead_start);
 
+	uintptr_t first_addr = -1;
+	uintptr_t first_virtual = -1;
+	uintptr_t last_addr = 0;
+	uintptr_t last_virtual = 0;
+
+	for (int i = 0; i < head->e_phnum; ++i) {
+		if (phead->p_type == PT_LOAD) {
+			first_addr = min (first_addr, phead->p_offset);
+			first_virtual = min (first_virtual, phead->p_vaddr);
+			last_addr = max (last_addr, phead->p_offset + phead->p_memsz);
+			last_virtual = max (last_virtual, phead->p_vaddr + phead->p_memsz);
+		}
+		++phead;
+	}
+
+	DEBUG_PRINTF("load offsets %08x - %08x; virt %08x - %08x\n", first_addr, last_addr, first_virtual, last_virtual);
+	load_addr = 0;
+	if (0) { // kern_mmap_could_map(first_virtual, last_virtual)) {
+
+
+	} else if (size >= last_addr) {
+		DEBUG_PRINTF("using existing file memory to load\n");
+		load_addr = (uintptr_t) start;
+	} else {
+
+	}
+	if (load_addr != first_virtual) {
+		entrypoint = entrypoint - first_virtual + load_addr;
+		ERROR_PRINTF("elf entrypoint moved to 0x%08x\n", entrypoint);
+	}
+
+	DEBUG_PRINTF("add-symbol-file %s -o 0x%08x\n", name, load_addr);
+
+	phead = phead_start;
 	size_t lastoffset = 0;
 	for (int i = 0; i < head->e_phnum; ++i) {
-		DEBUG_PRINTF( "  %d: type 0x%x, offset %08x, virt %08x, filesize 0x%08x, memsize 0x%08x\n",
-			i, phead->p_type, phead->p_offset, phead->p_vaddr,
-			phead->p_filesz, phead->p_memsz);
 		if (phead->p_type == PT_LOAD) {
+			DEBUG_PRINTF( "  %d: PT_LOAD offset %08x, virt %08x, filesize 0x%08x, memsize 0x%08x\n",
+				i, phead->p_type, phead->p_offset, phead->p_vaddr,
+				phead->p_filesz, phead->p_memsz);
 			if (phead->p_offset < lastoffset) {
 				ERROR_PRINTF("elf header %d has p_offset > last_offset; halting\n", i);
 				while (1) {}
-			} else if (phead->p_offset > lastoffset) {
-				size_t count = phead->p_offset - lastoffset;
-#ifdef COPY_EXE				
-				ERROR_PRINTF("zeroing %d bytes from %08x to %08x\n", count, phead->p_vaddr - count, phead->p_vaddr);
-				explicit_bzero((uint8_t *)(phead->p_vaddr - count), count);
-#else
-				ERROR_PRINTF("zeroing %d bytes from %08x to %08x\n", count, lastoffset + start, phead->p_offset + start);
-				explicit_bzero((uint8_t *)(lastoffset + start), count);
-#endif				
 			}
-				
+			if (phead->p_offset > lastoffset) {
+				size_t count = phead->p_offset - lastoffset;
+				ERROR_PRINTF("zeroing %d bytes from %08x to %08x\n", count, load_addr + lastoffset, load_addr + lastoffset + count);
+				explicit_bzero((uint8_t *)(load_addr + lastoffset), count);
+			}
+
 			if (phead->p_filesz > phead->p_memsz) {
 				ERROR_PRINTF("elf header %d has p_filesz > p_memsz; halting\n", i);
 				while (1) { }
 			}
-#ifndef COPY_EXE
-			if (phead->p_offset == 0) {
-				entrypoint += start - (void *) phead->p_vaddr;
-				ERROR_PRINTF("elf entrypoint moved to 0x%08x\n", entrypoint);
-			}
-#endif
-#ifdef COPY_EXE
 			uint8_t *src = start + phead->p_offset;
-			uint8_t *dst = (void*) phead->p_vaddr;
-			ERROR_PRINTF("copying %d bytes from %08x to %08x\n", phead->p_filesz, src, dst);
-			memcpy(dst, src, phead->p_filesz);
-			unsigned int count = phead->p_memsz - phead->p_filesz;
-			if (count) {
-				dst += phead->p_filesz;
-				ERROR_PRINTF("zeroing %d bytes from %08x\n", count, dst);
-				explicit_bzero(dst, count);
+			uint8_t *dst = (void*) (load_addr - first_virtual +  phead->p_vaddr);
+			if (src != dst) {
+				ERROR_PRINTF("copying %d bytes from %08x to %08x\n", phead->p_filesz, src, dst);
+				memcpy(dst, src, phead->p_filesz);
 			}
-			lastoffset = phead->p_offset + phead->p_memsz;
-#else
 			lastoffset = phead->p_offset + phead->p_filesz;
-#endif
-			uint32_t next_addr = phead->p_memsz + phead->p_vaddr;
+			uint32_t scratch;
+			if (!kern_mmap(&scratch, (void *)(load_addr + phead->p_vaddr), phead->p_memsz, PROT_READ|PROT_WRITE, 0)) {
+				ERROR_PRINTF("couldn't map ELF load section %08x\n", load_addr + phead->p_vaddr);
+			}
 		}
 		++phead;
 	}
-#ifndef COPY_EXE
 	size_t count = size - lastoffset;
 	if (count) {
-		ERROR_PRINTF("zeroing %d bytes from %08x to %08x\n", count, lastoffset + start, start + size);
+		ERROR_PRINTF("zeroing final %d bytes from %08x to %08x\n", count, lastoffset + start, start + size);
 		explicit_bzero((uint8_t*) (start + lastoffset), count);
 	}
-#endif
+	kern_munmap(PROT_KERNEL, load_addr, last_virtual - first_virtual);
 }
 
 void enable_sse() {
@@ -1106,6 +1124,91 @@ void setup_fds()
 	for (int i = next_fd; i < BOGFD_MAX; ++i) {
 		FDS[i].type = BOGFD_CLOSED;
 	}
+}
+
+void setup_entrypoint()
+{
+	if (!kern_mmap(&user_stack, NULL, USER_STACK_SIZE, PROT_WRITE | PROT_READ, MAP_STACK | MAP_ANON)) {
+		ERROR_PRINTF("couldn't get map for user stack\n");
+		while (1) {}
+	}
+	user_stack += USER_STACK_SIZE; // we actually want to keep track of the top of the stack
+
+	void* new_top = (void*) user_stack;
+
+	// list of page sizes
+	new_top -= sizeof(int);
+	*(int *)new_top = 0;
+	new_top -= sizeof(int);
+	*(int *)new_top = 0x1000;
+	void * page_sizes = new_top;
+
+	// set up environment
+	char * env[] = {"BINDIR=/", "ERL_INETRC=/cfg/inetrc", NULL}; // "LD_DEBUG=1", "LD_32_DEBUG=1", NULL };
+	// set up arguments
+	char *argv[] = {"rtld", "/bin/i386-none-elf/beam", "--", "-root", "",
+			"-progname", "erl", NULL};
+
+	int i = 0;
+	while (env[i] != NULL) {
+		size_t len = strlen(env[i]) + 1;
+		new_top -= len;
+		memcpy ((uint8_t*) new_top, env[i], len);
+		env[i] = new_top;
+		++i;
+	}
+	i = 0;
+	while (argv[i] != NULL) {
+		size_t len = strlen(argv[i]) + 1;
+		new_top -= len;
+		memcpy ((uint8_t*) new_top, argv[i], len);
+		argv[i] = new_top;
+		++i;
+	}
+
+	// set up elf headers
+	new_top -= sizeof(Elf32_Auxinfo);
+	((Elf32_Auxinfo *)new_top)->a_type = AT_NULL;
+
+	new_top -= sizeof(Elf32_Auxinfo);
+	((Elf32_Auxinfo *)new_top)->a_type = AT_PHNUM;
+	((Elf32_Auxinfo *)new_top)->a_un.a_val = phnum;
+
+	new_top -= sizeof(Elf32_Auxinfo);
+	((Elf32_Auxinfo *)new_top)->a_type = AT_PHENT;
+	((Elf32_Auxinfo *)new_top)->a_un.a_val = phent;
+
+	new_top -= sizeof(Elf32_Auxinfo);
+	((Elf32_Auxinfo *)new_top)->a_type = AT_PHDR;
+	((Elf32_Auxinfo *)new_top)->a_un.a_ptr = phead_start;
+
+	new_top -= sizeof(Elf32_Auxinfo);
+	((Elf32_Auxinfo *)new_top)->a_type = AT_BASE;
+	((Elf32_Auxinfo *)new_top)->a_un.a_ptr = (void *)load_addr;
+
+	new_top -= sizeof(Elf32_Auxinfo);
+	((Elf32_Auxinfo *)new_top)->a_type = AT_PAGESIZESLEN;
+	((Elf32_Auxinfo *)new_top)->a_un.a_val = 8;
+
+	new_top -= sizeof(Elf32_Auxinfo);
+	((Elf32_Auxinfo *)new_top)->a_type = AT_PAGESIZES;
+	((Elf32_Auxinfo *)new_top)->a_un.a_ptr = page_sizes;
+
+
+	// copy environment pointers
+	size_t bytes = sizeof(env);
+	new_top -= bytes;
+	memcpy (new_top, env, bytes);
+
+	// copy argv pointers
+	bytes = sizeof(argv);
+	new_top -= bytes;
+	memcpy (new_top, argv, bytes);
+	new_top -= sizeof(char *);
+	*(int *)new_top = (sizeof(argv) / sizeof (char*)) - 1;
+
+	DEBUG_PRINTF ("jumping to %08x\n", entrypoint);
+	start_entrypoint(new_top, entrypoint);
 }
 
 // This is our kernel's main function
@@ -1175,66 +1278,7 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 	}
 
 	if (entrypoint) {
-		DEBUG_PRINTF ("jumping to %08x\n", entrypoint);
-		if (!kern_mmap(&user_stack, NULL, USER_STACK_SIZE, PROT_WRITE | PROT_READ, MAP_STACK | MAP_ANON)) {
-			ERROR_PRINTF("couldn't get map for user stack\n");
-			while (1) {}
-		}
-		user_stack += USER_STACK_SIZE; // we actually want to keep track of the top of the stack
-
-		void* new_top = (void*) user_stack;
-
-		// list of page sizes
-		new_top -= sizeof(int);
-		*(int *)new_top = 0;
-		new_top -= sizeof(int);
-		*(int *)new_top = 0x1000;
-		void * page_sizes = new_top;
-
-		// set up elf headers
-		new_top -= sizeof(Elf32_Auxinfo);
-		((Elf32_Auxinfo *)new_top)->a_type = AT_NULL;
-
-		new_top -= sizeof(Elf32_Auxinfo);
-		((Elf32_Auxinfo *)new_top)->a_type = AT_PHNUM;
-		((Elf32_Auxinfo *)new_top)->a_un.a_val = phnum;
-
-		new_top -= sizeof(Elf32_Auxinfo);
-		((Elf32_Auxinfo *)new_top)->a_type = AT_PHENT;
-		((Elf32_Auxinfo *)new_top)->a_un.a_val = phent;
-
-		new_top -= sizeof(Elf32_Auxinfo);
-		((Elf32_Auxinfo *)new_top)->a_type = AT_PHDR;
-		((Elf32_Auxinfo *)new_top)->a_un.a_ptr = phead_start;
-
-		new_top -= sizeof(Elf32_Auxinfo);
-		((Elf32_Auxinfo *)new_top)->a_type = AT_BASE;
-		((Elf32_Auxinfo *)new_top)->a_un.a_ptr = file->start;
-
-		new_top -= sizeof(Elf32_Auxinfo);
-		((Elf32_Auxinfo *)new_top)->a_type = AT_PAGESIZESLEN;
-		((Elf32_Auxinfo *)new_top)->a_un.a_val = 8;
-		
-		new_top -= sizeof(Elf32_Auxinfo);
-		((Elf32_Auxinfo *)new_top)->a_type = AT_PAGESIZES;
-		((Elf32_Auxinfo *)new_top)->a_un.a_ptr = page_sizes;
-
-		// set up environment
-		char * env[] = {"BINDIR=/", "ERL_INETRC=/cfg/inetrc", NULL}; // "LD_DEBUG=1", "LD_32_DEBUG=1", NULL };
-		size_t bytes = sizeof(env);
-		new_top -= bytes;
-		memcpy (new_top, env, bytes);
-		
-		// set up arguments
-		char *argv[] = {"rtld", "/bin/i386-none-elf/beam", "--", "-root", "",
-		                "-progname", "erl", NULL};
-		bytes = sizeof(argv);
-		new_top -= bytes;
-		memcpy (new_top, argv, bytes);
-		new_top -= sizeof(char *);
-		*(int *)new_top = (sizeof(argv) / sizeof (char*)) - 1;
-
-		start_entrypoint(new_top, entrypoint);
+		setup_entrypoint();
 	}
 	while (1) {
 		while (TIMER_COUNT) {

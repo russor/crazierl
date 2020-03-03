@@ -58,7 +58,8 @@ void init_files(multiboot_module_t *mod) {
 		hardcoded_files[i].size = filelen;
 		start += filelen;
 	}
-};
+	kern_munmap(PROT_KERNEL, mod->mod_start, mod->mod_end - mod->mod_start);
+}
 
 struct hardcoded_file * find_file(const char * name) {
 	for (int i = 0; i < MAX_FILES; ++i) {
