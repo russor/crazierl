@@ -5,6 +5,7 @@ use warnings;
 use Cwd;
 use File::Basename;
 use bytes;
+use v5.25;
 
 my $OTP_DIR = '../otp_src_R12B-5';
 
@@ -40,6 +41,14 @@ foreach my $f (@LOCAL_FILES) {
 		$FILES{$f} = <$file>;
 	}
 }
+
+my $strlen_total = 0;
+
+foreach my $file (keys %FILES) {
+	$strlen_total += length($file) + 1;
+}
+
+print pack('N', scalar(%FILES)), pack('N', $strlen_total);
 
 foreach my $file (sort keys %FILES) {
 	my $data = $FILES{$file};

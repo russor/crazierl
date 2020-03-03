@@ -8,6 +8,6 @@ struct hardcoded_file {
 	size_t size;
 };
 
-void init_files(multiboot_module_t *, uintptr_t *);
+void init_files(multiboot_module_t *);
 struct hardcoded_file * find_file(const char *);
 struct hardcoded_file * find_dir(const char *, size_t, struct hardcoded_file *);

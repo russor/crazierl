@@ -1,21 +1,20 @@
-#define PAGE_SIZE 4096
 #define USER_STACK_SIZE 1024 * 1024
 
-#define DEBUG_PRINTF(...) printf(__VA_ARGS__); move_cursor()
-//#define DEBUG_PRINTF(...)
-#define ERROR_PRINTF(...) printf(__VA_ARGS__); move_cursor()
+#include "common.h"
+#include "files.h"
+#include "kern_mmap.h"
 
-#include <sys/types.h>
-#include <printf.h>
+
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
 
-void move_cursor();
 extern const char *syscallnames[];
 extern void * handle_int_80;
 extern void * unknown_int;
 extern void start_entrypoint(); 
+
+extern void __read_only_start, __read_only_end, __read_write_start, __read_write_end;
 
 char **environ = {NULL};
 char *__progname = "crazierlkernel";
@@ -58,11 +57,10 @@ typedef uint32_t u_int32_t;
 #include <sys/dirent.h>
 #include <sys/uio.h>
 #include <poll.h>
-#include <sys/mman.h>
 #include <sys/rtprio.h>
 #include <sys/umtx.h>
 
-#include "files.h"
+
 
 #define BOGFD_CLOSED 0
 #define BOGFD_TERMIN 1
@@ -135,9 +133,7 @@ volatile uint32_t TIMER_COUNT = 0;
 
 uint8_t last_time[9];
 
-uint32_t free_addr;
-uint32_t max_addr;
-intptr_t user_stack;
+uintptr_t user_stack;
 
 char INPUTBUFFER[16]; // must be a power of 2!
 size_t INPUT_FD;
@@ -247,7 +243,7 @@ void _putchar(char c)
 	default: // Normal characters just get displayed and then increment the column
 		{
 			const size_t index = (VGA_COLS * term_row) + term_col; // Like before, calculate the buffer index
-			vga_buffer[index] = ((uint16_t)term_color << 8) | c;
+			//vga_buffer[index] = ((uint16_t)term_color << 8) | c;
 			term_col ++;
 			break;
 		}
@@ -270,7 +266,7 @@ void _putchar(char c)
 		// clear the line if we're starting a new line
 		size_t index = (VGA_COLS * term_row);
 		for (int i = 0; i < 80; ++i) {
-			vga_buffer[index +i] = ((uint16_t)term_color << 8) | ' ';
+			//vga_buffer[index +i] = ((uint16_t)term_color << 8) | ' ';
 		}
 	}
 }
@@ -569,10 +565,7 @@ int handle_int_80_impl(uint32_t call, struct interrupt_frame iframe)
 		case SYS_munmap:
 			DEBUG_PRINTF("munmap (%08x, %d)\n",
 				frame[0], frame[1]);
-			if (frame[0] + frame[1] == free_addr) {
-				free_addr = frame[0];
-				DEBUG_PRINTF("free_addr -> %08x\n", free_addr);
-			}
+			kern_munmap(0, frame[0], frame[1]);
 			SYSCALL_SUCCESS(0);
 		case SYS_mprotect: SYSCALL_SUCCESS(0); //ignore
 		case SYS_madvise: SYSCALL_SUCCESS(0); //ignore
@@ -780,71 +773,33 @@ int handle_int_80_impl(uint32_t call, struct interrupt_frame iframe)
 			break;
 		case SYS_mmap: {
 			// round up to 4k page
-			void *addr = (void*)frame[0];
+			void *addr = (void *)frame[0];
 			size_t len = frame[1];
 			int prot = frame[2];
 			int flags = frame[3];
 			int fd = frame[4];
 			off_t offset = frame[5];
-			if (fd == -1 && offset == 0) {
-				if (free_addr & 0x0FFF) {
-					free_addr = (free_addr & ~(PAGE_SIZE - 1)) + PAGE_SIZE;
-				}
-				if (addr != 0 && (uint32_t) addr > free_addr) {
-					free_addr = (uint32_t) addr;
-				}
-				if (len > (max_addr - free_addr + 1)) {
-					ERROR_PRINTF("mmap (%08x, %08x, %08x, %08x, %d, %d) = ENOMEM\n",
-						addr, len, prot,
-						flags, fd, offset);
-					SYSCALL_FAILURE(ENOMEM);
-				} else {
-					int return_addr = free_addr;
-					free_addr += len;
-					DEBUG_PRINTF("zeroing %d bytes at %08x\n", len, return_addr);
-					explicit_bzero((uint8_t *)return_addr, len); // zero out new memory!
-					DEBUG_PRINTF("mmap (%08x, %08x, %08x, %08x, %d, %d) = ",
-						addr, len, prot,
-						flags, fd, offset);
-					DEBUG_PRINTF("%08x\n", return_addr);
-					SYSCALL_SUCCESS(return_addr);
-				}
-			} else if (fd < BOGFD_MAX && FDS[fd].type == BOGFD_FILE) {
-				if (addr == 0 && offset + len > FDS[fd].file->size) {
-					ERROR_PRINTF("wants to map past end of file\n");
-				} else if (addr == 0) {
-					int return_addr = (uint32_t) FDS[fd].file->start;
-					DEBUG_PRINTF("mmap (%08x, %08x, %08x, %08x, %d, %d) = ",
-						addr, len, prot,
-						flags, fd, offset);
-					DEBUG_PRINTF("%08x\n", return_addr);
-					SYSCALL_SUCCESS(return_addr);
-				} else {
-					if (offset == 0) {
+			uintptr_t ret_addr;
+			if (kern_mmap(&ret_addr, addr, len, prot, flags)) {
+				if (fd != -1 && fd < BOGFD_MAX && FDS[fd].type == BOGFD_FILE) {
+					if (offset == 0 && len > PAGE_SIZE) {
 						DEBUG_PRINTF("add-symbol-file %s -o 0x%08x\n", FDS[fd].file->name, addr);
 					}
 
 					if (offset + len > FDS[fd].file->size) {
 						size_t avail = FDS[fd].file->size - offset;
-						memcpy((void *)addr, FDS[fd].file->start + offset, avail);
-						DEBUG_PRINTF("explicit zero %08x, %d\n", (addr + avail), len - avail);
-						explicit_bzero((void*)(addr + avail), len - avail);
+						memcpy((void *)ret_addr, FDS[fd].file->start + offset, avail);
+						explicit_bzero((void*)(ret_addr + avail), len - avail);
 					} else {
-						DEBUG_PRINTF("copying...\n");
-						memcpy((void *)addr, FDS[fd].file->start + offset, len);
+						memcpy((void *)ret_addr, FDS[fd].file->start + offset, len);
 					}
-					DEBUG_PRINTF("mmap (%08x, %08x, %08x, %08x, %d, %d) = ",
-						addr, len, prot,
-						flags, fd, offset);
-					DEBUG_PRINTF("%08x\n", addr);
-					SYSCALL_SUCCESS((unsigned int)addr);
+				} else {
+					explicit_bzero((void*)ret_addr, len);
 				}
+				SYSCALL_SUCCESS(ret_addr);
+			} else {
+				SYSCALL_FAILURE(ret_addr);
 			}
-			
-			ERROR_PRINTF("mmap (%08x, %08x, %08x, %08x, %d, %d)\n",
-						addr, len, prot,
-						flags, fd, offset);
-			break;
 			}
 		case SYS_pipe2:
 			DEBUG_PRINTF("pipe2 (%08x, %08x)\n", frame[0], frame[1]);
@@ -966,6 +921,22 @@ void handle_gp(struct interrupt_frame *frame, uint32_t error_code)
 }
 
 __attribute__ ((interrupt))
+void handle_pf(struct interrupt_frame *frame, uint32_t error_code)
+{
+	uint32_t addr;
+	asm volatile("mov %%cr2, %0" : "=a" (addr));
+
+	if (frame) {
+		kern_mmap_debug(addr);
+		ERROR_PRINTF("Got #PF (%u) address %08x, IP: %08x at ", error_code, addr, frame->ip);
+	} else {
+		ERROR_PRINTF("Got #PF, no stack frame\n");
+	}
+	print_time(last_time);
+	while (1) { } // loop forever
+}
+
+__attribute__ ((interrupt))
 void handle_ud(struct interrupt_frame *frame)
 {
 	ERROR_PRINTF("Got #UD IP: %08x at ", frame->ip);
@@ -1008,6 +979,9 @@ void interrupt_setup()
 	IDT[0x0D].offset_1 = ((uint32_t) &handle_gp) & 0xFFFF;
 	IDT[0x0D].offset_2 = ((uint32_t) &handle_gp) >> 16;
 
+	IDT[0x0E].offset_1 = ((uint32_t) &handle_pf) & 0xFFFF;
+	IDT[0x0E].offset_2 = ((uint32_t) &handle_pf) >> 16;
+
 	IDT[0x20].offset_1 = ((uint32_t) &handle_timer) & 0xFFFF;
 	IDT[0x20].offset_2 = ((uint32_t) &handle_timer) >> 16;
 
@@ -1031,16 +1005,17 @@ size_t phent, phnum;
 
 //#define COPY_EXE
 
-void load_file(struct hardcoded_file * file) {
-	DEBUG_PRINTF("add-symbol-file %s -o 0x%08x\n", file->name, file->start);
-	Elf32_Ehdr * head = (Elf32_Ehdr *) file->start;
+void load_file(void *start, char *name, size_t size)
+{
+	DEBUG_PRINTF("add-symbol-file %s -o 0x%08x\n", name, start);
+	Elf32_Ehdr * head = (Elf32_Ehdr *) start;
 	entrypoint = (void *) head->e_entry;
 	DEBUG_PRINTF ("elf entrypoint 0x%08x\n", head->e_entry);
 	phnum = head->e_phnum;
 	phent = head->e_phentsize;
-	Elf32_Phdr *phead = phead_start = (void *)file->start + head->e_phoff;
+	Elf32_Phdr *phead = phead_start = start + head->e_phoff;
 
-	DEBUG_PRINTF ("program binary size %d (0x%08x - 0x%08x)\n", file->size, file->start, file->end);
+	DEBUG_PRINTF ("program binary size %d (0x%08x - 0x%08x)\n", size, start, start + size);
 	DEBUG_PRINTF ("%d program headers of size %d at %08x\n", phnum, phent, phead_start);
 
 	size_t lastoffset = 0;
@@ -1058,8 +1033,8 @@ void load_file(struct hardcoded_file * file) {
 				ERROR_PRINTF("zeroing %d bytes from %08x to %08x\n", count, phead->p_vaddr - count, phead->p_vaddr);
 				explicit_bzero((uint8_t *)(phead->p_vaddr - count), count);
 #else
-				ERROR_PRINTF("zeroing %d bytes from %08x to %08x\n", count, lastoffset + file->start, phead->p_offset + file->start);
-				explicit_bzero((uint8_t *)(lastoffset + file->start), count);
+				ERROR_PRINTF("zeroing %d bytes from %08x to %08x\n", count, lastoffset + start, phead->p_offset + start);
+				explicit_bzero((uint8_t *)(lastoffset + start), count);
 #endif				
 			}
 				
@@ -1069,12 +1044,12 @@ void load_file(struct hardcoded_file * file) {
 			}
 #ifndef COPY_EXE
 			if (phead->p_offset == 0) {
-				entrypoint += (void *)file->start - (void *) phead->p_vaddr;
+				entrypoint += start - (void *) phead->p_vaddr;
 				ERROR_PRINTF("elf entrypoint moved to 0x%08x\n", entrypoint);
 			}
 #endif
 #ifdef COPY_EXE
-			uint8_t *src = (void*) file->start + phead->p_offset;
+			uint8_t *src = start + phead->p_offset;
 			uint8_t *dst = (void*) phead->p_vaddr;
 			ERROR_PRINTF("copying %d bytes from %08x to %08x\n", phead->p_filesz, src, dst);
 			memcpy(dst, src, phead->p_filesz);
@@ -1089,18 +1064,14 @@ void load_file(struct hardcoded_file * file) {
 			lastoffset = phead->p_offset + phead->p_filesz;
 #endif
 			uint32_t next_addr = phead->p_memsz + phead->p_vaddr;
-			if (next_addr > free_addr && next_addr < max_addr) {
-				DEBUG_PRINTF("moving free address from %08x to %08x\n", free_addr, next_addr);
-				free_addr = next_addr;
-			}
 		}
 		++phead;
 	}
 #ifndef COPY_EXE
-	size_t count = file->size - lastoffset;
+	size_t count = size - lastoffset;
 	if (count) {
-		ERROR_PRINTF("zeroing %d bytes from %08x to %08x\n", count, lastoffset + file->start, file->end);
-		explicit_bzero((uint8_t*) (file->start + lastoffset), count);
+		ERROR_PRINTF("zeroing %d bytes from %08x to %08x\n", count, lastoffset + start, start + size);
+		explicit_bzero((uint8_t*) (start + lastoffset), count);
 	}
 #endif
 }
@@ -1154,67 +1125,64 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 
 	get_time(last_time);
 	print_time(last_time);
-
 	
-	DEBUG_PRINTF("memory map: %d @ %08x\n", mb->mmap_length, mb->mmap_addr);
-      multiboot_memory_map_t *mmap;
-      
-      DEBUG_PRINTF ("mmap_addr = 0x%x, mmap_length = 0x%x\n",
-              (unsigned) mb->mmap_addr, (unsigned) mb->mmap_length);
-      for (mmap = (multiboot_memory_map_t *) mb->mmap_addr;
-           (unsigned long) mmap < mb->mmap_addr + mb->mmap_length;
-           mmap = (multiboot_memory_map_t *) ((unsigned long) mmap
-                                    + mmap->size + sizeof (mmap->size))) {
-        DEBUG_PRINTF (" size = 0x%x, base_addr = 0x%08x,"
-                " length = 0x%08x, type = 0x%x\n",
-                (unsigned) mmap->size,
-                //(unsigned) (mmap->addr >> 32),
-                (unsigned) (mmap->addr & 0xffffffff),
-                //(unsigned) (mmap->len >> 32),
-                (unsigned) (mmap->len & 0xffffffff),
-                (unsigned) mmap->type);	
-                if (mmap->type == 1) {
-                	if (mmap->len > (max_addr - free_addr)) {
-                		free_addr = mmap->addr;
-                		max_addr = mmap->addr + (mmap->len - 1);
-                		DEBUG_PRINTF("free memory now at %08x-%08x\n", free_addr, max_addr);
-			}
-                }
+	kern_mmap_init(mb->mmap_length, mb->mmap_addr);
+	
+	uintptr_t scratch;
+	if (!kern_mmap(&scratch, &__read_only_start, &__read_only_end - &__read_only_start, PROT_KERNEL | PROT_READ, 0)) {
+		ERROR_PRINTF("couldn't map read only kernel section\n");
+		while (1) { }
 	}
 
+	if (!kern_mmap(&scratch, &__read_write_start, &__read_write_end - &__read_write_start, PROT_KERNEL | PROT_READ | PROT_WRITE, 0)) {
+		ERROR_PRINTF("couldn't map read/write kernel section\n");
+		while (1) { }
+	}
+	
+	if (!kern_mmap(&scratch, (void *)vga_buffer, 80 * 25 * 2, PROT_KERNEL | PROT_FORCE | PROT_READ | PROT_WRITE, 0)) {
+		ERROR_PRINTF("couldn't map vga buffer\n");
+	}
+	
 	DEBUG_PRINTF("kernel main at %08x\n", kernel_main);
 	DEBUG_PRINTF("Multiboot magic: %08x (%s)\n", mb_magic, (char *) mb->boot_loader_name);
 	DEBUG_PRINTF("Multiboot info at %08x (%08x)\n", mb, &mb);
 	DEBUG_PRINTF("mem range: %08x-%08x\n", mb->mem_lower, mb->mem_upper);
 	DEBUG_PRINTF("modules: %d @ %08x\n", mb->mods_count, mb->mods_addr);
-
-	DEBUG_PRINTF("command line: %s\n", mb->cmdline);
-
-	multiboot_module_t *mods = (void *)mb->mods_addr;
-	for (int mod = 0; mod < mb->mods_count; ++mod) {
-		DEBUG_PRINTF("Module %d (%s):\n 0x%08x-0x%08x\n", mod, mods[mod].cmdline, mods[mod].mod_start, mods[mod].mod_end);
-		init_files(&mods[mod], &max_addr);
-		free_addr = mods[mod].mod_start;
-	}
 	
+	DEBUG_PRINTF("command line: %s\n", mb->cmdline);
 	char * filestart = strchrnul((char *)mb->cmdline, ' ');
 	while (*filestart == ' ') { ++filestart; }
 	char * fileend = strchrnul(filestart, ' ');
 	char filename [256];
 	strncpy(filename, filestart, fileend - filestart);
 	DEBUG_PRINTF("file to load %s\n", filename);
+
+	size_t mods_count = mb->mods_count;
+	multiboot_module_t *mods = (void *)mb->mods_addr;
+
+	kern_mmap_enable_paging();
+	kern_mmap(&scratch, (void *) mods, mods_count * sizeof(mods), PROT_KERNEL | PROT_READ | PROT_FORCE, 0);
+
+	for (int mod = 0; mod < mods_count; ++mod) {
+		DEBUG_PRINTF("Module %d (%s):\n 0x%08x-0x%08x\n", mod, mods[mod].cmdline, mods[mod].mod_start, mods[mod].mod_end);
+		init_files(&mods[mod]);
+	}
+	
 	struct hardcoded_file * file = find_file(filename);
 	if (file) {
 		DEBUG_PRINTF("loading %s at %08x\n", filename, file->start);
-		load_file(file);
+		load_file(file->start, file->name, file->size);
 	}
 
 	if (entrypoint) {
 		DEBUG_PRINTF ("jumping to %08x\n", entrypoint);
-		user_stack = max_addr = max_addr & ~(PAGE_SIZE - 1);
-		
-		void* new_top = (void*) max_addr;
-		max_addr -= USER_STACK_SIZE; // 1 MB stack should be good for now?
+		if (!kern_mmap(&user_stack, NULL, USER_STACK_SIZE, PROT_WRITE | PROT_READ, MAP_STACK | MAP_ANON)) {
+			ERROR_PRINTF("couldn't get map for user stack\n");
+			while (1) {}
+		}
+		user_stack += USER_STACK_SIZE; // we actually want to keep track of the top of the stack
+
+		void* new_top = (void*) user_stack;
 
 		// list of page sizes
 		new_top -= sizeof(int);
@@ -1275,4 +1243,3 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 		}
 	}
 }
-

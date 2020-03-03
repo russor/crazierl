@@ -14,13 +14,8 @@ SECTIONS
 	/* The Multiboot header is Read-Only data, so we can put it in a '.rodata' section. */
 	.rodata BLOCK(4K) : ALIGN(4K)
 	{
+		__read_only_start = .;
 		*(.multiboot)
-	}
- 
-	/* Executable code */
-	.text BLOCK(4K) : ALIGN(4K)
-	{
-		*(.text)
 	}
  
 	/* Read-only data. */
@@ -28,10 +23,19 @@ SECTIONS
 	{
 		*(.rodata)
 	}
+
+	/* Executable code */
+	.text BLOCK(4K) : ALIGN(4K)
+	{
+		*(.text)
+		__read_only_end = .;
+	}
+ 
  
 	/* Read-write data (initialized) */
 	.data BLOCK(4K) : ALIGN(4K)
 	{
+		__read_write_start = .;
 		*(.data)
 	}
  
@@ -40,5 +44,6 @@ SECTIONS
 	{
 		*(COMMON)
 		*(.bss)
+		__read_write_end = .;
 	}
 }
