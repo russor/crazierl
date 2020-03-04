@@ -243,7 +243,7 @@ void _putchar(char c)
 	default: // Normal characters just get displayed and then increment the column
 		{
 			const size_t index = (VGA_COLS * term_row) + term_col; // Like before, calculate the buffer index
-			//vga_buffer[index] = ((uint16_t)term_color << 8) | c;
+			vga_buffer[index] = ((uint16_t)term_color << 8) | c;
 			term_col ++;
 			break;
 		}
@@ -266,7 +266,7 @@ void _putchar(char c)
 		// clear the line if we're starting a new line
 		size_t index = (VGA_COLS * term_row);
 		for (int i = 0; i < 80; ++i) {
-			//vga_buffer[index +i] = ((uint16_t)term_color << 8) | ' ';
+			vga_buffer[index +i] = ((uint16_t)term_color << 8) | ' ';
 		}
 	}
 }
