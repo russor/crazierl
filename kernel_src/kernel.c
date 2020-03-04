@@ -744,6 +744,9 @@ int handle_int_80_impl(uint32_t call, struct interrupt_frame *iframe)
 		case SYS_sigaction:
 			DEBUG_PRINTF("sigaction (%d, ...)\n", frame[0]);
 			SYSCALL_SUCCESS(0);
+		case SYS_getcontext:
+			ERROR_PRINTF("sending back bogus success for getcontext\n");
+			SYSCALL_SUCCESS(0);
 		case SYS_thr_self:
 			DEBUG_PRINTF("thr_self()\n");
 			*((long *)frame[0]) = 100002;
