@@ -412,11 +412,11 @@ void handle_com1(struct interrupt_frame *frame)
 }
 
 #define CARRY 1
-#define SYSCALL_SUCCESS(ret) { iframe.flags &= ~CARRY; return ret; }
-#define SYSCALL_FAILURE(ret) { iframe.flags |= CARRY; return ret; }
-int handle_int_80_impl(uint32_t call, struct interrupt_frame iframe)
+#define SYSCALL_SUCCESS(ret) { iframe->flags &= ~CARRY; return ret; }
+#define SYSCALL_FAILURE(ret) { iframe->flags |= CARRY; return ret; }
+int handle_int_80_impl(uint32_t call, struct interrupt_frame *iframe)
 {	
-	unsigned int *frame = ((unsigned int *)iframe.sp) + 1;
+	unsigned int *frame = ((unsigned int *)iframe->sp) + 1;
 	switch(call) {
 		case SYS_read:
 			if (frame[0] < BOGFD_MAX && FDS[frame[0]].type == BOGFD_FILE) {
@@ -594,7 +594,7 @@ int handle_int_80_impl(uint32_t call, struct interrupt_frame iframe)
 					ugs_base.base_2 = base & 0xFF;
 					base >>= 8;
 					ugs_base.base_3 = base & 0xFF;
-					base = &ugs_base - &null_gdt;
+					base = (uintptr_t)&ugs_base - (uintptr_t)&null_gdt;
 					kern_mmap_debug(frame[1]);
 					DEBUG_PRINTF("Setting GS base to %08x, %d\n", frame[1], base);
 					asm volatile ( "movw %0, %%gs" :: "rm" (base));

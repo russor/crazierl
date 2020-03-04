@@ -134,9 +134,16 @@
 			jmp hang // If that didn't work, loop around and try again.
 	// handle syscall interrupts
 	handle_int_80:
+		pushl %ecx // save
+		pushl %edx
+		mov %esp, %ecx
+		addl $8, %ecx
+		pushl %ecx
 		pushl %eax // push syscall number
 		call handle_int_80_impl // call into C now
-		addl $4, %esp // skip pushed syscall
+		addl $8, %esp // skip pushed syscall and frame pointer
+		popl %edx
+		popl %ecx
 		iret
 
 	// handle call from C, adjust the stack a bit, and jump to the
