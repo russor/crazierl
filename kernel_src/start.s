@@ -142,7 +142,7 @@
 		addl $12, %ecx
 		pushl %ecx
 		pushl %eax // push syscall number
-		call handle_int_80_impl // call into C now
+		call handle_syscall // call into C now
 		addl $8, %esp // skip pushed syscall and frame pointer
 		popl %edx
 		popl %ecx

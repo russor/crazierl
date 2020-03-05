@@ -50,7 +50,8 @@ typedef uint32_t u_int32_t;
 #include <sys/ioctl.h>
 #include <term.h>
 #include <sys/resource.h>
-#include <machine/sysarch.h>
+
+
 #include <fcntl.h>
 #include <sys/param.h>
 #include <sys/mount.h>
@@ -59,7 +60,15 @@ typedef uint32_t u_int32_t;
 #include <poll.h>
 #include <sys/rtprio.h>
 #include <sys/umtx.h>
+#include <sys/sysproto.h>
 
+
+// include this last; use _KERNEL to avoid conflicting but unused definition
+// of int sysarch between sysproto.h and sysarch.h
+
+#define _KERNEL
+#include <machine/sysarch.h>
+#undef _KERNEL
 
 
 #define BOGFD_CLOSED 0
@@ -414,23 +423,24 @@ void handle_com1(struct interrupt_frame *frame)
 #define CARRY 1
 #define SYSCALL_SUCCESS(ret) { iframe->flags &= ~CARRY; return ret; }
 #define SYSCALL_FAILURE(ret) { iframe->flags |= CARRY; return ret; }
-int handle_int_80_impl(uint32_t call, struct interrupt_frame *iframe)
+int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 {	
-	unsigned int *frame = ((unsigned int *)iframe->sp) + 1;
+	void *argp = (void *)(iframe->sp + sizeof(iframe->sp));
 	switch(call) {
-		case SYS_read:
-			if (frame[0] < BOGFD_MAX && FDS[frame[0]].type == BOGFD_FILE) {
-				DEBUG_PRINTF("read (%d, %08x, %d)\n", frame[0], frame[1], frame[2]);
-				struct BogusFD *fd = &FDS[frame[0]];
-				int read = min(frame[2], fd->file->end - fd->pos);
-				memcpy((void *)frame[1], fd->pos, read);
+		case SYS_read: {
+			struct read_args *a = argp;
+			if (a->fd < BOGFD_MAX && FDS[a->fd].type == BOGFD_FILE) {
+				DEBUG_PRINTF("read (%d, %08x, %d)\n", a->fd, a->buf, a->nbyte);
+				struct BogusFD *fd = &FDS[a->fd];
+				int read = min(a->nbyte, fd->file->end - fd->pos);
+				memcpy(a->buf, fd->pos, read);
 				fd->pos += read;
 				SYSCALL_SUCCESS(read);
-			} else if (frame[0] < BOGFD_MAX && FDS[frame[0]].type == BOGFD_TERMIN) {
-				struct BogusFD *fd = &FDS[frame[0]];
+			} else if (a->fd < BOGFD_MAX && FDS[a->fd].type == BOGFD_TERMIN) {
+				struct BogusFD *fd = &FDS[a->fd];
 				int read = 0;
-				uint8_t * buffer = (uint8_t *)frame[1];
-				while (read < frame[2]) {
+				uint8_t * buffer = a->buf;
+				while (read < a->nbyte) {
 					if (fd->status[0] == fd->status[1]) {
 						if (fd->status[3] & 0x01) {
 							ERROR_PRINTF("com 0x%x buffer empty\n", PORT_COM1);
@@ -451,27 +461,31 @@ int handle_int_80_impl(uint32_t call, struct interrupt_frame *iframe)
 					SYSCALL_FAILURE(EAGAIN);
 				}
 			}
-			ERROR_PRINTF("read (%d, %08x, %d) = EBADF\n", frame[0], frame[1], frame[2]);
+			ERROR_PRINTF("read (%d, %08x, %d) = EBADF\n", a->fd, a->buf, a->nbyte);
 			SYSCALL_FAILURE(EBADF);
-		case SYS_write:
-			if (frame[0] < BOGFD_MAX && FDS[frame[0]].type == BOGFD_TERMOUT) {
-				uint8_t *buffer = (uint8_t *)frame[1];
-				size_t nbyte = frame[2];
+		}
+		case SYS_write: {
+			struct write_args *a = argp;
+			if (a->fd < BOGFD_MAX && FDS[a->fd].type == BOGFD_TERMOUT) {
+				uint8_t *buffer = (uint8_t *)a->buf;
+				size_t nbyte = a->nbyte;
 				while (nbyte) {
 					_putchar(*buffer);
 					++buffer;
 					--nbyte;
 				}
 				move_cursor();
-				SYSCALL_SUCCESS(frame[2]);
+				SYSCALL_SUCCESS(a->nbyte);
 			} else {
-				ERROR_PRINTF("write (%d, %08x, %d)\n", frame[0], frame[1], frame[2]);
+				ERROR_PRINTF("write (%d, %08x, %d)\n", a->fd, a->buf, a->nbyte);
 				SYSCALL_FAILURE(EBADF);
 			}
-		case SYS_writev:
-			if (frame[0] < BOGFD_MAX && FDS[frame[0]].type == BOGFD_TERMOUT) {
-				struct iovec *iov = (struct iovec *)frame[1];
-				int iovcnt = frame[2];
+		}
+		case SYS_writev: {
+			struct writev_args *a = argp;
+			if (a->fd < BOGFD_MAX && FDS[a->fd].type == BOGFD_TERMOUT) {
+				struct iovec *iov = a->iovp;
+				unsigned int iovcnt = a->iovcnt;
 				int written = 0;
 				while (iovcnt) {
 					uint8_t *buffer = (uint8_t *) iov->iov_base;
@@ -488,16 +502,19 @@ int handle_int_80_impl(uint32_t call, struct interrupt_frame *iframe)
 				move_cursor();
 				SYSCALL_SUCCESS(written);
 			} else {
-				ERROR_PRINTF("write (%d, %08x, %d)\n", frame[0], frame[1], frame[2]);
+				ERROR_PRINTF("writev (%d, %08x, %d)\n", a->fd, a->iovp, a->iovcnt);
 				SYSCALL_FAILURE(EBADF);
 			}
+		}
 		case SYS_openat:
-			frame += 1;
+			argp += sizeof(argp);
 		case SYS_open: {
+			struct open_args *a = argp;
+
 			struct hardcoded_file * file;
-			if (frame[1] & O_DIRECTORY) {
-				size_t len = strlen((char *)frame[0]);
-				file = find_dir((char *)frame[0], len, 0);
+			if (a->flags & O_DIRECTORY) {
+				size_t len = strlen(a->path);
+				file = find_dir(a->path, len, 0);
 				if (file) {
 					FDS[next_fd].type = BOGFD_DIR;
 					FDS[next_fd].file = file;
@@ -505,7 +522,7 @@ int handle_int_80_impl(uint32_t call, struct interrupt_frame *iframe)
 					SYSCALL_SUCCESS(next_fd++);
 				}
 			} else {
-				file = find_file((char *)frame[0]);
+				file = find_file(a->path);
 				if (file != NULL) {
 					FDS[next_fd].type = BOGFD_FILE;
 					FDS[next_fd].file = file;
@@ -513,32 +530,37 @@ int handle_int_80_impl(uint32_t call, struct interrupt_frame *iframe)
 					SYSCALL_SUCCESS(next_fd++);
 				}
 			}
-			DEBUG_PRINTF ("open (%s, %08x) = ENOENT\n", frame[0], frame[1]);
+			DEBUG_PRINTF ("open (%s, %08x) = ENOENT\n", a->path, a->flags);
 			SYSCALL_FAILURE(ENOENT);
+		}
+		case SYS_close: {
+			struct close_args *a = argp;
+			if (FDS[a->fd].type != BOGFD_CLOSED) {
+				DEBUG_PRINTF("close (%d)\n", a->fd);
 			}
-		case SYS_close:
-			if (FDS[frame[0]].type != BOGFD_CLOSED) { 
-				DEBUG_PRINTF("close (%d)\n", frame[0]);
-			}
-			FDS[frame[0]].type = BOGFD_CLOSED;
-			if (frame[0] + 1 == next_fd) {
+			FDS[a->fd].type = BOGFD_CLOSED;
+			if (a->fd + 1 == next_fd) {
 				--next_fd;
 			}
 			SYSCALL_SUCCESS(0);
+		}
 		case SYS_getpid: SYSCALL_SUCCESS(2);
 		case SYS_geteuid: SYSCALL_SUCCESS(0); // root
-		case SYS_access:
-			DEBUG_PRINTF ("access (%s, %d)\n", frame[0], frame[1]);
+		case SYS_access: {
+			struct access_args *a = argp;
+			DEBUG_PRINTF ("access (%s, %d)\n", a->path, a->amode);
 			SYSCALL_FAILURE(ENOENT);
-		case SYS_ioctl:
-			DEBUG_PRINTF("ioctl (%d, %08x, ...)\n", frame[0], frame[1]);
-			DEBUG_PRINTF("parm_len %d, cmd %d, group %c\n", IOCPARM_LEN(frame[1]), frame[1] & 0xff, IOCGROUP(frame[1]));
-			switch (frame[1]) {
+		}
+		case SYS_ioctl: {
+			struct ioctl_args *a = argp;
+			DEBUG_PRINTF("ioctl (%d, %08x, ...)\n", a->fd, a->com);
+			DEBUG_PRINTF("parm_len %d, cmd %d, group %c\n", IOCPARM_LEN(a->com), a->com & 0xff, IOCGROUP(a->com));
+			switch (a->com) {
 				case TIOCGETA: {
-					if (frame[0] >= BOGFD_MAX || (FDS[frame[0]].type != BOGFD_TERMIN && FDS[frame[0]].type != BOGFD_TERMOUT)) {
+					if (a->fd >= BOGFD_MAX || (FDS[a->fd].type != BOGFD_TERMIN && FDS[a->fd].type != BOGFD_TERMOUT)) {
 						break;
 					}
-					struct termios *t = (struct termios *)frame[2];
+					struct termios *t = (struct termios *)a->data;
 					t->c_iflag = 11010;
 					t->c_oflag = 3;
 					t->c_cflag = 19200;
@@ -550,312 +572,330 @@ int handle_int_80_impl(uint32_t call, struct interrupt_frame *iframe)
 					}
 				case TIOCSETA: SYSCALL_SUCCESS(0); // ignore settings
 				case TIOCGWINSZ: {
-					if (frame[0] >= BOGFD_MAX || (FDS[frame[0]].type != BOGFD_TERMIN && FDS[frame[0]].type != BOGFD_TERMOUT)) {
+					if (a->fd >= BOGFD_MAX || (FDS[a->fd].type != BOGFD_TERMIN && FDS[a->fd].type != BOGFD_TERMOUT)) {
 						break;
 					}
-					struct winsize *w = (struct winsize *)frame[2];
+					struct winsize *w = (struct winsize *)a->data;
 					w->ws_row = 25;
 					w->ws_col = 80;
 					SYSCALL_SUCCESS(0);
 					}
 			}
-			ERROR_PRINTF("parm_len %d, cmd %d, group %c\n", IOCPARM_LEN(frame[1]), frame[1] & 0xff, IOCGROUP(frame[1]));
+			ERROR_PRINTF("parm_len %d, cmd %d, group %c\n", IOCPARM_LEN(a->com), a->com & 0xff, IOCGROUP(a->com));
 			break;
-		case SYS_readlink:
-			DEBUG_PRINTF("readlink (%s, %08x, %d)\n", (char *)frame[0], frame[1], frame[2]);
+		}
+		case SYS_readlink: {
+			struct readlink_args *a = argp;
+			DEBUG_PRINTF("readlink (%s, %08x, %d)\n", a->path, a->buf, a->count);
 			SYSCALL_FAILURE(ENOENT);
-		case SYS_munmap:
+		}
+		case SYS_munmap: {
+			struct munmap_args *a = argp;
 			DEBUG_PRINTF("munmap (%08x, %d)\n",
-				frame[0], frame[1]);
-			kern_munmap(0, frame[0], frame[1]);
+				a->addr, a->len);
+			kern_munmap(0, (uintptr_t) a->addr, a->len);
 			SYSCALL_SUCCESS(0);
+		}
 		case SYS_mprotect: SYSCALL_SUCCESS(0); //ignore
 		case SYS_madvise: SYSCALL_SUCCESS(0); //ignore
-		case SYS_fcntl:
-			ERROR_PRINTF("fcntl (%d, %08x)\n", frame[0], frame[1]);
+		case SYS_fcntl: {
+			struct fcntl_args *a = argp;
+			ERROR_PRINTF("fcntl (%d, %08x, %08x)\n", a->fd, a->cmd, a->arg);
 			SYSCALL_SUCCESS(0);
-		case SYS_socket:
-			ERROR_PRINTF("socket(%d, %d, %d)\n", frame[0], frame[1], frame[2]);
+		}
+		case SYS_socket: {
+			struct socket_args *a = argp;
+			ERROR_PRINTF("socket(%d, %d, %d)\n", a->domain, a->type, a->protocol);
 			SYSCALL_FAILURE(EACCES);
-		case SYS_gettimeofday:
-			if (frame[0]) {
-				((struct timeval *) frame[0])->tv_sec = unix_time();
-				((struct timeval *) frame[0])->tv_usec = 0;
+		}
+		case SYS_gettimeofday: {
+			struct gettimeofday_args *a = argp;
+			if (a->tp != NULL) {
+				a->tp->tv_sec = unix_time();
+				a->tp->tv_usec = 0;
 			}
-			if (frame[1]) {
-				((struct timezone *) frame[1])->tz_minuteswest = 0;
-				((struct timezone *) frame[1])->tz_dsttime = 0;
+			if (a->tzp != NULL) {
+				a->tzp->tz_minuteswest = 0;
+				a->tzp->tz_dsttime = 0;
 			}
 			SYSCALL_SUCCESS(0);
+		}
 		case SYS_sysarch: {
-			switch (frame[0]) {
+			struct sysarch_args *a = argp;
+			switch (a->op) {
 				case I386_SET_GSBASE: {
-					uint32_t base = *((uint32_t *) frame[1]);
+					uint32_t base = *((uint32_t *) a->parms);
 					ugs_base.base_1 = base & 0xFFFF;
 					base >>= 16;
 					ugs_base.base_2 = base & 0xFF;
 					base >>= 8;
 					ugs_base.base_3 = base & 0xFF;
 					base = (uintptr_t)&ugs_base - (uintptr_t)&null_gdt;
-					kern_mmap_debug(frame[1]);
-					DEBUG_PRINTF("Setting GS base to %08x, %d\n", frame[1], base);
+					kern_mmap_debug(base);
+					DEBUG_PRINTF("Setting GS base to %08x, %d\n", a->parms, base);
 					asm volatile ( "movw %0, %%gs" :: "rm" (base));
 					SYSCALL_SUCCESS(0);
 				}
-				}
 			}
+		}
 		case SYS_getrlimit: {
-			struct rlimit *rlp = (struct rlimit *) frame[1];
-			switch (frame[0]) {
+			struct __getrlimit_args *a = argp;
+			switch (a->which) {
 				case RLIMIT_STACK:
-					rlp->rlim_cur = USER_STACK_SIZE;
-					rlp->rlim_max = USER_STACK_SIZE;
+					a->rlp->rlim_cur = USER_STACK_SIZE;
+					a->rlp->rlim_max = USER_STACK_SIZE;
 					break;
 				case RLIMIT_NOFILE:
-					rlp->rlim_cur = BOGFD_MAX;
-					rlp->rlim_max = BOGFD_MAX;
+					a->rlp->rlim_cur = BOGFD_MAX;
+					a->rlp->rlim_max = BOGFD_MAX;
 					break;
 				default:
-					rlp->rlim_cur = RLIM_INFINITY;
-					rlp->rlim_max = RLIM_INFINITY;
+					a->rlp->rlim_cur = RLIM_INFINITY;
+					a->rlp->rlim_max = RLIM_INFINITY;
 			}
 			SYSCALL_SUCCESS(0);
-			}
-		case SYS___sysctl:
-			if (frame[1] == 2) {
-				uint32_t *buffer = (uint32_t *)frame[0];
-				switch (buffer[0]) {
-					case CTL_KERN: switch(buffer[1]) {
+		}
+		case SYS___sysctl: {
+			struct sysctl_args *a = argp;
+			if (a->namelen == 2) {
+				switch (a->name[0]) {
+					case CTL_KERN: switch(a->name[1]) {
 						case KERN_OSTYPE:
-							strlcpy((char *)frame[2], "FreeBSD", frame[3]);
+							strlcpy(a->old, "FreeBSD", *a->oldlenp);
 							SYSCALL_SUCCESS(0);
 						case KERN_OSRELEASE:
-							strlcpy((char *)frame[2], "12.1-RELEASE-p1", frame[3]);
+							strlcpy(a->old, "12.1-RELEASE-p1", *a->oldlenp);
 							SYSCALL_SUCCESS(0);
 						case KERN_VERSION:
-							strlcpy((char *)frame[2], "FreeBSD 12.1-RELEASE-p1 GENERIC", frame[3]);
+							strlcpy(a->old, "FreeBSD 12.1-RELEASE-p1 GENERIC", *a->oldlenp);
 							SYSCALL_SUCCESS(0);
 						case KERN_HOSTNAME:
-							strlcpy((char *)frame[2], "node0.crazierl.org", frame[3]);
+							strlcpy(a->old, "node0.crazierl.org", *a->oldlenp);
 							SYSCALL_SUCCESS(0);
-						case KERN_ARND:
-							{
-								uint8_t *r = (uint8_t *)frame[2];
-								uint32_t count = *((uint32_t *)frame[3]);
-								DEBUG_PRINTF("random requested (%d)\n", count);
-								while (count) {
-									*r = rand() & 0xFF;
-									--count;
-								}
-								SYSCALL_SUCCESS(0);
+						case KERN_ARND:{
+							uint8_t *r = (uint8_t *)a->old;
+							uint32_t count = *a->oldlenp;
+							DEBUG_PRINTF("random requested (%d)\n", count);
+							while (count) {
+								*r = rand() & 0xFF;
+								--count;
+								++r;
 							}
+							SYSCALL_SUCCESS(0);
+						}
 						case KERN_OSRELDATE:
-							*(uint32_t *)frame[2] = 1201000; // pretend to be freebsd 12.1 for now
-							*(uint32_t *)frame[3] = sizeof(uint32_t);
+							*(u_int *)a->old = 1201000; // pretend to be freebsd 12.1 for now
+							*a->oldlenp = sizeof(uint);
 							SYSCALL_SUCCESS(0);
 						case KERN_USRSTACK:
-							*(intptr_t *)frame[2] = user_stack;
+							*(uintptr_t *)a->old = user_stack;
 							SYSCALL_SUCCESS(0);
-						}
-					case CTL_VM: switch (buffer[1]) {
+					}
+					case CTL_VM: switch (a->name[1]) {
 						case VM_OVERCOMMIT:
-							*(uint32_t *)frame[2] = 0;
-							*(uint32_t *)frame[3] = sizeof(uint32_t);
+							*(u_int *)a->old = 0;
+							*a->oldlenp = sizeof(u_int);
 							SYSCALL_SUCCESS(0);
-						}
-					case CTL_HW: switch (buffer[1]) {
+					}
+					case CTL_HW: switch (a->name[1]) {
 						case HW_MACHINE:
-							strlcpy((char *)frame[2], "i386", frame[3]);
+							strlcpy(a->old, "i386", *a->oldlenp);
 							SYSCALL_SUCCESS(0);
 						case HW_NCPU:
 							DEBUG_PRINTF("hw.ncpu\n");
-							*(uint32_t *)frame[2] = 1;
-							*(uint32_t *)frame[3] = sizeof(uint32_t);
+							*(u_int *)a->old = 1;
+							*a->oldlenp = sizeof(u_int);
 							SYSCALL_SUCCESS(0);
 						case HW_PAGESIZE:
 							DEBUG_PRINTF("hw.pagesize\n");
-							*(uint32_t *)frame[2] = PAGE_SIZE;
-							*(uint32_t *)frame[3] = sizeof(uint32_t);
+							*(u_int *)a->old = PAGE_SIZE;
+							*a->oldlenp = sizeof(u_int);
 							SYSCALL_SUCCESS(0);
-						}
-					case CTL_P1003_1B: switch (buffer[1]) {
+					}
+					case CTL_P1003_1B: switch (a->name[1]) {
 						case CTL_P1003_1B_PAGESIZE:
 							DEBUG_PRINTF("posix.pagesize\n");
-							*(uint32_t *)frame[2] = PAGE_SIZE;
-							*(uint32_t *)frame[3] = sizeof(uint32_t);
+							*(u_int *)a->old = PAGE_SIZE;
+							*a->oldlenp = sizeof(u_int);
 							SYSCALL_SUCCESS(0);
-						}
+					}
 				}
 			}
-			ERROR_PRINTF("__sysctl (%08x, %d, %08x, %d, %08x, %08x)\n", 
-				frame[0], frame[1], 
-				frame[2], *(uint32_t *)frame[3],
-				frame[4], frame[5]);
-			for (int i = 0; i < frame[1]; ++i) {
-				ERROR_PRINTF("  %d\n", ((uint32_t *)frame[0])[i]);
+			ERROR_PRINTF("__sysctl (%08x, %d, %08x, %d, %08x, %d)\n",
+				a->name, a->namelen,
+				a->old, *a->oldlenp,
+				a->new, a->newlen);
+			for (int i = 0; i < a->namelen; ++i) {
+				ERROR_PRINTF("  %d\n", a->name[i]);
 			}
 			SYSCALL_FAILURE(ENOENT);
+		}
 		case SYS_poll: {
-			//DEBUG_PRINTF("poll (%08x, %d, %d)\n", frame[0], frame[1], frame[2]);
-			struct pollfd *fds = (struct pollfd *)frame[0];
-			int wait = frame[2];
+			struct poll_args *a = argp;
+			int waitleft = a->timeout;
 			int lastsecond = last_time[1];
 			int printed = 0;
 			int changedfds = 0;
-			while (wait > 0) {
-				for (int i = 0; i < frame[1]; ++i) {
-					if (fds[i].fd >= BOGFD_MAX) { continue; } // no EBADF?
-					struct BogusFD *fd = &FDS[fds[i].fd];
-					if (fds[i].events & POLLIN && fd->type == BOGFD_TERMIN && fd->status[0] != fd->status[1]) {
-						fds[i].revents = POLLIN;
+			while (waitleft > 0) {
+				for (int i = 0; i < a->nfds; ++i) {
+					if (a->fds[i].fd >= BOGFD_MAX) { continue; } // no EBADF?
+					struct BogusFD *fd = &FDS[a->fds[i].fd];
+					if (a->fds[i].events & POLLIN && fd->type == BOGFD_TERMIN && fd->status[0] != fd->status[1]) {
+						a->fds[i].revents = POLLIN;
 						++changedfds;
 					}
 				}
 				if (changedfds) { SYSCALL_SUCCESS(changedfds); }
-				if (!printed && wait > 60000) {
+				if (!printed && a->timeout > 60000) {
 					printed = 1;
-					DEBUG_PRINTF("waiting for %d fds, timeout %d\n", frame[1], frame[2]);
-					for (int i = 0; i < frame[1]; ++i) {
-						DEBUG_PRINTF("  FD %d: events %08x\n", fds[i].fd, fds[i].events);
+					DEBUG_PRINTF("waiting for %d fds, timeout %d\n", a->nfds, a->timeout);
+					for (int i = 0; i < a->nfds; ++i) {
+						DEBUG_PRINTF("  FD %d: events %08x\n", a->fds[i].fd, a->fds[i].events);
 					}
 				}
 				// enable interrupts, and wait for one; time keeping interrupts will move us forward
 				asm volatile ( "sti; hlt" :: );
 				if (last_time[1] != lastsecond) {
 					lastsecond = last_time[1];
-					wait -= 1000;
+					waitleft -= 1000;
 				}
 			}
 			SYSCALL_SUCCESS(0);
-			}
-		case SYS_clock_gettime:
-			((struct timespec *) frame[1])->tv_sec = unix_time();
-			((struct timespec *) frame[1])->tv_nsec = 0;
+		}
+		case SYS_clock_gettime: {
+			struct clock_gettime_args *a = argp;
+			a->tp->tv_sec = unix_time();
+			a->tp->tv_nsec = 0;
 			SYSCALL_SUCCESS(0);
+		}
 		case SYS_issetugid:
 			DEBUG_PRINTF("issetugid()\n");
 			SYSCALL_SUCCESS(0);
-		case SYS___getcwd:
-			strlcpy((char *)frame[0], "/", frame[1]);
+		case SYS___getcwd: {
+			struct __getcwd_args *a = argp;
+			strlcpy(a->buf, "/", a->buflen);
 			SYSCALL_SUCCESS(0);
+		}
 		case SYS_utrace:
 			SYSCALL_SUCCESS(0);
-		case SYS_sigprocmask:
-			DEBUG_PRINTF("sigprocmask (%d, ...)\n", frame[0]);
+		case SYS_sigprocmask: {
+			struct sigprocmask_args *a = argp;
+			DEBUG_PRINTF("sigprocmask (%d, %08x, %08x)\n", a->how, a->set, a->oset);
 			SYSCALL_SUCCESS(0);
-		case SYS_sigaction:
-			DEBUG_PRINTF("sigaction (%d, ...)\n", frame[0]);
+		}
+		case SYS_sigaction: {
+			struct sigaction_args *a = argp;
+			DEBUG_PRINTF("sigaction (%d, %08x, %08x)\n", a->sig, a->act, a->oact);
 			SYSCALL_SUCCESS(0);
+		}
 		case SYS_getcontext:
 			ERROR_PRINTF("sending back bogus success for getcontext\n");
 			SYSCALL_SUCCESS(0);
-		case SYS_thr_self:
+		case SYS_thr_self: {
+			struct thr_self_args *a = argp;
 			DEBUG_PRINTF("thr_self()\n");
-			*((long *)frame[0]) = 100002;
+			*a->id = 100002;
 			SYSCALL_SUCCESS(0);
-		case SYS_thr_kill:
-			DEBUG_PRINTF("thr_kill(%d, %d)\n", frame[0], frame[1]);
+		}
+		case SYS_thr_kill: {
+			struct thr_kill_args *a = argp;
+			DEBUG_PRINTF("thr_kill(%d, %d)\n", a->id, a->sig);
 			break;
+		}
 		case SYS__umtx_op: {
-			void *obj = (void *)frame[0];
-			int op = frame[1];
-			u_long val = frame[2];
-			void *uaddr = (void *)frame[3];
-			void *uaddr2 = (void *)frame[4];
-			if (op == UMTX_OP_WAKE) {
+			struct _umtx_op_args *a = argp;
+			if (a->op == UMTX_OP_WAKE) {
 				SYSCALL_SUCCESS(0);
 			}
-			ERROR_PRINTF("_umtx_op(%08x, %d, %d, %08x, %08x)\n", obj, op, val, uaddr, uaddr2);
-			}
-		case SYS_rtprio_thread:
-			switch (frame[0]) {
+			ERROR_PRINTF("_umtx_op(%08x, %d, %d, %08x, %08x)\n", a->obj, a->op, a->val, a->uaddr1, a->uaddr2);
+		}
+		case SYS_rtprio_thread: {
+			struct rtprio_thread_args *a = argp;
+			switch (a->function) {
 				case RTP_LOOKUP: {
-					struct rtprio *rtp= (struct rtprio *)frame[2];
-					rtp->type = RTP_PRIO_NORMAL;
-					rtp->prio = 0;
+					a->rtp->type = RTP_PRIO_NORMAL;
+					a->rtp->prio = 0;
 					SYSCALL_SUCCESS(0);
 				}
 			}
-			DEBUG_PRINTF("rtrpio_thread(%d, %d, %08x)\n", frame[0], frame[1], frame[2]);
+			DEBUG_PRINTF("rtrpio_thread(%d, %d, %08x)\n", a->function, a->lwpid, a->rtp);
 			break;
+		}
 		case SYS_mmap: {
-			// round up to 4k page
-			void *addr = (void *)frame[0];
-			size_t len = frame[1];
-			int prot = frame[2];
-			int flags = frame[3];
-			int fd = frame[4];
-			off_t offset = frame[5];
+			struct mmap_args *a = argp;
 			uintptr_t ret_addr;
-			if (kern_mmap(&ret_addr, addr, len, prot, flags)) {
-				if (fd != -1 && fd < BOGFD_MAX && FDS[fd].type == BOGFD_FILE) {
-					if (offset == 0 && len > PAGE_SIZE) {
-						DEBUG_PRINTF("add-symbol-file %s -o 0x%08x\n", FDS[fd].file->name, addr);
+			if (kern_mmap(&ret_addr, a->addr, a->len, a->prot, a->flags)) {
+				if (a->fd != -1 && a->fd < BOGFD_MAX && FDS[a->fd].type == BOGFD_FILE) {
+					if (a->pos == 0 && a->len > PAGE_SIZE) {
+						DEBUG_PRINTF("add-symbol-file %s -o 0x%08x\n", FDS[a->fd].file->name, a->addr);
 					}
 
-					if (offset + len > FDS[fd].file->size) {
-						size_t avail = FDS[fd].file->size - offset;
-						memcpy((void *)ret_addr, FDS[fd].file->start + offset, avail);
-						explicit_bzero((void*)(ret_addr + avail), len - avail);
+					if (a->pos + a->len > FDS[a->fd].file->size) {
+						size_t avail = FDS[a->fd].file->size - a->pos;
+						memcpy((void *)ret_addr, FDS[a->fd].file->start + a->pos, avail);
+						explicit_bzero((void*)(ret_addr + avail), a->len - avail);
 					} else {
-						memcpy((void *)ret_addr, FDS[fd].file->start + offset, len);
+						memcpy((void *)ret_addr, FDS[a->fd].file->start + a->pos, a->len);
 					}
-				} else if (prot != PROT_NONE) {
-					explicit_bzero((void*)ret_addr, len);
+				} else if (a->prot != PROT_NONE) {
+					explicit_bzero((void*)ret_addr, a->len);
 				}
 				SYSCALL_SUCCESS(ret_addr);
 			} else {
 				SYSCALL_FAILURE(ret_addr);
 			}
-			}
-		case SYS_pipe2:
-			DEBUG_PRINTF("pipe2 (%08x, %08x)\n", frame[0], frame[1]);
+		}
+		case SYS_pipe2: {
+			struct pipe2_args *a = argp;
+			DEBUG_PRINTF("pipe2 (%08x, %08x)\n", a->fildes, a->flags);
 			FDS[next_fd].type = BOGFD_PIPE;
 			FDS[next_fd + 1].type = BOGFD_PIPE;
 			FDS[next_fd].pipe = &(FDS[next_fd + 1]);
 			FDS[next_fd + 1].pipe = &(FDS[next_fd]);
-			*((int *)frame[0]) = next_fd;
-			*(((int *)frame[0]) + 1) = next_fd + 1;
+			a->fildes[0] = next_fd;
+			a->fildes[1] = next_fd + 1;
 			next_fd += 2;
 			SYSCALL_SUCCESS(0);
-		case SYS_fstat:
-			if (frame[0] < BOGFD_MAX && (FDS[frame[0]].type == BOGFD_TERMIN || FDS[frame[0]].type == BOGFD_TERMOUT)) {
-				struct stat* s = (struct stat*)frame[1];
-				s->st_mode = S_IWUSR | S_IRUSR | S_IFCHR;
+		}
+		case SYS_fstat: {
+			struct fstat_args *a = argp;
+			if (a->fd < BOGFD_MAX && (FDS[a->fd].type == BOGFD_TERMIN || FDS[a->fd].type == BOGFD_TERMOUT)) {
+				a->sb->st_mode = S_IWUSR | S_IRUSR | S_IFCHR;
 				SYSCALL_SUCCESS(0);
-			} else if (frame[0] < BOGFD_MAX && FDS[frame[0]].type == BOGFD_FILE) {
-				struct BogusFD * fd = &FDS[frame[0]];
-				struct stat* s = (struct stat *)frame[1];
-				s->st_dev = BOGFD_FILE;
-				s->st_ino = (ino_t) fd->file;
-				s->st_nlink = 1;
-				s->st_size = fd->file->size;
-				s->st_mode = S_IRUSR | S_IFREG | S_IRWXU;
+			} else if (a->fd < BOGFD_MAX && FDS[a->fd].type == BOGFD_FILE) {
+				struct BogusFD * fd = &FDS[a->fd];
+				a->sb->st_dev = BOGFD_FILE;
+				a->sb->st_ino = (ino_t) fd->file;
+				a->sb->st_nlink = 1;
+				a->sb->st_size = fd->file->size;
+				a->sb->st_mode = S_IRUSR | S_IFREG | S_IRWXU;
 				SYSCALL_SUCCESS(0);
 			}
-			DEBUG_PRINTF("fstat (%d)\n", frame[0]);
+			DEBUG_PRINTF("fstat (%d)\n", a->fd);
 			break;
+		}
 		case SYS_fstatat: {
-			DEBUG_PRINTF("fstatat (%d, %s, %d)\n", frame[0], frame[1], frame[2]);
+			struct fstatat_args *a = argp;
+			DEBUG_PRINTF("fstatat (%d, %s, %08x)\n", a->fd, a->path, a->buf);
 			struct hardcoded_file * file;
-			file = find_file((char *)frame[1]);
+			file = find_file(a->path);
 			if (file != NULL) {
-				struct stat* s = (struct stat *)frame[2];
-				s->st_dev = BOGFD_FILE;
-				s->st_ino = (ino_t) file;
-				s->st_nlink = 1;
-				s->st_size = file->size;
-				s->st_mode = S_IRUSR | S_IFREG;
+				a->buf->st_dev = BOGFD_FILE;
+				a->buf->st_ino = (ino_t) file;
+				a->buf->st_nlink = 1;
+				a->buf->st_size = file->size;
+				a->buf->st_mode = S_IRUSR | S_IFREG;
 				SYSCALL_SUCCESS(0);
 			}
 			SYSCALL_FAILURE(0);
-			}
+		}
 		case SYS_getdirentries: {
-			if (frame[0] < BOGFD_MAX && FDS[frame[0]].type == BOGFD_DIR) {
-				struct BogusFD *fd = &FDS[frame[0]];
-				struct dirent *buf = (struct dirent*) frame[1];
-				if (frame[3]) {
-					*(off_t *)frame[3] = (off_t) fd->file;
+			struct getdirentries_args *a = argp;
+			if (a->fd < BOGFD_MAX && FDS[a->fd].type == BOGFD_DIR) {
+				struct BogusFD *fd = &FDS[a->fd];
+				struct dirent *buf = (struct dirent*) a->buf;
+				if (a->basep != NULL) {
+					*a->basep = (off_t) fd->file;
 				}
 				if (fd->file == NULL) {
 					SYSCALL_SUCCESS(0);
@@ -888,24 +928,25 @@ int handle_int_80_impl(uint32_t call, struct interrupt_frame *iframe)
 				buf->d_off = (off_t) fd->file;
 				SYSCALL_SUCCESS(buf->d_reclen);
 			}
-			ERROR_PRINTF("getdirentries (%d)\n", frame[0]);
+			ERROR_PRINTF("getdirentries (%d)\n", a->fd);
 			SYSCALL_FAILURE(EBADF);
-			}
+		}
 		case SYS_fstatfs: {
-			if (frame[0] < BOGFD_MAX && FDS[frame[0]].type == BOGFD_DIR) {
-				struct statfs *buf = (struct statfs*) frame[1];
-				bzero(buf, sizeof(struct statfs));
-				buf->f_version = STATFS_VERSION;
-				strlcpy(buf->f_fstypename, "BogusFS", sizeof(buf->f_fstypename));
+			struct fstatfs_args *a = argp;
+			if (a->fd < BOGFD_MAX && FDS[a->fd].type == BOGFD_DIR) {
+				bzero(a->buf, sizeof(struct statfs));
+				a->buf->f_version = STATFS_VERSION;
+				strlcpy(a->buf->f_fstypename, "BogusFS", sizeof(a->buf->f_fstypename));
 				SYSCALL_SUCCESS(0);
 			}
-			ERROR_PRINTF("fstatfs (%d)\n", frame[0]);
+			ERROR_PRINTF("fstatfs (%d)\n", a->fd);
 			SYSCALL_FAILURE(EBADF);
-			}
+		}
 	}
 				
 	if (call < SYS_MAXSYSCALL) {
-		ERROR_PRINTF("Got syscall %d (%s) (%08x, %08x) @%08x", call, syscallnames[call], frame[0], frame[1], frame[-1]);
+		unsigned int *args = argp;
+		ERROR_PRINTF("Got syscall %d (%s) (%08x, %08x) @%08x", call, syscallnames[call], args[0], args[1], args[-1]);
 	} else {
 		ERROR_PRINTF("got unknown syscall %d", call);
 	}
