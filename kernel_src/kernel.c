@@ -532,6 +532,7 @@ int handle_int_80_impl(uint32_t call, struct interrupt_frame *iframe)
 			SYSCALL_FAILURE(ENOENT);
 		case SYS_ioctl:
 			DEBUG_PRINTF("ioctl (%d, %08x, ...)\n", frame[0], frame[1]);
+			DEBUG_PRINTF("parm_len %d, cmd %d, group %c\n", IOCPARM_LEN(frame[1]), frame[1] & 0xff, IOCGROUP(frame[1]));
 			switch (frame[1]) {
 				case TIOCGETA: {
 					if (frame[0] >= BOGFD_MAX || (FDS[frame[0]].type != BOGFD_TERMIN && FDS[frame[0]].type != BOGFD_TERMOUT)) {
@@ -547,6 +548,7 @@ int handle_int_80_impl(uint32_t call, struct interrupt_frame *iframe)
 					t->c_ospeed = 38400;
 					SYSCALL_SUCCESS(0);
 					}
+				case TIOCSETA: SYSCALL_SUCCESS(0); // ignore settings
 				case TIOCGWINSZ: {
 					if (frame[0] >= BOGFD_MAX || (FDS[frame[0]].type != BOGFD_TERMIN && FDS[frame[0]].type != BOGFD_TERMOUT)) {
 						break;
@@ -694,7 +696,7 @@ int handle_int_80_impl(uint32_t call, struct interrupt_frame *iframe)
 			}
 			SYSCALL_FAILURE(ENOENT);
 		case SYS_poll: {
-			DEBUG_PRINTF("poll (%08x, %d, %d)\n", frame[0], frame[1], frame[2]);
+			//DEBUG_PRINTF("poll (%08x, %d, %d)\n", frame[0], frame[1], frame[2]);
 			struct pollfd *fds = (struct pollfd *)frame[0];
 			int wait = frame[2];
 			int lastsecond = last_time[1];
@@ -1149,7 +1151,7 @@ void setup_entrypoint()
 	// set up environment
 	char * env[] = {"BINDIR=/", "ERL_INETRC=/cfg/inetrc", NULL}; // "LD_DEBUG=1", "LD_32_DEBUG=1", NULL };
 	// set up arguments
-	char *argv[] = {"rtld", "/bin/i386-none-elf/beam", "--", "-root", "",
+	char *argv[] = {"rtld", "/beam", "--", "-root", "",
 			"-progname", "erl", NULL};
 
 	int i = 0;
