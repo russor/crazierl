@@ -252,7 +252,21 @@ void _putchar(char c)
 			term_row ++;
 			break;
 		}
- 
+	case '\t': {
+		if (term_col & 7) {
+			term_col = (term_col & ~7) + 8;
+		} else {
+			term_col += 8;
+		}
+		break;
+	}
+	case 0x7F: { // backspace
+		--term_col;
+		if (term_col < 0) { term_col = 0; }
+		const size_t index = (VGA_COLS * term_row) + term_col; // Like before, calculate the buffer index
+		vga_buffer[index] = ((uint16_t)term_color << 8) | ' ';
+		break;
+	}
 	default: // Normal characters just get displayed and then increment the column
 		{
 			const size_t index = (VGA_COLS * term_row) + term_col; // Like before, calculate the buffer index
@@ -416,6 +430,8 @@ void read_com(struct BogusFD * fd, uint16_t port)
 			fd->buffer[fd->status[0]] = c;
 			++fd->status[0];
 			fd->status[0] &= fd->status[2];
+			_putchar(c);
+			move_cursor();
 		} else {
 			ERROR_PRINTF("com 0x%x buffer full\n", port);
 			fd->status[3] |= 0x01;
@@ -430,6 +446,79 @@ void handle_com1(struct interrupt_frame *frame)
 	struct BogusFD *fd = &FDS[INPUT_FD];
 	if (fd->type == BOGFD_TERMIN) {
 		read_com(fd, PORT_COM1);
+	}
+	outb(PORT_PIC1, PIC_INTERRUPT_ACK);
+}
+
+char unshifted_scancodes[] = {
+	0, 0x1B,
+	'1', '2', '3', '4', '5', '6', '7', '8',	'9', '0', '-', '=', 0x7F,
+	'\t', 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n',
+	-4, 'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', ';', '\'', '`',
+	-1, '\\', 'z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', '/', -2,
+	'*', -8, ' ' // ignore the rest of the keys
+};
+
+char shifted_scancodes[] = {
+	0, 0x1B,
+	'!', '@', '#', '$', '%', '^', '&', '*',	'(', ')', '_', '+', 0x7F,
+	'\t', 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '{', '}', '\n',
+	-4, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', ':', '"', '~',
+	-1, '|', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', '<', '>', '?', -2,
+	'*', -8, ' ' // ignore the rest of the keys
+};
+
+uint8_t keyboard_shifts = 0;
+
+void read_keyboard (struct BogusFD * fd) {
+	fd->status[3] &= ~ 0x02; // clear data pending flag
+	if (((fd->status[0] + 1) & fd->status[2]) != fd->status[1]) {
+		uint8_t c = inb(0x60);
+		if (c == 0xe0 || c== 0xe1) {
+			// keyboard escape code; ignore for now
+			return;
+		}
+		int down = 1;
+		if (c & 0x80) {
+			down = 0;
+			c &= 0x7F;
+		}
+		if (c < sizeof(unshifted_scancodes)) {
+			char o;
+			if (keyboard_shifts & 0x3) {
+				o = shifted_scancodes[c];
+			} else {
+				o = unshifted_scancodes[c];
+			}
+			if (o > 0) {
+				if (down) {
+					fd->buffer[fd->status[0]] = o;
+					++fd->status[0];
+					fd->status[0] &= fd->status[2];
+					_putchar(o);
+					move_cursor();
+				}
+			} else {
+				if (down) {
+					keyboard_shifts |= (-o);
+				} else {
+					keyboard_shifts &= ~(-o);
+				}
+			}
+		}
+	} else {
+		ERROR_PRINTF("keyboard buffer full\n");
+		fd->status[3] |= 0x02;
+		return;
+	}
+}
+
+__attribute__ ((interrupt))
+void handle_keyboard(struct interrupt_frame *frame)
+{
+	struct BogusFD *fd = &FDS[INPUT_FD];
+	if (fd->type == BOGFD_TERMIN) {
+		read_keyboard(fd);
 	}
 	outb(PORT_PIC1, PIC_INTERRUPT_ACK);
 }
@@ -472,9 +561,15 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				uint8_t * buffer = a->buf;
 				while (read < a->nbyte) {
 					if (fd->status[0] == fd->status[1]) {
-						if (fd->status[3] & 0x01) {
-							ERROR_PRINTF("com 0x%x buffer empty\n", PORT_COM1);
-							read_com(fd, PORT_COM1);
+						if (fd->status[3] & 0x03) {
+							if (fd->status[3] & 0x01) {
+								ERROR_PRINTF("com 0x%x buffer empty\n", PORT_COM1);
+								read_com(fd, PORT_COM1);
+							}
+							if (fd->status[3] & 0x02) {
+								ERROR_PRINTF("keyboard buffer empty\n");
+								read_keyboard(fd);
+							}
 						} else {
 							break;
 						}
@@ -1144,6 +1239,9 @@ void interrupt_setup()
 
 	IDT[0x20].offset_1 = ((uint32_t) &handle_timer) & 0xFFFF;
 	IDT[0x20].offset_2 = ((uint32_t) &handle_timer) >> 16;
+
+	IDT[0x21].offset_1 = ((uint32_t) &handle_keyboard) & 0xFFFF;
+	IDT[0x21].offset_2 = ((uint32_t) &handle_keyboard) >> 16;
 
 	IDT[0x24].offset_1 = ((uint32_t) &handle_com1) & 0xFFFF;
 	IDT[0x24].offset_2 = ((uint32_t) &handle_com1) >> 16;
