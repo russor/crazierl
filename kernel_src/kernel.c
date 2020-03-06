@@ -62,6 +62,7 @@ typedef uint32_t u_int32_t;
 #include <sys/umtx.h>
 #include <sys/sysproto.h>
 #include <stdarg.h>
+#include <sys/cpuset.h>
 
 // include this last; use _KERNEL to avoid conflicting but unused definition
 // of int sysarch between sysproto.h and sysarch.h
@@ -77,6 +78,7 @@ typedef uint32_t u_int32_t;
 #define BOGFD_PIPE 3
 #define BOGFD_FILE 4
 #define BOGFD_DIR 5
+#define BOGFD_NULL 6
 
 
 struct BogusFD {
@@ -439,6 +441,22 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 {	
 	void *argp = (void *)(iframe->sp + sizeof(iframe->sp));
 	switch(call) {
+		case SYS_fork: {
+			ERROR_PRINTF("fork() attempted\n");
+			SYSCALL_FAILURE(EAGAIN);
+		}
+		case SYS_pread: {
+			struct pread_args *a = argp;
+			ERROR_PRINTF("pread (%d, %08x, %d, %d)\n", a->fd, a->buf, a->nbyte, a->offset);
+			if (a->fd < BOGFD_MAX && FDS[a->fd].type == BOGFD_FILE) {
+				struct BogusFD *fd = &FDS[a->fd];
+				if (a->offset < 0) { SYSCALL_FAILURE(EINVAL); }
+				int read = min(a->nbyte, fd->file->size - a->offset);
+				memcpy(a->buf, fd->file->start + a->offset, read);
+				SYSCALL_SUCCESS(read);
+			}
+			SYSCALL_FAILURE(EBADF);
+		}
 		case SYS_read: {
 			struct read_args *a = argp;
 			if (a->fd < BOGFD_MAX && FDS[a->fd].type == BOGFD_FILE) {
@@ -522,11 +540,16 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			argp += sizeof(argp);
 		case SYS_open: {
 			struct open_args *a = argp;
+			char path[256];
+			strlcpy (path, a->path, sizeof(path));
+			if (strcmp(path, ".") == 0) {
+				strcpy(path, "");
+			}
 
 			struct hardcoded_file * file;
 			if (a->flags & O_DIRECTORY) {
-				size_t len = strlen(a->path);
-				file = find_dir(a->path, len, 0);
+				size_t len = strlen(path);
+				file = find_dir(path, len, 0);
 				if (file) {
 					FDS[next_fd].type = BOGFD_DIR;
 					FDS[next_fd].file = file;
@@ -534,7 +557,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					SYSCALL_SUCCESS(next_fd++);
 				}
 			} else {
-				file = find_file(a->path);
+				file = find_file(path);
 				if (file != NULL) {
 					FDS[next_fd].type = BOGFD_FILE;
 					FDS[next_fd].file = file;
@@ -542,7 +565,11 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					SYSCALL_SUCCESS(next_fd++);
 				}
 			}
-			DEBUG_PRINTF ("open (%s, %08x) = ENOENT\n", a->path, a->flags);
+			if (strcmp("/dev/null", path) == 0) {
+				FDS[next_fd].type = BOGFD_NULL;
+				SYSCALL_SUCCESS(next_fd++);
+			}
+			ERROR_PRINTF ("open (%s, %08x) = ENOENT\n", path, a->flags);
 			SYSCALL_FAILURE(ENOENT);
 		}
 		case SYS_close: {
@@ -593,7 +620,8 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					SYSCALL_SUCCESS(0);
 					}
 			}
-			ERROR_PRINTF("parm_len %d, cmd %d, group %c\n", IOCPARM_LEN(a->com), a->com & 0xff, IOCGROUP(a->com));
+			ERROR_PRINTF("fd %d, parm_len %d, cmd %d, group %c\n", a->fd, IOCPARM_LEN(a->com), a->com & 0xff, IOCGROUP(a->com));
+			SYSCALL_FAILURE(ENOTTY);
 			break;
 		}
 		case SYS_readlink: {
@@ -620,6 +648,8 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			ERROR_PRINTF("socket(%d, %d, %d)\n", a->domain, a->type, a->protocol);
 			SYSCALL_FAILURE(EACCES);
 		}
+		case SYS_getsockopt:
+			SYSCALL_FAILURE(EBADF);
 		case SYS_gettimeofday: {
 			struct gettimeofday_args *a = argp;
 			if (a->tp != NULL) {
@@ -630,6 +660,18 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				a->tzp->tz_minuteswest = 0;
 				a->tzp->tz_dsttime = 0;
 			}
+			SYSCALL_SUCCESS(0);
+		}
+		case SYS_socketpair: {
+			struct socketpair_args *a = argp;
+			DEBUG_PRINTF("socketpair(%d, %d, %d, %08x)\n", a->domain, a->type, a->protocol, a->rsv);
+			FDS[next_fd].type = BOGFD_PIPE;
+			FDS[next_fd + 1].type = BOGFD_PIPE;
+			FDS[next_fd].pipe = &(FDS[next_fd + 1]);
+			FDS[next_fd + 1].pipe = &(FDS[next_fd]);
+			a->rsv[0] = next_fd;
+			a->rsv[1] = next_fd + 1;
+			next_fd += 2;
 			SYSCALL_SUCCESS(0);
 		}
 		case SYS_sysarch: {
@@ -643,7 +685,6 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					base >>= 8;
 					ugs_base.base_3 = base & 0xFF;
 					base = (uintptr_t)&ugs_base - (uintptr_t)&null_gdt;
-					kern_mmap_debug(base);
 					DEBUG_PRINTF("Setting GS base to %08x, %d\n", a->parms, base);
 					asm volatile ( "movw %0, %%gs" :: "rm" (base));
 					SYSCALL_SUCCESS(0);
@@ -666,6 +707,18 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					a->rlp->rlim_max = RLIM_INFINITY;
 			}
 			SYSCALL_SUCCESS(0);
+		}
+		case SYS_setrlimit: {
+			struct __setrlimit_args *a = argp;
+			DEBUG_PRINTF("setrlimit (%d, {%d, %d})\n", a->which, a->rlp->rlim_cur, a->rlp->rlim_max);
+			switch (a->which) {
+				case RLIMIT_STACK:
+					if (a->rlp->rlim_cur > USER_STACK_SIZE) {
+						SYSCALL_FAILURE(EPERM);
+					}
+					SYSCALL_SUCCESS(0);
+			}
+			break;
 		}
 		case SYS___sysctl: {
 			struct sysctl_args *a = argp;
@@ -760,7 +813,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				if (changedfds) { SYSCALL_SUCCESS(changedfds); }
 				if (!printed && a->timeout > 60000) {
 					printed = 1;
-					DEBUG_PRINTF("waiting for %d fds, timeout %d\n", a->nfds, a->timeout);
+					DEBUG_PRINTF("poll for %d fds, timeout %d\n", a->nfds, a->timeout);
 					for (int i = 0; i < a->nfds; ++i) {
 						DEBUG_PRINTF("  FD %d: events %08x\n", a->fds[i].fd, a->fds[i].events);
 					}
@@ -835,6 +888,15 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 		}
 		case SYS_cpuset_getaffinity: {
 			struct cpuset_getaffinity_args *a = argp;
+			if (a->cpusetsize != sizeof(cpuset_t)) {
+				ERROR_PRINTF("cpuset size %d, expecting %d\n", a->cpusetsize, sizeof(cpuset_t)) ;
+				SYSCALL_FAILURE(ERANGE);
+			}
+			if (a->level == CPU_LEVEL_WHICH && a->which == CPU_WHICH_PID) {
+				CPU_ZERO(a->mask);
+				CPU_SET(0, a->mask);
+				SYSCALL_SUCCESS(0);
+			}
 			ERROR_PRINTF("cpuset_getaffinity(%d, %d, %llx, %d, %08x)\n", a->level, a->which, a->id, a->cpusetsize, a->mask);
 			break;
 		}
@@ -843,7 +905,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			uintptr_t ret_addr;
 			if (kern_mmap(&ret_addr, a->addr, a->len, a->prot, a->flags)) {
 				if (a->fd != -1 && a->fd < BOGFD_MAX && FDS[a->fd].type == BOGFD_FILE) {
-					if (a->pos == 0 && a->len > PAGE_SIZE) {
+					if (a->pos == 0 && a->addr != NULL) { // && a->len > PAGE_SIZE) {
 						ERROR_PRINTF("add-symbol-file %s -o 0x%08x\n", FDS[a->fd].file->name, a->addr);
 					}
 
@@ -873,6 +935,39 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			a->fildes[1] = next_fd + 1;
 			next_fd += 2;
 			SYSCALL_SUCCESS(0);
+		}
+		case SYS_ppoll: {
+			struct ppoll_args *a = argp;
+			int waitleft = a->ts->tv_sec;
+			int lastsecond = last_time[1];
+			int printed = 0;
+			int changedfds = 0;
+			while (waitleft > 0) {
+				for (int i = 0; i < a->nfds; ++i) {
+					if (a->fds[i].fd >= BOGFD_MAX) { continue; } // no EBADF?
+					struct BogusFD *fd = &FDS[a->fds[i].fd];
+					if (a->fds[i].events & POLLIN && fd->type == BOGFD_TERMIN && fd->status[0] != fd->status[1]) {
+						a->fds[i].revents = POLLIN;
+						++changedfds;
+					}
+				}
+				if (changedfds) { SYSCALL_SUCCESS(changedfds); }
+				if (!printed && a->ts->tv_sec > 60) {
+					printed = 1;
+					DEBUG_PRINTF("ppoll for %d fds, timeout %d\n", a->nfds, a->ts->tv_sec);
+					for (int i = 0; i < a->nfds; ++i) {
+						DEBUG_PRINTF("  FD %d: events %08x\n", a->fds[i].fd, a->fds[i].events);
+					}
+				}
+				// enable interrupts, and wait for one; time keeping interrupts will move us forward
+				asm volatile ( "sti; hlt" :: );
+				if (last_time[1] != lastsecond) {
+					lastsecond = last_time[1];
+					waitleft -= 1;
+				}
+			}
+			SYSCALL_SUCCESS(0);
+		
 		}
 		case SYS_fstat: {
 			struct fstat_args *a = argp;
@@ -904,7 +999,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				a->buf->st_mode = S_IRUSR | S_IFREG;
 				SYSCALL_SUCCESS(0);
 			}
-			SYSCALL_FAILURE(0);
+			SYSCALL_FAILURE(ENOENT);
 		}
 		case SYS_getdirentries: {
 			struct getdirentries_args *a = argp;
@@ -1210,7 +1305,8 @@ void setup_entrypoint()
 	char * env[] = {"BINDIR=/", "ERL_INETRC=/cfg/inetrc", NULL}; // "LD_DEBUG=1", "LD_32_DEBUG=1", NULL };
 	// set up arguments
 	char *argv[] = {"rtld", "/beam", "--", "-root", "",
-			"-progname", "erl", NULL};
+			"-progname", "erl", "--", "-home", "/",
+			"--", NULL};
 
 	int i = 0;
 	while (env[i] != NULL) {

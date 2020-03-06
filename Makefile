@@ -10,7 +10,7 @@ debug: mykernel.elf initrd
 	qemu-system-i386 -d cpu_reset,guest_errors -S -s  -m 256 -serial mon:stdio -kernel mykernel.elf -append $(RTLD) -initrd initrd
 
 debugger:
-	gdb -ex "set confirm off" -ex "add-symbol-file mykernel.elf" -ex "set confirm on" -ex "target remote localhost:1234"
+	gdb -ex "set confirm off" -ex "add-symbol-file mykernel.elf" -ex "add-symbol-file $$(find $(OTPDIR) -name beam) -o 0x00400000" -ex "set confirm on" -ex "target remote localhost:1234"
 
 clean:
 	rm -f initrd mykernel.elf *.o
