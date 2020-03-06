@@ -1,3 +1,0 @@
-[submodule "libc"]
-	path = libc
-	url = ./libc
