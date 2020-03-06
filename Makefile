@@ -34,7 +34,7 @@ printf.o: ../libc/printf/printf.c
 debugnative:
 	BINDIR=`pwd`/../otp_src_R12B-5/bin/ gdb $(RTLD) -ex 'break _start' -ex 'run -- -root `pwd`/../otp_src_R12B-5 -progname erl -- -home /home/toast'
 
-initrd: hardcode_files.pl preload_local_files preload_otp_files Makefile
+initrd: hardcode_files.pl preload_local_files Makefile
 	./hardcode_files.pl $(RTLD) $(OTPDIR) > initrd.tmp
 	mv initrd.tmp initrd
 
