@@ -1,7 +1,7 @@
 RTLD=/libexec/ld-elf32.so.1
 OTPDIR=../installed
 
-COMPILER=clang -m32 -mrdrnd -mno-sse -g -ffreestanding -I ../libc/printf -gdwarf-2 -c
+COMPILER=clang -m32 -mrdrnd -mno-sse -g -ffreestanding -gdwarf-2 -c
 
 run: mykernel.elf initrd
 	qemu-system-i386 -s -m 256 -serial mon:stdio -kernel mykernel.elf -append $(RTLD) -initrd initrd
@@ -16,8 +16,8 @@ clean:
 	rm -f initrd mykernel.elf *.o
 
 # use wrong target for linking, so clang does the linking instead of calling into gcc
-mykernel.elf: start.o kernel.o printf.o linker.ld syscalls.o files.o kern_mmap.o
-	clang -g -fuse-ld=bfd --target=i386-freebsd-elf -static -ffreestanding -nostdlib -g -T linker.ld start.o kernel.o printf.o syscalls.o files.o kern_mmap.o -o mykernel.elf -gdwarf-2 -lc
+mykernel.elf: start.o kernel.o linker.ld syscalls.o files.o kern_mmap.o
+	clang -g -fuse-ld=bfd --target=i386-freebsd-elf -static -ffreestanding -nostdlib -g -T linker.ld start.o kernel.o syscalls.o files.o kern_mmap.o -o mykernel.elf -gdwarf-2 -lc
 
 start.o: start.s
 	clang -m32 -g -gdwarf-2 -c start.s -o start.o

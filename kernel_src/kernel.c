@@ -61,7 +61,7 @@ typedef uint32_t u_int32_t;
 #include <sys/rtprio.h>
 #include <sys/umtx.h>
 #include <sys/sysproto.h>
-
+#include <stdarg.h>
 
 // include this last; use _KERNEL to avoid conflicting but unused definition
 // of int sysarch between sysproto.h and sysarch.h
@@ -146,6 +146,8 @@ uintptr_t user_stack;
 
 char INPUTBUFFER[16]; // must be a power of 2!
 size_t INPUT_FD;
+
+
 
 static inline void outb(uint16_t port, uint8_t val)
 {
@@ -286,6 +288,16 @@ void term_print(const char* str)
 	for (size_t i = 0; str[i] != '\0'; i ++) // Keep placing characters until we hit the null-terminating character ('\0')
 		_putchar(str[i]);
 	move_cursor();
+}
+
+void term_printf(const char* format, ...)
+{
+       va_list args;
+       va_start(args, format);
+
+       char foo[512];
+       vsnprintf(foo, sizeof(foo), format, args);
+       term_print(foo);
 }
 
 uint8_t read_cmos(uint8_t reg)
@@ -821,13 +833,18 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			DEBUG_PRINTF("rtrpio_thread(%d, %d, %08x)\n", a->function, a->lwpid, a->rtp);
 			break;
 		}
+		case SYS_cpuset_getaffinity: {
+			struct cpuset_getaffinity_args *a = argp;
+			ERROR_PRINTF("cpuset_getaffinity(%d, %d, %llx, %d, %08x)\n", a->level, a->which, a->id, a->cpusetsize, a->mask);
+			break;
+		}
 		case SYS_mmap: {
 			struct mmap_args *a = argp;
 			uintptr_t ret_addr;
 			if (kern_mmap(&ret_addr, a->addr, a->len, a->prot, a->flags)) {
 				if (a->fd != -1 && a->fd < BOGFD_MAX && FDS[a->fd].type == BOGFD_FILE) {
 					if (a->pos == 0 && a->len > PAGE_SIZE) {
-						DEBUG_PRINTF("add-symbol-file %s -o 0x%08x\n", FDS[a->fd].file->name, a->addr);
+						ERROR_PRINTF("add-symbol-file %s -o 0x%08x\n", FDS[a->fd].file->name, a->addr);
 					}
 
 					if (a->pos + a->len > FDS[a->fd].file->size) {
@@ -1095,7 +1112,7 @@ void load_file(void *start, char *name, size_t size)
 		ERROR_PRINTF("elf entrypoint moved to 0x%08x\n", entrypoint);
 	}
 
-	DEBUG_PRINTF("add-symbol-file %s -o 0x%08x\n", name, load_addr);
+	ERROR_PRINTF("add-symbol-file %s -o 0x%08x\n", name, load_addr);
 
 	phead = phead_start;
 	size_t lastoffset = 0;

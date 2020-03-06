@@ -40,7 +40,7 @@ uint32_t * pagetable_entry (uint32_t direntry, uintptr_t logical)
 void kern_mmap_debug(uintptr_t addr) {
 	uint32_t *direntry = pagetable_direntry(addr);
 	uint32_t *table_entry = pagetable_entry(*direntry, addr);
-	DEBUG_PRINTF("logical %08x; dir %08x -> %08x; page %08x -> %08x\n", addr, direntry, *direntry, table_entry, *table_entry);
+	ERROR_PRINTF("logical %08x; dir %08x -> %08x; page %08x -> %08x\n", addr, direntry, *direntry, table_entry, *table_entry);
 }
 
 
