@@ -42,8 +42,13 @@ void init_files(multiboot_module_t *mod) {
 		if (strlen + start + sizeof(uint32_t) + filelen > mod->mod_end) { break; }
 
 		uintptr_t file;
-		if (!kern_mmap(&file, NULL, filelen, PROT_READ | PROT_WRITE | PROT_KERNEL, MAP_ANON | MAP_STACK)) {
-			ERROR_PRINTF("couldn't allocate %d bytes for file %s\n", filelen, (char *)start);
+		size_t mmaplen = filelen;
+		if (mmaplen & (PAGE_SIZE -1)) {
+			mmaplen = (mmaplen & ~(PAGE_SIZE -1)) + PAGE_SIZE;
+		}
+
+		if (!kern_mmap(&file, NULL, mmaplen, PROT_READ | PROT_WRITE | PROT_KERNEL, MAP_ANON | MAP_STACK)) {
+			ERROR_PRINTF("couldn't allocate %d bytes (%d) for file %s\n", mmaplen, filelen, (char *)start);
 			return;
 		}
 
@@ -53,7 +58,11 @@ void init_files(multiboot_module_t *mod) {
 		
 		hardcoded_files[i].end = (uint8_t *) (file + filelen);
 		start += strlen + sizeof(uint32_t);
+
 		memcpy((uint8_t *)file, (uint8_t*)start, filelen);
+		if (mmaplen > filelen) {
+			explicit_bzero((uint8_t *) (file + filelen), mmaplen - filelen);
+		}
 		hardcoded_files[i].start = (uint8_t *) file;		
 		hardcoded_files[i].size = filelen;
 		start += filelen;
