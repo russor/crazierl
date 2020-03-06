@@ -664,7 +664,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				FDS[next_fd].type = BOGFD_NULL;
 				SYSCALL_SUCCESS(next_fd++);
 			}
-			ERROR_PRINTF ("open (%s, %08x) = ENOENT\n", path, a->flags);
+			DEBUG_PRINTF ("open (%s, %08x) = ENOENT\n", path, a->flags);
 			SYSCALL_FAILURE(ENOENT);
 		}
 		case SYS_close: {
@@ -1047,7 +1047,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					}
 				}
 				if (changedfds) { SYSCALL_SUCCESS(changedfds); }
-				if (!printed && a->ts->tv_sec > 60) {
+				if (!printed) { // && a->ts->tv_sec > 60) {
 					printed = 1;
 					DEBUG_PRINTF("ppoll for %d fds, timeout %d\n", a->nfds, a->ts->tv_sec);
 					for (int i = 0; i < a->nfds; ++i) {
@@ -1067,9 +1067,11 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 		case SYS_fstat: {
 			struct fstat_args *a = argp;
 			if (a->fd < BOGFD_MAX && (FDS[a->fd].type == BOGFD_TERMIN || FDS[a->fd].type == BOGFD_TERMOUT)) {
+				explicit_bzero(a->sb, sizeof(*a->sb));
 				a->sb->st_mode = S_IWUSR | S_IRUSR | S_IFCHR;
 				SYSCALL_SUCCESS(0);
 			} else if (a->fd < BOGFD_MAX && FDS[a->fd].type == BOGFD_FILE) {
+				explicit_bzero(a->sb, sizeof(*a->sb));
 				struct BogusFD * fd = &FDS[a->fd];
 				a->sb->st_dev = BOGFD_FILE;
 				a->sb->st_ino = (ino_t) fd->file;
@@ -1087,6 +1089,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			struct hardcoded_file * file;
 			file = find_file(a->path);
 			if (file != NULL) {
+				explicit_bzero(a->buf, sizeof(*a->buf));
 				a->buf->st_dev = BOGFD_FILE;
 				a->buf->st_ino = (ino_t) file;
 				a->buf->st_nlink = 1;
