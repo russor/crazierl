@@ -715,7 +715,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					SYSCALL_SUCCESS(0);
 					}
 			}
-			ERROR_PRINTF("fd %d, parm_len %d, cmd %d, group %c\n", a->fd, IOCPARM_LEN(a->com), a->com & 0xff, IOCGROUP(a->com));
+			DEBUG_PRINTF("fd %d, parm_len %d, cmd %d, group %c\n", a->fd, IOCPARM_LEN(a->com), a->com & 0xff, IOCGROUP(a->com));
 			SYSCALL_FAILURE(ENOTTY);
 			break;
 		}
