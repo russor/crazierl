@@ -260,15 +260,15 @@ void _putchar(char c)
 		}
 		break;
 	}
-	case 0x7F: { // backspace
-		--term_col;
-		if (term_col < 0) { term_col = 0; }
-		const size_t index = (VGA_COLS * term_row) + term_col; // Like before, calculate the buffer index
-		vga_buffer[index] = ((uint16_t)term_color << 8) | ' ';
+	case 0x08: { // backspace
+		if (term_col) { --term_col; }
 		break;
 	}
 	default: // Normal characters just get displayed and then increment the column
 		{
+			if (c < 0x20 || c >= 0x7f) {
+				//ERROR_PRINTF("unhandled control character %x\n", c);
+			}
 			const size_t index = (VGA_COLS * term_row) + term_col; // Like before, calculate the buffer index
 			vga_buffer[index] = ((uint16_t)term_color << 8) | c;
 			term_col ++;
