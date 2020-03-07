@@ -138,12 +138,16 @@
 		mov    %esp,%ebp
 		pushl %ecx // save
 		pushl %edx
+		pushl %gs
+		mov $0, %edx
+		mov %dx, %gs
 		mov %esp, %ecx
-		addl $12, %ecx
+		addl $16, %ecx
 		pushl %ecx
 		pushl %eax // push syscall number
 		call handle_syscall // call into C now
 		addl $8, %esp // skip pushed syscall and frame pointer
+		popl %gs
 		popl %edx
 		popl %ecx
 		pop %ebp
@@ -156,11 +160,12 @@
 		popl %ebx // new stack top
 		popl %ecx // entrypoint
 
+		mov $((ugs_base - null_gdt) | 0x3), %eax
+		mov %ax, %gs
 		mov $((udat_gdt - null_gdt) | 0x3), %eax
 		mov %ax, %ds
 		mov %ax, %es
 		mov %ax, %fs
-		mov %ax, %gs
 
 		pushl %eax
 		pushl %ebx
