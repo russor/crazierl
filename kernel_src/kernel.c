@@ -430,8 +430,6 @@ void read_com(struct BogusFD * fd, uint16_t port)
 			fd->buffer[fd->status[0]] = c;
 			++fd->status[0];
 			fd->status[0] &= fd->status[2];
-			_putchar(c);
-			move_cursor();
 		} else {
 			ERROR_PRINTF("com 0x%x buffer full\n", port);
 			fd->status[3] |= 0x01;
@@ -495,8 +493,6 @@ void read_keyboard (struct BogusFD * fd) {
 					fd->buffer[fd->status[0]] = o;
 					++fd->status[0];
 					fd->status[0] &= fd->status[2];
-					_putchar(o);
-					move_cursor();
 				}
 			} else {
 				if (down) {
@@ -591,7 +587,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 		}
 		case SYS_write: {
 			struct write_args *a = argp;
-			if (a->fd < BOGFD_MAX && FDS[a->fd].type == BOGFD_TERMOUT) {
+			if (a->fd < BOGFD_MAX && (FDS[a->fd].type == BOGFD_TERMOUT || FDS[a->fd].type == BOGFD_TERMIN)) {
 				uint8_t *buffer = (uint8_t *)a->buf;
 				size_t nbyte = a->nbyte;
 				while (nbyte) {
@@ -608,7 +604,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 		}
 		case SYS_writev: {
 			struct writev_args *a = argp;
-			if (a->fd < BOGFD_MAX && FDS[a->fd].type == BOGFD_TERMOUT) {
+			if (a->fd < BOGFD_MAX && (FDS[a->fd].type == BOGFD_TERMOUT || FDS[a->fd].type == BOGFD_TERMIN)) {
 				struct iovec *iov = a->iovp;
 				unsigned int iovcnt = a->iovcnt;
 				int written = 0;
@@ -780,8 +776,8 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					base >>= 8;
 					ugs_base.base_3 = base & 0xFF;
 					base = (uintptr_t)&ugs_base - (uintptr_t)&null_gdt;
-					DEBUG_PRINTF("Setting GS base to %08x, %d\n", a->parms, base);
-					asm volatile ( "movw %0, %%gs" :: "rm" (base));
+					//DEBUG_PRINTF("Setting GS base to %08x, %d\n", a->parms, base);
+					//asm volatile ( "movw %0, %%gs" :: "rm" (base));
 					SYSCALL_SUCCESS(0);
 				}
 			}
@@ -1403,7 +1399,7 @@ void setup_entrypoint()
 	void * page_sizes = new_top;
 
 	// set up environment
-	char * env[] = {"BINDIR=/", "ERL_INETRC=/cfg/inetrc", NULL}; // "LD_DEBUG=1", "LD_32_DEBUG=1", NULL };
+	char * env[] = {"BINDIR=/", "ERL_INETRC=/cfg/inetrc", "TERM=vt100", NULL}; // "LD_DEBUG=1", "LD_32_DEBUG=1", NULL };
 	// set up arguments
 	char *argv[] = {"rtld", "/beam", "--", "-root", "",
 			"-progname", "erl", "--", "-home", "/",
