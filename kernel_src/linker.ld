@@ -1,5 +1,5 @@
 /* The bootloader will start execution at the symbol designated as the entry point. In this case, that's 'start' (defined in start.s) */
-ENTRY(start)
+ENTRY(_start)
  
 /* Tell the linker part of the compiler where the various sections of the kernel will be put in the final kernel executable. */
 SECTIONS
@@ -7,6 +7,7 @@ SECTIONS
 	/* Begin putting sections at 1 Megabyte (1M), a good place for kernels to be loaded at by the bootloader. */
 	/* This is because memory below 1 Megabyte is reserved for other x86-related things, so we can't use it */
 	. = 1M;
+	PROVIDE (__executable_start = .);
  
 	/* We align all sections in the executable at multiples of 4 Kilobytes (4K). This will become useful later in development when we add paging */
  
@@ -14,7 +15,6 @@ SECTIONS
 	/* The Multiboot header is Read-Only data, so we can put it in a '.rodata' section. */
 	.rodata BLOCK(4K) : ALIGN(4K)
 	{
-		__read_only_start = .;
 		*(.multiboot)
 	}
  
@@ -28,22 +28,24 @@ SECTIONS
 	.text BLOCK(4K) : ALIGN(4K)
 	{
 		*(.text)
-		__read_only_end = .;
 	}
- 
+
+	PROVIDE (__etext = .);
+	. = ALIGN (4K);
+
+	PROVIDE (__data_start = .);
  
 	/* Read-write data (initialized) */
 	.data BLOCK(4K) : ALIGN(4K)
 	{
-		__read_write_start = .;
 		*(.data)
 	}
- 
+
 	/* Read-write data (uninitialized) and stack */
 	.bss BLOCK(4K) : ALIGN(4K)
 	{
 		*(COMMON)
 		*(.bss)
-		__read_write_end = .;
 	}
+	PROVIDE (__edata = .);
 }

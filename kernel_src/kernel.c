@@ -14,7 +14,7 @@ extern void * handle_int_80;
 extern void * unknown_int;
 extern void start_entrypoint(); 
 
-extern void __read_only_start, __read_only_end, __read_write_start, __read_write_end;
+extern void __executable_start, __etext, __data_start, __edata;
 
 char **environ = {NULL};
 char *__progname = "crazierlkernel";
@@ -63,6 +63,8 @@ typedef uint32_t u_int32_t;
 #include <sys/sysproto.h>
 #include <stdarg.h>
 #include <sys/cpuset.h>
+#include <rtld_printf.h>
+#include <x86intrin.h>
 
 // include this last; use _KERNEL to avoid conflicting but unused definition
 // of int sysarch between sysproto.h and sysarch.h
@@ -312,7 +314,7 @@ void term_printf(const char* format, ...)
        va_start(args, format);
 
        char foo[512];
-       vsnprintf(foo, sizeof(foo), format, args);
+       rtld_vsnprintf(foo, sizeof(foo), format, args);
        term_print(foo);
 }
 
@@ -522,6 +524,24 @@ void handle_keyboard(struct interrupt_frame *frame)
 #define CARRY 1
 #define SYSCALL_SUCCESS(ret) { iframe->flags &= ~CARRY; return ret; }
 #define SYSCALL_FAILURE(ret) { iframe->flags |= CARRY; return ret; }
+
+ssize_t write(int fd, const void * buf, size_t nbyte) {
+	if (fd < BOGFD_MAX && (FDS[fd].type == BOGFD_TERMOUT || FDS[fd].type == BOGFD_TERMIN)) {
+		uint8_t *buffer = (uint8_t *)buf;
+		size_t nbytes = nbyte;
+		while (nbytes) {
+			_putchar(*buffer);
+			++buffer;
+			--nbytes;
+		}
+		move_cursor();
+		return nbyte;
+	} else {
+		ERROR_PRINTF("write (%d, %08x, %d)\n", fd, buf, nbyte);
+		return -EBADF;
+	}
+}
+
 int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 {	
 	void *argp = (void *)(iframe->sp + sizeof(iframe->sp));
@@ -587,19 +607,11 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 		}
 		case SYS_write: {
 			struct write_args *a = argp;
-			if (a->fd < BOGFD_MAX && (FDS[a->fd].type == BOGFD_TERMOUT || FDS[a->fd].type == BOGFD_TERMIN)) {
-				uint8_t *buffer = (uint8_t *)a->buf;
-				size_t nbyte = a->nbyte;
-				while (nbyte) {
-					_putchar(*buffer);
-					++buffer;
-					--nbyte;
-				}
-				move_cursor();
-				SYSCALL_SUCCESS(a->nbyte);
+			ssize_t ret = write(a->fd, a->buf, a->nbyte);
+			if (ret >= 0) {
+				SYSCALL_SUCCESS(ret);
 			} else {
-				ERROR_PRINTF("write (%d, %08x, %d)\n", a->fd, a->buf, a->nbyte);
-				SYSCALL_FAILURE(EBADF);
+				SYSCALL_FAILURE(-ret);
 			}
 		}
 		case SYS_writev: {
@@ -832,8 +844,11 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 							uint8_t *r = (uint8_t *)a->old;
 							uint32_t count = *a->oldlenp;
 							DEBUG_PRINTF("random requested (%d)\n", count);
+							ERROR_PRINTF("no reasonable random available\n");
 							while (count) {
-								*r = rand() & 0xFF;
+								/*unsigned int value;
+								_rdrand32_step(&value); */
+								*r = count & 0xFF;
 								--count;
 								++r;
 							}
@@ -932,8 +947,6 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			strlcpy(a->buf, "/", a->buflen);
 			SYSCALL_SUCCESS(0);
 		}
-		case SYS_utrace:
-			SYSCALL_SUCCESS(0);
 		case SYS_sigprocmask: {
 			struct sigprocmask_args *a = argp;
 			DEBUG_PRINTF("sigprocmask (%d, %08x, %08x)\n", a->how, a->set, a->oset);
@@ -1488,12 +1501,15 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 	kern_mmap_init(mb->mmap_length, mb->mmap_addr);
 	
 	uintptr_t scratch;
-	if (!kern_mmap(&scratch, &__read_only_start, &__read_only_end - &__read_only_start, PROT_KERNEL | PROT_READ, 0)) {
+	ERROR_PRINTF("kernel read-only %08x - %08x\n", &__executable_start, &__etext);
+
+	if (!kern_mmap(&scratch, &__executable_start, &__etext - &__executable_start, PROT_KERNEL | PROT_READ, 0)) {
 		ERROR_PRINTF("couldn't map read only kernel section\n");
 		while (1) { }
 	}
 
-	if (!kern_mmap(&scratch, &__read_write_start, &__read_write_end - &__read_write_start, PROT_KERNEL | PROT_READ | PROT_WRITE, 0)) {
+	ERROR_PRINTF("kernel read-write %08x - %08x\n", &__data_start, &__edata);
+	if (!kern_mmap(&scratch, &__data_start, &__edata - &__data_start, PROT_KERNEL | PROT_READ | PROT_WRITE, 0)) {
 		ERROR_PRINTF("couldn't map read/write kernel section\n");
 		while (1) { }
 	}
