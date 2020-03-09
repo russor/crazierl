@@ -7,6 +7,7 @@ use File::Basename;
 use bytes;
 use Erlang::Parser;
 use Data::Dumper;
+use File::Temp;
 #use Compress::LZ4;
 use v5.25;
 
@@ -15,7 +16,18 @@ sub slurp
 	my ($filename) = @_;
 	local $/ = undef;
 	open my $file, '<', $filename or die "can't open $filename: $!";
-	return <$file>;
+	my $data = <$file>;
+	if (substr($data, 0, 4) eq "\x7FELF") {
+		my $tmp = File::Temp->new();
+		if (system("strip $filename -o $tmp") == 0) {
+			my $stripped = <$tmp>;
+			if (length($stripped) < length($data)) {
+				print STDERR "using stripped instead of raw for $filename ", length($stripped), " < ", length($data), "\n";
+				return $stripped;
+			}
+		}
+	}
+	return $data;
 }
 
 my ($RTLD, $OTP_DIR) = @ARGV;
