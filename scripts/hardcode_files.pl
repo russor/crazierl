@@ -7,6 +7,7 @@ use File::Basename;
 use bytes;
 use Erlang::Parser;
 use Data::Dumper;
+#use Compress::LZ4;
 use v5.25;
 
 sub slurp
@@ -102,5 +103,10 @@ print pack('N', scalar(%FILES)), pack('N', $strlen_total);
 
 foreach my $file (sort keys %FILES) {
 	my $data = $FILES{$file};
-	print "/", $file, "\0", pack('N', length($data)), $data;
+#	my $compressed_data = lz4_compress_hc($data, 16);
+#	if (length($compressed_data) + 4 < length($data)) {
+#		print "/", $file, "\0", pack('NN', length($data) | 0x80000000, length($compressed_data)), $compressed_data;
+#	} else {
+		print "/", $file, "\0", pack('N', length($data)), $data;
+#	}
 }

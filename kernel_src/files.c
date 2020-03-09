@@ -2,6 +2,7 @@
 #include "files.h"
 #include "kern_mmap.h"
 #include <string.h>
+//#include <lz4.h>
 
 #define MAX_FILES 256
 struct hardcoded_file hardcoded_files[MAX_FILES];
@@ -39,7 +40,18 @@ void init_files(multiboot_module_t *mod) {
 		size_t strlen = strnlen((char *)start, mod->mod_end - start) + 1;
 		if (strlen + start + sizeof(uint32_t) > mod->mod_end) { break; }
 		size_t filelen = unpack_network(start + strlen);
-		if (strlen + start + sizeof(uint32_t) + filelen > mod->mod_end) { break; }
+		size_t compressedlen = 0;
+		if (filelen & 0x80000000) {
+			if (strlen + start + sizeof(uint32_t) * 2 > mod->mod_end) { break; }
+			compressedlen = unpack_network(start + strlen + sizeof(uint32_t));
+			filelen &= 0x7FFFFFFF;
+		}
+
+		if (compressedlen) {
+			if (strlen + start + sizeof(uint32_t) * 2 + compressedlen > mod->mod_end) { break; }
+		} else {
+			if (strlen + start + sizeof(uint32_t) + filelen > mod->mod_end) { break; }
+		}
 
 		uintptr_t file;
 		size_t mmaplen = filelen;
@@ -59,7 +71,16 @@ void init_files(multiboot_module_t *mod) {
 		hardcoded_files[i].end = (uint8_t *) (file + filelen);
 		start += strlen + sizeof(uint32_t);
 
-		memcpy((uint8_t *)file, (uint8_t*)start, filelen);
+		if (compressedlen) {
+			start += sizeof(uint32_t);
+			//if (LZ4_decompress_safe((char *)start, (char *)file, compressedlen, filelen) != filelen) {
+				ERROR_PRINTF("couldn't decompress %s\n", hardcoded_files[i].name);
+				return;
+			//}
+		} else {
+			memcpy((uint8_t *)file, (uint8_t*)start, filelen);
+		}
+
 		if (mmaplen > filelen) {
 			explicit_bzero((uint8_t *) (file + filelen), mmaplen - filelen);
 		}
