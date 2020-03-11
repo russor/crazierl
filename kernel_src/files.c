@@ -4,8 +4,11 @@
 #include <string.h>
 //#include <lz4.h>
 
-#define MAX_FILES 256
-struct hardcoded_file hardcoded_files[MAX_FILES];
+
+struct {
+	size_t count;
+	struct hardcoded_file files[];
+} *hardcoded_files = NULL;
 
 uint32_t unpack_network(uintptr_t start) {
 	return *(uint8_t*)(start + 3) | (*(uint8_t*)(start + 2) << 8)
@@ -22,20 +25,24 @@ void init_files(multiboot_module_t *mod) {
 	}
 	kern_mmap(&scratch, (void *)start, mod->mod_end - start, PROT_READ | PROT_KERNEL | PROT_FORCE, 0);
 	uint32_t files = unpack_network(start);
-	if (files > MAX_FILES) {
-		ERROR_PRINTF("too many files in initrd %d > %d\n", files, MAX_FILES);
-		return;
-	}
 	start += sizeof(uint32_t);
 
 	uint32_t total_namelen = unpack_network(start);
 	start += sizeof(uint32_t);
-	uintptr_t names; 
-	if (!kern_mmap(&names, NULL, total_namelen, PROT_READ | PROT_WRITE | PROT_KERNEL, MAP_ANON | MAP_STACK)) {
-		ERROR_PRINTF("couldn't allocate %d bytes for filenames\n", total_namelen);
+
+	uintptr_t fat_and_names;
+	uint32_t fatlen = sizeof(struct hardcoded_file) * files + sizeof(hardcoded_files);
+
+	if (!kern_mmap(&fat_and_names, NULL, total_namelen + fatlen, PROT_READ | PROT_WRITE | PROT_KERNEL, MAP_ANON | MAP_STACK)) {
+		ERROR_PRINTF("couldn't allocate %d bytes for filenames and file table\n", total_namelen);
 		return;
 	}
-	
+
+	hardcoded_files = (void*) fat_and_names;
+	hardcoded_files->count = files;
+
+	uintptr_t names = fat_and_names + fatlen;
+
 	for (int i = 0; start < mod->mod_end; ++i) {
 		size_t strlen = strnlen((char *)start, mod->mod_end - start) + 1;
 		if (strlen + start + sizeof(uint32_t) > mod->mod_end) { break; }
@@ -65,16 +72,16 @@ void init_files(multiboot_module_t *mod) {
 		}
 
 		memcpy((uint8_t*)names, (uint8_t*)start, strlen);
-		hardcoded_files[i].name = (char *) names;
+		hardcoded_files->files[i].name = (char *) names;
 		names += strlen;
 		
-		hardcoded_files[i].end = (uint8_t *) (file + filelen);
+		hardcoded_files->files[i].end = (uint8_t *) (file + filelen);
 		start += strlen + sizeof(uint32_t);
 
 		if (compressedlen) {
 			start += sizeof(uint32_t);
 			//if (LZ4_decompress_safe((char *)start, (char *)file, compressedlen, filelen) != filelen) {
-				ERROR_PRINTF("couldn't decompress %s\n", hardcoded_files[i].name);
+				ERROR_PRINTF("couldn't decompress %s\n", hardcoded_files->files[i].name);
 				return;
 			//}
 		} else {
@@ -84,19 +91,20 @@ void init_files(multiboot_module_t *mod) {
 		if (mmaplen > filelen) {
 			explicit_bzero((uint8_t *) (file + filelen), mmaplen - filelen);
 		}
-		hardcoded_files[i].start = (uint8_t *) file;		
-		hardcoded_files[i].size = filelen;
+		hardcoded_files->files[i].start = (uint8_t *) file;
+		hardcoded_files->files[i].size = filelen;
 		start += filelen;
 	}
 	kern_munmap(PROT_KERNEL, mod->mod_start, mod->mod_end - mod->mod_start);
 }
 
 struct hardcoded_file * find_file(const char * name) {
-	for (int i = 0; i < MAX_FILES; ++i) {
-		if (hardcoded_files[i].name == NULL) { continue; }
-		int cmp = strcmp(name, hardcoded_files[i].name);
+	if (hardcoded_files == NULL) { return NULL; };
+	for (int i = 0; i < hardcoded_files->count; ++i) {
+		if (hardcoded_files->files[i].name == NULL) { continue; }
+		int cmp = strcmp(name, hardcoded_files->files[i].name);
 		if (cmp == 0) {
-			return &(hardcoded_files[i]);
+			return &(hardcoded_files->files[i]);
 		} else if (cmp < 0) {
 			return NULL;
 		}
@@ -105,10 +113,11 @@ struct hardcoded_file * find_file(const char * name) {
 }
 
 struct hardcoded_file * find_dir(const char * name, size_t len, struct hardcoded_file *i) {
+	if (hardcoded_files == NULL) { return NULL; };
 	if (i == NULL) {
-		i = &hardcoded_files[0];
+		i = &hardcoded_files->files[0];
 	}
-	for (; i <= &hardcoded_files[MAX_FILES -1] && i->name != NULL; ++i) {
+	for (; i <= &hardcoded_files->files[hardcoded_files->count -1] && i->name != NULL; ++i) {
 		if (i->name == NULL) { continue; }
 		int cmp = strncmp(name, i->name, len);
 		if (cmp == 0) {
