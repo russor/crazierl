@@ -11,3 +11,5 @@ struct hardcoded_file {
 void init_files(multiboot_module_t *);
 struct hardcoded_file * find_file(const char *);
 struct hardcoded_file * find_dir(const char *, size_t, struct hardcoded_file *);
+uintptr_t transfer_files_to_userland();
+void init_files_from_userland();

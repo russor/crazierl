@@ -60,7 +60,7 @@ int mem_available (uintptr_t addr, size_t len)
 void add_page_mapping (uint16_t flags, uintptr_t logical, uintptr_t physical) {
 	uint32_t * directory_entry = pagetable_direntry(logical);
 	if (*directory_entry == 0) {
-		if (__builtin_expect(!PAGE_SETUP_FINISHED || (flags & PAGE_FORCE), 0)) { 
+		if (unlikely(!PAGE_SETUP_FINISHED || (flags & PAGE_FORCE))) {
 			*directory_entry = (PAGE_TABLE_BASE + ((logical >> PAGE_DIRECTORY_BITS) * PAGE_SIZE)) | (flags & (PAGE_SIZE -1));
 		} else {
 			ERROR_PRINTF("Trying to setup a mapping without a directory entry\n");
@@ -87,7 +87,7 @@ void add_page_mapping (uint16_t flags, uintptr_t logical, uintptr_t physical) {
 	uint32_t *table_entry = pagetable_entry(*directory_entry, logical);
 	
 	if (*table_entry == 0) {
-		if (__builtin_expect(!PAGE_SETUP_FINISHED || (flags & PAGE_FORCE), 0)){ 
+		if (unlikely(!PAGE_SETUP_FINISHED || (flags & PAGE_FORCE))){
 			*table_entry = (physical & ~(PAGE_SIZE -1)) | (flags & (PAGE_SIZE - 1));
 		} else {
 			ERROR_PRINTF("Trying to setup a mapping without a page table entry\n");

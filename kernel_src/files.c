@@ -2,17 +2,39 @@
 #include "files.h"
 #include "kern_mmap.h"
 #include <string.h>
+#include <stdio.h>
 //#include <lz4.h>
 
 
 struct {
 	size_t count;
+	size_t size;
 	struct hardcoded_file files[];
 } *hardcoded_files = NULL;
 
 uint32_t unpack_network(uintptr_t start) {
 	return *(uint8_t*)(start + 3) | (*(uint8_t*)(start + 2) << 8)
 		| (*(uint8_t*)(start + 1) << 16) | (*(uint8_t*)(start) << 24);
+}
+
+#ifdef CRAZIERL_USER
+void init_files_from_userland() {
+	hardcoded_files = mmap(0, 0, PROT_READ, 0, -2, 0);
+}
+#endif
+
+#ifdef CRAZIERL_KERNEL
+uintptr_t transfer_files_to_userland() {
+	for (int i = 0; i < hardcoded_files->count; ++i) {
+		kern_munmap(PROT_KERNEL, (uintptr_t)hardcoded_files->files[i].start, hardcoded_files->files[i].size);
+		uintptr_t scratch;
+		kern_mmap(&scratch, hardcoded_files->files[i].start, hardcoded_files->files[i].size, PROT_READ, 0);
+	}
+	uintptr_t ret;
+	kern_mmap(&ret, hardcoded_files, hardcoded_files->size, PROT_READ, 0);
+	kern_munmap(PROT_KERNEL, (uintptr_t)hardcoded_files, hardcoded_files->size);
+	hardcoded_files = NULL;
+	return ret;
 }
 
 void init_files(multiboot_module_t *mod) {
@@ -31,15 +53,17 @@ void init_files(multiboot_module_t *mod) {
 	start += sizeof(uint32_t);
 
 	uintptr_t fat_and_names;
-	uint32_t fatlen = sizeof(struct hardcoded_file) * files + sizeof(hardcoded_files);
+	size_t fatlen = sizeof(struct hardcoded_file) * files + sizeof(*hardcoded_files);
 
-	if (!kern_mmap(&fat_and_names, NULL, total_namelen + fatlen, PROT_READ | PROT_WRITE | PROT_KERNEL, MAP_ANON | MAP_STACK)) {
+	size_t total_len = total_namelen + fatlen;
+	if (!kern_mmap(&fat_and_names, NULL, total_len, PROT_READ | PROT_WRITE | PROT_KERNEL, MAP_ANON | MAP_STACK)) {
 		ERROR_PRINTF("couldn't allocate %d bytes for filenames and file table\n", total_namelen);
 		return;
 	}
 
 	hardcoded_files = (void*) fat_and_names;
 	hardcoded_files->count = files;
+	hardcoded_files->size = total_len;
 
 	uintptr_t names = fat_and_names + fatlen;
 
@@ -97,9 +121,13 @@ void init_files(multiboot_module_t *mod) {
 	}
 	kern_munmap(PROT_KERNEL, mod->mod_start, mod->mod_end - mod->mod_start);
 }
+#endif
 
 struct hardcoded_file * find_file(const char * name) {
-	if (hardcoded_files == NULL) { return NULL; };
+	if (hardcoded_files == NULL) {
+		ERROR_PRINTF("find_file when files aren't initialized\n");
+		return NULL;
+	}
 	for (int i = 0; i < hardcoded_files->count; ++i) {
 		if (hardcoded_files->files[i].name == NULL) { continue; }
 		int cmp = strcmp(name, hardcoded_files->files[i].name);
@@ -113,7 +141,10 @@ struct hardcoded_file * find_file(const char * name) {
 }
 
 struct hardcoded_file * find_dir(const char * name, size_t len, struct hardcoded_file *i) {
-	if (hardcoded_files == NULL) { return NULL; };
+	if (hardcoded_files == NULL) {
+		ERROR_PRINTF("find_dir when files aren't initialized\n");
+		return NULL;
+	}
 	if (i == NULL) {
 		i = &hardcoded_files->files[0];
 	}

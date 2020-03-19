@@ -1,2 +1,3 @@
 cfg/inetrc
 /usr/share/misc/termcap.db
+obj/libuserland.so
