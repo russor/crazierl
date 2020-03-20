@@ -20,6 +20,7 @@
 #include "files.h"
 #include "bogfd.h"
 #include "common.h"
+#include "/usr/src/lib/libc/include/libc_private.h"
 
 struct BogusFD FDS[BOGFD_MAX];
 size_t next_fd;
@@ -28,8 +29,11 @@ size_t next_fd;
 void setup_fds() 
 {
 	FDS[0].type = BOGFD_KERNEL;
+	FDS[0].data = 0;
 	FDS[1].type = BOGFD_KERNEL;
+	FDS[1].data = 1;
 	FDS[2].type = BOGFD_KERNEL;
+	FDS[2].data = 2;
 	next_fd = 3;
 	for (int i = next_fd; i < BOGFD_MAX; ++i) {
 		FDS[i].type = BOGFD_CLOSED;
@@ -118,6 +122,15 @@ int rtprio_thread(int function, lwpid_t lwpid, struct rtprio *rtp)
 __asm__(".global  _open\n _open = open");
 int open (const char *p, int flags, ...)
 {
+	while (next_fd < BOGFD_MAX && FDS[next_fd].type != BOGFD_CLOSED) {
+		++next_fd;
+	}
+	if (next_fd >= BOGFD_MAX) {
+		ERROR_PRINTF("open (%s) = EMFILE\n", p);
+		errno = EMFILE;
+		return -1;
+	}
+
 	char path[256];
 	strlcpy (path, p, sizeof(path));
 	if (strcmp(path, ".") == 0) {
@@ -150,6 +163,14 @@ int open (const char *p, int flags, ...)
 		DEBUG_PRINTF("open (%s, ...) = %d\n", path, next_fd);
 		return next_fd++;
 	}
+	if (strncmp("/kern", path, 5) == 0) {
+		int fd = __sys_open(path, flags);
+		if (fd == -1) { return -1; }
+		FDS[next_fd].type = BOGFD_KERNEL;
+		FDS[next_fd].data = fd;
+		return next_fd++;
+	}
+
 	DEBUG_PRINTF ("open (%s, %08x) = ENOENT\n", path, flags);
 	errno = ENOENT;
 	return -1;
@@ -182,11 +203,14 @@ int close(int fd)
 {
 	if (FDS[fd].type != BOGFD_CLOSED) {
 		DEBUG_PRINTF("close (%d)\n", fd);
+		if (FDS[fd].type == BOGFD_KERNEL) {
+			__sys_close(FDS[fd].data);
+		}
 		FDS[fd].type = BOGFD_CLOSED;
 		FDS[fd].file = NULL;
 		FDS[fd].buffer = NULL;
-		if (fd + 1 == next_fd) {
-			--next_fd;
+		if (fd <= next_fd) {
+			next_fd = fd;
 		}
 		return 0;
 	} else {
@@ -294,89 +318,6 @@ int stat(const char *path, struct stat *sb)
 	return -1;
 }
 
-
-#define PORT_COM1 0x3f8   /* COM1 */
-
-void read_com(struct BogusFD * fd, uint16_t port)
-{
-	fd->status[3] &= ~ 0x01; // clear data pending flag
-	while (inb(port + 5) & 1) {
-		if (((fd->status[0] + 1) & fd->status[2]) != fd->status[1]) {
-			uint8_t c = inb(port);
-			if (c == '\r') { c = '\n'; }
-			fd->buffer[fd->status[0]] = c;
-			++fd->status[0];
-			fd->status[0] &= fd->status[2];
-		} else {
-			ERROR_PRINTF("com 0x%x buffer full\n", port);
-			fd->status[3] |= 0x01;
-			return;
-		}
-	} 
-}
-
-char unshifted_scancodes[] = {
-	0, 0x1B,
-	'1', '2', '3', '4', '5', '6', '7', '8',	'9', '0', '-', '=', 0x7F,
-	'\t', 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n',
-	-4, 'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', ';', '\'', '`',
-	-1, '\\', 'z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', '/', -2,
-	'*', -8, ' ' // ignore the rest of the keys
-};
-
-char shifted_scancodes[] = {
-	0, 0x1B,
-	'!', '@', '#', '$', '%', '^', '&', '*',	'(', ')', '_', '+', 0x7F,
-	'\t', 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '{', '}', '\n',
-	-4, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', ':', '"', '~',
-	-1, '|', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', '<', '>', '?', -2,
-	'*', -8, ' ' // ignore the rest of the keys
-};
-
-uint8_t keyboard_shifts = 0;
-
-void read_keyboard (struct BogusFD * fd)
-{
-	fd->status[3] &= ~ 0x02; // clear data pending flag
-	if (((fd->status[0] + 1) & fd->status[2]) != fd->status[1]) {
-		uint8_t c = inb(0x60);
-		if (c == 0xe0 || c== 0xe1) {
-			// keyboard escape code; ignore for now
-			return;
-		}
-		int down = 1;
-		if (c & 0x80) {
-			down = 0;
-			c &= 0x7F;
-		}
-		if (c < sizeof(unshifted_scancodes)) {
-			char o;
-			if (keyboard_shifts & 0x3) {
-				o = shifted_scancodes[c];
-			} else {
-				o = unshifted_scancodes[c];
-			}
-			if (o > 0) {
-				if (down) {
-					fd->buffer[fd->status[0]] = o;
-					++fd->status[0];
-					fd->status[0] &= fd->status[2];
-				}
-			} else {
-				if (down) {
-					keyboard_shifts |= (-o);
-				} else {
-					keyboard_shifts &= ~(-o);
-				}
-			}
-		}
-	} else {
-		ERROR_PRINTF("keyboard buffer full\n");
-		fd->status[3] |= 0x02;
-		return;
-	}
-}
-
 ssize_t pread(int fd, void *buf, size_t nbytes, off_t offset)
 {
 	DEBUG_PRINTF("pread (%d, %p, %d, %lld)\n", fd, buf, nbytes, offset);
@@ -389,6 +330,7 @@ ssize_t pread(int fd, void *buf, size_t nbytes, off_t offset)
 		memcpy(buf, FDS[fd].file->start + offset, read);
 		return read;
 	}
+	ERROR_PRINTF("pread (%d, %p, %d, %lld) = EBADF\n", fd, buf, nbytes, offset);
 	errno = EBADF;
 	return -1;
 }
@@ -396,85 +338,99 @@ ssize_t pread(int fd, void *buf, size_t nbytes, off_t offset)
 __asm__(".global  _read\n _read = read");
 ssize_t read(int fd, void *buf, size_t nbytes)
 {
-	if (fd < BOGFD_MAX && FDS[fd].type == BOGFD_FILE) {
+	if (fd < 0 || fd >= BOGFD_MAX) {
+		ERROR_PRINTF("write (%d, %p, %d) = EBADF\n", fd, buf, nbytes);
+		errno = EBADF;
+		return -1;
+	}
+	if (FDS[fd].type == BOGFD_FILE) {
 		DEBUG_PRINTF("read (%d, %p, %d)\n", fd, buf, nbytes);
 		int read = min(nbytes, FDS[fd].file->end - FDS[fd].pos);
 		memcpy(buf, FDS[fd].pos, read);
 		FDS[fd].pos += read;
 		return read;
-	} else if (fd < BOGFD_MAX && FDS[fd].type == BOGFD_TERMIN) {
-		int read = 0;
-		uint8_t * buffer = buf;
-		while (read < nbytes) {
-			if (FDS[fd].status[0] == FDS[fd].status[1]) {
-				if (FDS[fd].status[3] & 0x03) {
-					if (FDS[fd].status[3] & 0x01) {
-						ERROR_PRINTF("com 0x%x buffer empty\n", PORT_COM1);
-						read_com(&FDS[fd], PORT_COM1);
-					}
-					if (FDS[fd].status[3] & 0x02) {
-						ERROR_PRINTF("keyboard buffer empty\n");
-						read_keyboard(&FDS[fd]);
-					}
-				} else {
-					break;
-				}
-			} else {
-				buffer[read] = FDS[fd].buffer[FDS[fd].status[1]];
-				++read;
-				++FDS[fd].status[1];
-				FDS[fd].status[1] &= FDS[fd].status[2];
-			}
-		}
-		if (read) {
-			return read;
-		} else {
-			errno = EAGAIN;
-			return -1;
-		}
+	} else if (FDS[fd].type == BOGFD_KERNEL) {
+		return __sys_read(FDS[fd].data, buf, nbytes);
 	}
 	ERROR_PRINTF("read (%d, %p, %d) = EBADF\n", fd, buf, nbytes);
 	errno = EBADF;
 	return -1;
 }
 
+__asm__(".global  _write\n _write = write");
+ssize_t write(int fd, const void *buf, size_t nbytes)
+{
+	if (fd < 0 || fd >= BOGFD_MAX) {
+		ERROR_PRINTF("write (%d, %p, %d) = EBADF\n", fd, buf, nbytes);
+		errno = EBADF;
+		return -1;
+	}
+	if (FDS[fd].type == BOGFD_KERNEL) {
+		return __sys_write(FDS[fd].data, buf, nbytes);
+	} else if (FDS[fd].type == BOGFD_PIPE) {
+		ERROR_PRINTF("write (%d, %p, %d) to pipe\n", fd, buf, nbytes);
+		int written = 0;
+		const uint8_t *mybuf = buf;
+		while (written < nbytes && FDS[fd].pipe->status[0] < BOGFD_STATUS_SIZE) {
+			FDS[fd].pipe->status[1 + FDS[fd].pipe->status[0]] = *mybuf;
+			++FDS[fd].pipe->status[0];
+			++mybuf;
+		}
+		if (written) {
+			return written;
+		} else {
+			errno = EAGAIN;
+			return -1;
+		}
+	}
+	ERROR_PRINTF("write (%d, %p, %d) = EBADF\n", fd, buf, nbytes);
+	errno = EBADF;
+	return -1;
+}
 
 int ppoll(struct pollfd fds[], nfds_t nfds, const struct timespec * restrict timeout,
           const sigset_t * restrict newsigmask)
 {
 	int waitleft = timeout->tv_sec;
-	struct timeval lastsecond;
-	gettimeofday(&lastsecond, NULL);
 	int printed = 0;
 	int changedfds = 0;
-	while (waitleft > 0) {
-		for (int i = 0; i < nfds; ++i) {
-			if (fds[i].fd >= BOGFD_MAX) { continue; } // no EBADF?
-			struct BogusFD *fd = &FDS[fds[i].fd];
-			if (fds[i].events & POLLIN && fd->type == BOGFD_TERMIN && fd->status[0] != fd->status[1]) {
-				fds[i].revents = POLLIN;
-				++changedfds;
-			}
-		}
-		if (changedfds) { return changedfds; }
-		if (!printed) { // && ts->tv_sec > 60) {
-			printed = 1;
-			DEBUG_PRINTF("ppoll for %d fds, timeout %d\n", nfds, timeout->tv_sec);
-			for (int i = 0; i < nfds; ++i) {
-				DEBUG_PRINTF("  FD %d: events %08x\n", fds[i].fd, fds[i].events);
-			}
-		}
-		// enable interrupts, and wait for one; time keeping interrupts will move us forward
-		asm volatile ( "sti; hlt" :: );
-		
-		struct timeval newsecond;
-		gettimeofday(&newsecond, NULL);
-		if (newsecond.tv_sec != lastsecond.tv_sec) {
-			lastsecond = newsecond;
-			waitleft -= 1;
+	struct pollfd kern_fds[nfds];
+
+	for (int i = 0; i < nfds; ++i) {
+		kern_fds[i].fd = -1;
+		kern_fds[i].events = 0;
+		kern_fds[i].revents = 0;
+		if (fds[i].fd < 0 || fds[i].fd >= BOGFD_MAX) { continue; } // no EBADF?
+		struct BogusFD *fd = &FDS[fds[i].fd];
+		if (fds[i].events & POLLIN && fd->type == BOGFD_PIPE && fd->status[0] != 0) {
+			ERROR_PRINTF("fd %d ready to read\n", fds[i].fd);
+			fds[i].revents = POLLIN;
+			++changedfds;
+		} else if (fd->type == BOGFD_KERNEL) {
+			kern_fds[i].fd = fd->data;
+			kern_fds[i].events = fds[i].events;
 		}
 	}
-	return 0;
+	int kernelfds;
+	if (changedfds) {
+		struct timespec zero = { 0, 0 }; 
+		kernelfds = __sys_ppoll(kern_fds, nfds, &zero, newsigmask);
+	} else {
+		kernelfds = __sys_ppoll(kern_fds, nfds, timeout, newsigmask);
+	}
+	if (kernelfds) {
+		for (int i = 0; i < nfds; ++i) {
+			if (kern_fds[i].fd != -1) {
+				fds[i].revents = kern_fds[i].revents;
+			}
+		}
+	}
+
+	DEBUG_PRINTF("ppoll for %d fds, timeout %d\n", nfds, timeout->tv_sec);
+	for (int i = 0; i < nfds; ++i) {
+		DEBUG_PRINTF("  FD %d: events %08x, revents %08x\n", fds[i].fd, fds[i].events, fds[i].revents);
+	}
+	return changedfds + kernelfds;
 }
 
 __asm__(".global  _getdirentries\n _getdirentries = getdirentries");

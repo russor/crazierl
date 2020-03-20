@@ -510,6 +510,42 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 {	
 	void *argp = (void *)(iframe->sp + sizeof(iframe->sp));
 	switch(call) {
+		case SYS_read: {
+			struct read_args *a = argp;
+			if (a->fd < BOGFD_MAX && KERN_FDS[a->fd].type == BOGFD_TERMIN) {
+				struct BogusFD *fd = &KERN_FDS[a->fd];
+				int read = 0;
+				uint8_t * buffer = a->buf;
+				while (read < a->nbyte) {
+					if (fd->status[0] == fd->status[1]) {
+						if (fd->status[3] & 0x03) {
+							if (fd->status[3] & 0x01) {
+								ERROR_PRINTF("com 0x%x buffer empty\n", PORT_COM1);
+								read_com(fd, PORT_COM1);
+							}
+							if (fd->status[3] & 0x02) {
+								ERROR_PRINTF("keyboard buffer empty\n");
+								read_keyboard(fd);
+							}
+						} else {
+							break;
+						}
+					} else {
+						buffer[read] = fd->buffer[fd->status[1]];
+						++read;
+						++fd->status[1];
+						fd->status[1] &= fd->status[2];
+					}
+				}
+				if (read) {
+					SYSCALL_SUCCESS(read);
+				} else {
+					SYSCALL_FAILURE(EAGAIN);
+				}
+			}
+			ERROR_PRINTF("read (%d, %08x, %d) = EBADF\n", a->fd, a->buf, a->nbyte);
+			SYSCALL_FAILURE(EBADF);
+		}
 		case SYS_write: {
 			struct write_args *a = argp;
 			ssize_t ret = write(a->fd, a->buf, a->nbyte);
@@ -548,6 +584,14 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			argp += sizeof(argp);
 		case SYS_open: {
 			struct open_args *a = argp;
+			while (next_fd < BOGFD_MAX && KERN_FDS[next_fd].type != BOGFD_CLOSED) {
+				++next_fd;
+			}
+			if (next_fd >= BOGFD_MAX) {
+				ERROR_PRINTF("open (%s) = EMFILE\n", a->path);
+				SYSCALL_FAILURE(EMFILE);
+			}
+
 			if (FS_TRANSFERRED) {
 				ERROR_PRINTF("open (%s, %08x) after FS transferred\n", a->path, a->flags);
 				break;
@@ -581,8 +625,8 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				KERN_FDS[a->fd].type = BOGFD_CLOSED;
 				KERN_FDS[a->fd].file = NULL;
 				KERN_FDS[a->fd].buffer = NULL;
-				if (a->fd + 1 == next_fd) {
-					--next_fd;
+				if (a->fd < next_fd) {
+					next_fd = a->fd;
 				}
 				SYSCALL_SUCCESS(0);
 			} else {
@@ -849,15 +893,15 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				SYSCALL_FAILURE(ret_addr);
 			}
 		}
-		/*case SYS_ppoll: {
+		case SYS_ppoll: {
 			struct ppoll_args *a = argp;
 			int waitleft = a->ts->tv_sec;
 			int lastsecond = last_time[1];
 			int printed = 0;
 			int changedfds = 0;
-			while (waitleft > 0) {
+			do {
 				for (int i = 0; i < a->nfds; ++i) {
-					if (a->fds[i].fd >= BOGFD_MAX) { continue; } // no EBADF?
+					if (a->fds[i].fd < 0 || a->fds[i].fd >= BOGFD_MAX) { continue; } // no EBADF?
 					struct BogusFD *fd = &KERN_FDS[a->fds[i].fd];
 					if (a->fds[i].events & POLLIN && fd->type == BOGFD_TERMIN && fd->status[0] != fd->status[1]) {
 						a->fds[i].revents = POLLIN;
@@ -878,10 +922,10 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					lastsecond = last_time[1];
 					waitleft -= 1;
 				}
-			}
+			} while (waitleft > 0);
 			SYSCALL_SUCCESS(0);
 		
-		}*/
+		}
 		case SYS_fstat: {
 			struct fstat_args *a = argp;
 			if (FS_TRANSFERRED) {
