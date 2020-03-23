@@ -3,6 +3,7 @@ OTPDIR=../installed
 
 KERNEL_COMPILER=clang -m32 -mno-sse -g -ffreestanding -gdwarf-2 -c -DCRAZIERL_KERNEL
 USER_COMPILER=clang -m32 -fpic -g -gdwarf-2 -c -DCRAZIERL_USER
+NIF_COMPILER=clang -m32 -fpic -g -gdwarf-2 -shared -I../installed/lib/erlang/usr/include/
 
 run: obj/mykernel.elf obj/initrd
 	qemu-system-i386 -s -m 256 -serial mon:stdio -kernel obj/mykernel.elf -append $(RTLD) -initrd obj/initrd
@@ -94,3 +95,9 @@ obj/userland.o: userland.c
 
 obj/files_userland.o: files.c
 	$(USER_COMPILER) $^ -o $@
+
+obj/crazierl_nif.so: crazierl_nif.c
+	$(NIF_COMPILER) $^ -o $@
+obj/crazierl.beam: crazierl.erl
+	../installed/bin/erlc $^
+	mv crazierl.beam obj/

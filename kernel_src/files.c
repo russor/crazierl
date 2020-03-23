@@ -26,14 +26,14 @@ void init_files_from_userland() {
 #ifdef CRAZIERL_KERNEL
 uintptr_t transfer_files_to_userland() {
 	for (int i = 0; i < hardcoded_files->count; ++i) {
-		kern_munmap(PROT_KERNEL, (uintptr_t)hardcoded_files->files[i].start, hardcoded_files->files[i].size);
+		//kern_munmap(PROT_KERNEL, (uintptr_t)hardcoded_files->files[i].start, hardcoded_files->files[i].size);
 		uintptr_t scratch;
 		kern_mmap(&scratch, hardcoded_files->files[i].start, hardcoded_files->files[i].size, PROT_READ, 0);
 	}
 	uintptr_t ret;
 	kern_mmap(&ret, hardcoded_files, hardcoded_files->size, PROT_READ, 0);
-	kern_munmap(PROT_KERNEL, (uintptr_t)hardcoded_files, hardcoded_files->size);
-	hardcoded_files = NULL;
+	//kern_munmap(PROT_KERNEL, (uintptr_t)hardcoded_files, hardcoded_files->size);
+	//hardcoded_files = NULL;
 	return ret;
 }
 

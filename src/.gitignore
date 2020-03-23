@@ -1,4 +1,2 @@
-*.o
-*.elf
+obj/
 *~
-initrd

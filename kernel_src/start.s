@@ -169,7 +169,12 @@
 
 		pushl %eax
 		pushl %ebx
-		pushf
+
+		pushf	// allow ring 3 to do IO, because why not?
+		popl %eax
+		orl $0x3000, %eax
+		pushl %eax
+
 		pushl $((ucod_gdt - null_gdt) | 0x3)
 		pushl %ecx
 		iret

@@ -409,7 +409,7 @@ void handle_com1(struct interrupt_frame *frame)
 {
 	struct BogusFD *fd = &KERN_FDS[INPUT_FD];
 	if (fd->type == BOGFD_TERMIN) {
-		read_com(fd, PORT_COM1);
+		//read_com(fd, PORT_COM1);
 	}
 	outb(PORT_PIC1, PIC_INTERRUPT_ACK);
 }
@@ -866,7 +866,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			uintptr_t ret_addr;
 			if (unlikely(a->fd == -2)) {
 				ret_addr = transfer_files_to_userland();
-				FS_TRANSFERRED = 1;
+				//FS_TRANSFERRED = 1;
 				SYSCALL_SUCCESS(ret_addr);
 			} else if (kern_mmap(&ret_addr, a->addr, a->len, a->prot, a->flags)) {
 				if (a->fd != -1 && a->fd < BOGFD_MAX && KERN_FDS[a->fd].type == BOGFD_FILE) {
@@ -1017,7 +1017,7 @@ void interrupt_setup()
 {
 	// remap primary PIC so that the interrupts don't conflict with Intel exceptions
 	
-	uint8_t mask = inb(0x21); // read current mask from PIC
+	uint8_t mask = inb(PORT_PIC1 + 1); // read current mask from PIC
 	mask &= (~0x01); // enable irq 0 -> PIT timer
 	mask &= (~0x10); // enable irq 4 -> COM1
 
@@ -1234,7 +1234,9 @@ void setup_entrypoint()
 	// set up arguments
 	char *argv[] = {"/beam", "--", "-root", "",
 			"-progname", "erl", "--", "-home", "/",
-			"--", NULL};
+			"-pz", "/obj/",
+			"--", 
+			NULL};
 
 	int i = 0;
 	while (env[i] != NULL) {

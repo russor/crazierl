@@ -1,3 +1,5 @@
 cfg/inetrc
 /usr/share/misc/termcap.db
 obj/libuserland.so
+obj/crazierl_nif.so
+obj/crazierl.beam

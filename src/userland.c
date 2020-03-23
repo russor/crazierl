@@ -175,6 +175,8 @@ int open (const char *p, int flags, ...)
 	errno = ENOENT;
 	return -1;
 }
+
+__asm__(".global  _openat\n _openat = openat");
 int openat (int fd, const char *path, int flags, ...)
 {
 	return open(path, flags);
@@ -302,7 +304,6 @@ int fstatfs(int fd, struct statfs *buf) {
 
 int stat(const char *path, struct stat *sb)
 {
-	DEBUG_PRINTF("fstatat (%s, %p)\n", path, sb);
 	struct hardcoded_file * file;
 	file = find_file(path);
 	if (file != NULL) {
@@ -314,6 +315,17 @@ int stat(const char *path, struct stat *sb)
 		sb->st_mode = S_IRUSR | S_IFREG;
 		return 0;
 	}
+	file = find_dir(path, strlen(path), NULL);
+	if (file != NULL) {
+		explicit_bzero(sb, sizeof(*sb));
+		sb->st_dev = BOGFD_DIR;
+		sb->st_ino = (ino_t) file;
+		sb->st_nlink = 1;
+		sb->st_size = file->size;
+		sb->st_mode = S_IRUSR | S_IFDIR;
+		return 0;
+	}
+	DEBUG_PRINTF("stat (%s, %p) = ENOENT \n", path, sb);
 	errno = ENOENT;
 	return -1;
 }
@@ -343,18 +355,37 @@ ssize_t read(int fd, void *buf, size_t nbytes)
 		errno = EBADF;
 		return -1;
 	}
+
+	int read = 0;
 	if (FDS[fd].type == BOGFD_FILE) {
 		DEBUG_PRINTF("read (%d, %p, %d)\n", fd, buf, nbytes);
-		int read = min(nbytes, FDS[fd].file->end - FDS[fd].pos);
+		read = min(nbytes, FDS[fd].file->end - FDS[fd].pos);
 		memcpy(buf, FDS[fd].pos, read);
 		FDS[fd].pos += read;
 		return read;
 	} else if (FDS[fd].type == BOGFD_KERNEL) {
-		return __sys_read(FDS[fd].data, buf, nbytes);
+		read = __sys_read(FDS[fd].data, buf, nbytes);
+	} else if (FDS[fd].type == BOGFD_PIPE) {
+		read = min(nbytes, FDS[fd].pipe->status[0]);
+		ERROR_PRINTF("read (%d, %p, %d) = %d from pipe\n", fd, buf, nbytes, read);
+		if (read) {
+			memcpy(buf, &FDS[fd].pipe->status[1], read);
+			FDS[fd].pipe->status[0] -= read;
+			if (FDS[fd].pipe->status[0]) {
+				memmove(&FDS[fd].pipe->status[1], &FDS[fd].pipe->status[read + 1], FDS[fd].pipe->status[0]);
+			}
+		}
+	} else {
+		ERROR_PRINTF("read (%d, %p, %d) = EBADF\n", fd, buf, nbytes);
+		errno = EBADF;
+		return -1;
 	}
-	ERROR_PRINTF("read (%d, %p, %d) = EBADF\n", fd, buf, nbytes);
-	errno = EBADF;
-	return -1;
+	if (read) {
+		return read;
+	} else {
+		errno = EAGAIN;
+		return -1;
+	}
 }
 
 __asm__(".global  _write\n _write = write");
@@ -403,7 +434,7 @@ int ppoll(struct pollfd fds[], nfds_t nfds, const struct timespec * restrict tim
 		if (fds[i].fd < 0 || fds[i].fd >= BOGFD_MAX) { continue; } // no EBADF?
 		struct BogusFD *fd = &FDS[fds[i].fd];
 		if (fds[i].events & POLLIN && fd->type == BOGFD_PIPE && fd->status[0] != 0) {
-			ERROR_PRINTF("fd %d ready to read\n", fds[i].fd);
+			//ERROR_PRINTF("fd %d ready to read\n", fds[i].fd);
 			fds[i].revents = POLLIN;
 			++changedfds;
 		} else if (fd->type == BOGFD_KERNEL) {
@@ -426,10 +457,10 @@ int ppoll(struct pollfd fds[], nfds_t nfds, const struct timespec * restrict tim
 		}
 	}
 
-	DEBUG_PRINTF("ppoll for %d fds, timeout %d\n", nfds, timeout->tv_sec);
+	/*DEBUG_PRINTF("ppoll for %d fds, timeout %d\n", nfds, timeout->tv_sec);
 	for (int i = 0; i < nfds; ++i) {
 		DEBUG_PRINTF("  FD %d: events %08x, revents %08x\n", fds[i].fd, fds[i].events, fds[i].revents);
-	}
+	}*/
 	return changedfds + kernelfds;
 }
 
