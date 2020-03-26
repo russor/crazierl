@@ -17,6 +17,7 @@
 #include <sys/mount.h>
 #include <sys/dirent.h>
 #include <netdb.h>
+#include <sys/socket.h>
 #include "files.h"
 #include "bogfd.h"
 #include "common.h"
@@ -240,12 +241,80 @@ int socketpair (int domain, int type, int protocol, int *sv)
 	return pipe(sv);
 }
 
+int __sys_socket(int, int, int);
 int socket (int domain, int type, int protocol)
 {
+	while (next_fd < BOGFD_MAX && FDS[next_fd].type != BOGFD_CLOSED) {
+		++next_fd;
+	}
+	if (next_fd >= BOGFD_MAX) {
+		ERROR_PRINTF("socket (...) = EMFILE\n");
+		errno = EMFILE;
+		return -1;
+	}
+	if (domain == AF_UNIX) {
+		int ret = __sys_socket(domain, type, protocol);
+		if (ret >= 0) {
+			FDS[next_fd].type = BOGFD_KERNEL;
+			FDS[next_fd].data = ret;
+			return next_fd++;
+		}
+		return ret;
+	}
 	ERROR_PRINTF("socket(%d, %d, %d)\n", domain, type, protocol);
 	errno = EACCES;
 	return -1;
 }
+
+int __sys_bind(int, const struct sockaddr *, socklen_t);
+int bind (int s, const struct sockaddr *addr, socklen_t addrlen)
+{
+	if (s < 0 || s >= BOGFD_MAX) {
+		ERROR_PRINTF("bind (%d, %p, %d) = EBADF\n", s, addr, addrlen);
+		errno = EBADF;
+		return -1;
+	}
+	if (FDS[s].type == BOGFD_KERNEL) {
+		return __sys_bind(FDS[s].data, addr, addrlen);
+	} else {
+		errno = ENOTSOCK;
+		return -1;
+	}
+}
+
+ssize_t __sys_recvfrom(int, void *, size_t, int,
+	struct sockaddr * restrict, socklen_t * restrict);
+ssize_t recvfrom(int s, void *buf, size_t len, int flags,
+	struct sockaddr * restrict from, socklen_t * restrict fromlen)
+{
+	if (s < 0 || s >= BOGFD_MAX) {
+		errno = EBADF;
+		return -1;
+	}
+	if (FDS[s].type == BOGFD_KERNEL) {
+		return __sys_recvfrom(FDS[s].data, buf, len, flags, from, fromlen);
+	} else {
+		errno = ENOTSOCK;
+		return -1;
+	}
+}
+ssize_t __sys_sendto(int, const void *, size_t, int,
+	const struct sockaddr *, socklen_t);
+ssize_t sendto(int s, const void *msg, size_t len, int flags,
+	const struct sockaddr *to, socklen_t tolen)
+{
+	if (s < 0 || s >= BOGFD_MAX) {
+		errno = EBADF;
+		return -1;
+	}
+	if (FDS[s].type == BOGFD_KERNEL) {
+		return __sys_sendto(FDS[s].data, msg, len, flags, to, tolen);
+	} else {
+		errno = ENOTSOCK;
+		return -1;
+	}
+}
+
 int getsockopt(int s, int level, int optname, void * restrict optval,
                socklen_t * restrict optlen)
 {
@@ -351,7 +420,7 @@ __asm__(".global  _read\n _read = read");
 ssize_t read(int fd, void *buf, size_t nbytes)
 {
 	if (fd < 0 || fd >= BOGFD_MAX) {
-		ERROR_PRINTF("write (%d, %p, %d) = EBADF\n", fd, buf, nbytes);
+		ERROR_PRINTF("read (%d, %p, %d) = EBADF\n", fd, buf, nbytes);
 		errno = EBADF;
 		return -1;
 	}
@@ -366,13 +435,13 @@ ssize_t read(int fd, void *buf, size_t nbytes)
 	} else if (FDS[fd].type == BOGFD_KERNEL) {
 		read = __sys_read(FDS[fd].data, buf, nbytes);
 	} else if (FDS[fd].type == BOGFD_PIPE) {
-		read = min(nbytes, FDS[fd].pipe->status[0]);
+		read = min(nbytes, FDS[fd].status[0]);
 		ERROR_PRINTF("read (%d, %p, %d) = %d from pipe\n", fd, buf, nbytes, read);
 		if (read) {
-			memcpy(buf, &FDS[fd].pipe->status[1], read);
-			FDS[fd].pipe->status[0] -= read;
-			if (FDS[fd].pipe->status[0]) {
-				memmove(&FDS[fd].pipe->status[1], &FDS[fd].pipe->status[read + 1], FDS[fd].pipe->status[0]);
+			memcpy(buf, &FDS[fd].status[1], read);
+			FDS[fd].status[0] -= read;
+			if (FDS[fd].status[0]) {
+				memmove(&FDS[fd].status[1], &FDS[fd].status[read + 1], FDS[fd].status[0]);
 			}
 		}
 	} else {
@@ -400,14 +469,10 @@ ssize_t write(int fd, const void *buf, size_t nbytes)
 		return __sys_write(FDS[fd].data, buf, nbytes);
 	} else if (FDS[fd].type == BOGFD_PIPE) {
 		ERROR_PRINTF("write (%d, %p, %d) to pipe\n", fd, buf, nbytes);
-		int written = 0;
-		const uint8_t *mybuf = buf;
-		while (written < nbytes && FDS[fd].pipe->status[0] < BOGFD_STATUS_SIZE) {
-			FDS[fd].pipe->status[1 + FDS[fd].pipe->status[0]] = *mybuf;
-			++FDS[fd].pipe->status[0];
-			++mybuf;
-		}
+		int written = min(nbytes, BOGFD_STATUS_SIZE - 1 - FDS[fd].pipe->status[0]);
+		memcpy(&FDS[fd].pipe->status[1 + FDS[fd].pipe->status[0]], buf, written);
 		if (written) {
+			FDS[fd].pipe->status[0] += written;
 			return written;
 		} else {
 			errno = EAGAIN;
@@ -427,25 +492,29 @@ int ppoll(struct pollfd fds[], nfds_t nfds, const struct timespec * restrict tim
 	int changedfds = 0;
 	struct pollfd kern_fds[nfds];
 
+	int kernelfds = 0;
 	for (int i = 0; i < nfds; ++i) {
-		kern_fds[i].fd = -1;
+		kern_fds[i].fd = -fds[i].fd;
 		kern_fds[i].events = 0;
 		kern_fds[i].revents = 0;
 		if (fds[i].fd < 0 || fds[i].fd >= BOGFD_MAX) { continue; } // no EBADF?
 		struct BogusFD *fd = &FDS[fds[i].fd];
+		fds[i].revents = 0;
 		if (fds[i].events & POLLIN && fd->type == BOGFD_PIPE && fd->status[0] != 0) {
-			//ERROR_PRINTF("fd %d ready to read\n", fds[i].fd);
+			ERROR_PRINTF("fd %d ready to read\n", fds[i].fd);
 			fds[i].revents = POLLIN;
 			++changedfds;
 		} else if (fd->type == BOGFD_KERNEL) {
 			kern_fds[i].fd = fd->data;
 			kern_fds[i].events = fds[i].events;
+			++kernelfds;
 		}
 	}
-	int kernelfds;
 	if (changedfds) {
 		struct timespec zero = { 0, 0 }; 
-		kernelfds = __sys_ppoll(kern_fds, nfds, &zero, newsigmask);
+		if (kernelfds) {
+			kernelfds = __sys_ppoll(kern_fds, nfds, &zero, newsigmask);
+		}
 	} else {
 		kernelfds = __sys_ppoll(kern_fds, nfds, timeout, newsigmask);
 	}

@@ -10,6 +10,7 @@
 .global handle_int_80
 .global start_entrypoint
 .global unknown_int
+.global pic1_int
 .global ugs_base
  
 // Our bootloader, GRUB, needs to know some basic information about our kernel before it can boot it.
@@ -483,6 +484,38 @@
 		addl $16, %eax
 		push %eax
 		call handle_unknown_irq
+		addl $8, %esp
+		pop %edx
+		pop %ecx
+		pop %eax
+		iret
+
+	pic1_int:
+		// repeat 8 times
+		call pic1_call_handler
+		call pic1_call_handler
+		call pic1_call_handler
+		call pic1_call_handler
+
+		call pic1_call_handler
+		call pic1_call_handler
+		call pic1_call_handler
+		call pic1_call_handler
+
+	pic1_call_handler:
+		xchg %eax, (%esp)
+		push %ecx
+		push %edx
+
+		sub $(pic1_int + 5), %eax
+		xor %edx, %edx
+		mov $5, %ecx
+		idivw %cx
+		push %eax
+		mov %esp, %eax
+		addl $16, %eax
+		push %eax
+		call handle_pic1_irq
 		addl $8, %esp
 		pop %edx
 		pop %ecx

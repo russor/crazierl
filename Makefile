@@ -15,10 +15,10 @@ debugger:
 	gdb -ex "set confirm off" -ex "add-symbol-file obj/mykernel.elf" -ex "add-symbol-file $$(find $(OTPDIR) -name beam)" -ex "set confirm on" -ex "target remote localhost:1234"
 
 clean:
-	rm -f obj/initrd obj/mykernel.elf obj/*.o
+	rm -f obj/initrd obj/mykernel.elf obj/*.o obj/*.beam
 
 obj/mykernel.elf: obj/start.o obj/kernel.o obj/syscalls.o obj/files.o obj/kern_mmap.o \
-		obj/rtld_printf.o obj/bzero.o obj/memcpy.o obj/memcmp.o obj/memset.o \
+		obj/rtld_printf.o obj/bzero.o obj/memcpy.o obj/memcmp.o obj/memmove.o obj/memset.o \
 		obj/strchr.o obj/strchrnul.o obj/strcmp.o obj/strcpy.o obj/strlcpy.o \
 		obj/strlen.o obj/strncmp.o obj/strncpy.o obj/strnlen.o \
 		obj/qdivrem.o obj/umoddi3.o obj/udivdi3.o \
@@ -55,6 +55,8 @@ obj/bzero.o: /usr/src/lib/libc/string/bzero.c
 obj/memcpy.o: /usr/src/lib/libc/string/memcpy.c
 	$(KERNEL_COMPILER) $^ -o $@
 obj/memcmp.o: /usr/src/lib/libc/string/memcmp.c
+	$(KERNEL_COMPILER) $^ -o $@
+obj/memmove.o: /usr/src/lib/libc/string/memmove.c
 	$(KERNEL_COMPILER) $^ -o $@
 obj/memset.o: /usr/src/lib/libc/string/memset.c
 	$(KERNEL_COMPILER) $^ -o $@
@@ -101,3 +103,11 @@ obj/crazierl_nif.so: crazierl_nif.c
 obj/crazierl.beam: crazierl.erl
 	../installed/bin/erlc $^
 	mv crazierl.beam obj/
+
+obj/comport.beam: comport.erl
+	../installed/bin/erlc $^
+	mv comport.beam obj/
+
+obj/console.beam: console.erl
+	../installed/bin/erlc $^
+	mv console.beam obj/

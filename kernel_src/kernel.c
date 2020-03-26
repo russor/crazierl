@@ -12,6 +12,7 @@
 extern const char *syscallnames[];
 extern void * handle_int_80;
 extern void * unknown_int;
+extern void * pic1_int;
 extern void start_entrypoint(); 
 
 extern void __executable_start, __etext, __data_start, __edata;
@@ -65,6 +66,7 @@ typedef uint32_t u_int32_t;
 #include <sys/cpuset.h>
 #include <rtld_printf.h>
 #include <x86intrin.h>
+#include <sys/socket.h>
 
 // include this last; use _KERNEL to avoid conflicting but unused definition
 // of int sysarch between sysproto.h and sysarch.h
@@ -191,7 +193,6 @@ void term_init()
 	outb(PORT_COM1 + 3, 0x03);    // 8 bits, no parity, one stop bit
 	outb(PORT_COM1 + 2, 0xC7);    // Enable FIFO, clear them, with 14-byte threshold
 	outb(PORT_COM1 + 4, 0x0B);    // IRQs enabled, RTS/DSR set
-	outb(PORT_COM1 + 1, 0x01);
 }
 
 int is_transmit_empty() {
@@ -199,9 +200,8 @@ int is_transmit_empty() {
 }
 
 void write_serial(char a) {
-   while (is_transmit_empty() == 0);
- 
-   outb(PORT_COM1,a);
+	while (is_transmit_empty() == 0);
+	outb(PORT_COM1,a);
 }
 
 // This function places a single character onto the screen
@@ -279,7 +279,14 @@ void term_printf(const char* format, ...)
 
        char foo[512];
        rtld_vsnprintf(foo, sizeof(foo), format, args);
-       term_print(foo);
+       write(2, foo, strlen(foo));
+}
+
+void halt(char * message) {
+	if (message) {
+		term_print(message);
+	}
+	while (1) { }
 }
 
 uint8_t read_cmos(uint8_t reg)
@@ -363,6 +370,21 @@ void handle_unknown_irq(struct interrupt_frame *frame, uint32_t irq)
 	while (1) { }
 }
 
+void handle_pic1_irq(struct interrupt_frame *frame, uint32_t irq)
+{
+	outb(PORT_PIC1, PIC_INTERRUPT_ACK);
+	int found = 0;
+	for (int i = 0; i < BOGFD_MAX; ++i) {
+		if (KERN_FDS[i].type == BOGFD_PIC1 && KERN_FDS[i].status[0] == irq) {
+			++found;
+			KERN_FDS[i].status[1] = 1;
+		}
+	}
+	if (!found) {
+		ERROR_PRINTF("didn't find FD for pic interrupt %d\n", irq);
+	}
+}
+
 void handle_unknown_error(struct interrupt_frame *frame, uint32_t irq, uint32_t error_code)
 {
 	ERROR_PRINTF("Got unexpected error %d (%d) IP: %08x at ", irq, error_code, frame->ip);
@@ -384,34 +406,6 @@ void handle_timer(struct interrupt_frame *frame)
 	//outb(0x70, 0x0C);	// select register C
 	//inb(0x71);		// just throw away contents
 	++TIMER_COUNT;
-}
-
-void read_com(struct BogusFD * fd, uint16_t port)
-{
-	fd->status[3] &= ~ 0x01; // clear data pending flag
-	while (inb(port + 5) & 1) {
-		if (((fd->status[0] + 1) & fd->status[2]) != fd->status[1]) {
-			uint8_t c = inb(port);
-			if (c == '\r') { c = '\n'; }
-			fd->buffer[fd->status[0]] = c;
-			++fd->status[0];
-			fd->status[0] &= fd->status[2];
-		} else {
-			ERROR_PRINTF("com 0x%x buffer full\n", port);
-			fd->status[3] |= 0x01;
-			return;
-		}
-	} 
-}
-
-__attribute__ ((interrupt))
-void handle_com1(struct interrupt_frame *frame)
-{
-	struct BogusFD *fd = &KERN_FDS[INPUT_FD];
-	if (fd->type == BOGFD_TERMIN) {
-		//read_com(fd, PORT_COM1);
-	}
-	outb(PORT_PIC1, PIC_INTERRUPT_ACK);
 }
 
 char unshifted_scancodes[] = {
@@ -490,7 +484,10 @@ void handle_keyboard(struct interrupt_frame *frame)
 #define SYSCALL_FAILURE(ret) { iframe->flags |= CARRY; return ret; }
 
 ssize_t write(int fd, const void * buf, size_t nbyte) {
-	if (fd < BOGFD_MAX && (KERN_FDS[fd].type == BOGFD_TERMOUT || KERN_FDS[fd].type == BOGFD_TERMIN)) {
+	if (fd < 0 || fd >= BOGFD_MAX) {
+		return -EBADF;
+	}
+	if (KERN_FDS[fd].type == BOGFD_TERMOUT || KERN_FDS[fd].type == BOGFD_TERMIN) {
 		uint8_t *buffer = (uint8_t *)buf;
 		size_t nbytes = nbyte;
 		while (nbytes) {
@@ -498,10 +495,15 @@ ssize_t write(int fd, const void * buf, size_t nbyte) {
 			++buffer;
 			--nbytes;
 		}
-		move_cursor();
 		return nbyte;
+	} else if (KERN_FDS[fd].type == BOGFD_PIPE) {
+		int written = min(nbyte, BOGFD_PB_LEN - KERN_FDS[fd].pipe->pb->length);
+		//ERROR_PRINTF("write (%d, \"%s\", %d) = %d\n", fd, buf, nbyte, written);
+		memcpy(&KERN_FDS[fd].pipe->pb->data[KERN_FDS[fd].pipe->pb->length], buf, written);
+		KERN_FDS[fd].pipe->pb->length += written;
+		return written;
 	} else {
-		ERROR_PRINTF("write (%d, %08x, %d)\n", fd, buf, nbyte);
+		ERROR_PRINTF("write (%d, %08x, %d) = EBADF\n", fd, buf, nbyte);
 		return -EBADF;
 	}
 }
@@ -512,17 +514,17 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 	switch(call) {
 		case SYS_read: {
 			struct read_args *a = argp;
-			if (a->fd < BOGFD_MAX && KERN_FDS[a->fd].type == BOGFD_TERMIN) {
-				struct BogusFD *fd = &KERN_FDS[a->fd];
-				int read = 0;
-				uint8_t * buffer = a->buf;
+			if (a->fd < 0 || a->fd > BOGFD_MAX) {
+				ERROR_PRINTF("read (%d, %08x, %d) = EBADF\n", a->fd, a->buf, a->nbyte);
+				SYSCALL_FAILURE(EBADF);
+			}
+			int read = 0;
+			struct BogusFD *fd = &KERN_FDS[a->fd];
+			uint8_t * buffer = a->buf;
+			if (fd->type == BOGFD_TERMIN) {
 				while (read < a->nbyte) {
 					if (fd->status[0] == fd->status[1]) {
 						if (fd->status[3] & 0x03) {
-							if (fd->status[3] & 0x01) {
-								ERROR_PRINTF("com 0x%x buffer empty\n", PORT_COM1);
-								read_com(fd, PORT_COM1);
-							}
 							if (fd->status[3] & 0x02) {
 								ERROR_PRINTF("keyboard buffer empty\n");
 								read_keyboard(fd);
@@ -537,47 +539,78 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 						fd->status[1] &= fd->status[2];
 					}
 				}
-				if (read) {
-					SYSCALL_SUCCESS(read);
-				} else {
-					SYSCALL_FAILURE(EAGAIN);
+			} else if (fd->type == BOGFD_PIPE) {
+				if (fd->pb->length) {
+					read = min(a->nbyte, fd->pb->length);
+					memcpy(a->buf, fd->pb->data, read);
+					fd->pb->length -= read;
+					if (fd->pb->length) {
+						memmove(&fd->pb->data, &fd->pb->data[read], fd->pb->length);
+					}
 				}
+			} else {
+				ERROR_PRINTF("read (%d, %08x, %d) = EBADF\n", a->fd, a->buf, a->nbyte);
+				SYSCALL_FAILURE(EBADF);
 			}
-			ERROR_PRINTF("read (%d, %08x, %d) = EBADF\n", a->fd, a->buf, a->nbyte);
-			SYSCALL_FAILURE(EBADF);
+			if (read) {
+				SYSCALL_SUCCESS(read);
+			} else {
+				SYSCALL_FAILURE(EAGAIN);
+			}
+		}
+		case SYS_sendto: {
+			struct sendto_args *a = argp;
+			ssize_t ret = write(a->s, a->buf, a->len);
+			if (ret > 0) {
+				SYSCALL_SUCCESS(ret);
+			} else if (ret == 0) {
+				SYSCALL_FAILURE(EAGAIN);
+			} else {
+				SYSCALL_FAILURE(-ret);
+			}
 		}
 		case SYS_write: {
 			struct write_args *a = argp;
 			ssize_t ret = write(a->fd, a->buf, a->nbyte);
-			if (ret >= 0) {
+			if (ret > 0) {
+				if (KERN_FDS[a->fd].type == BOGFD_TERMIN || KERN_FDS[a->fd].type == BOGFD_TERMOUT) {
+					move_cursor();
+				}
 				SYSCALL_SUCCESS(ret);
+			} else if (ret == 0) {
+				SYSCALL_FAILURE(EAGAIN);
 			} else {
 				SYSCALL_FAILURE(-ret);
 			}
 		}
 		case SYS_writev: {
 			struct writev_args *a = argp;
-			if (a->fd < BOGFD_MAX && (KERN_FDS[a->fd].type == BOGFD_TERMOUT || KERN_FDS[a->fd].type == BOGFD_TERMIN)) {
-				struct iovec *iov = a->iovp;
-				unsigned int iovcnt = a->iovcnt;
-				int written = 0;
-				while (iovcnt) {
-					uint8_t *buffer = (uint8_t *) iov->iov_base;
-					size_t nbyte = iov->iov_len;
-					written += nbyte;
-					while (nbyte) {
-						_putchar(*buffer);
-						++buffer;
-						--nbyte;
-					}
-					++iov;
-					--iovcnt;
+			struct iovec *iov = a->iovp;
+			unsigned int iovcnt = a->iovcnt;
+			int ret = 0;
+			while (iovcnt) {
+				uint8_t *buffer = (uint8_t *) iov->iov_base;
+				size_t nbyte = write(a->fd, iov->iov_base, iov->iov_len);
+				if (nbyte < 0) {
+					SYSCALL_FAILURE(-ret);
 				}
-				move_cursor();
-				SYSCALL_SUCCESS(written);
+				ret += nbyte;
+				if (nbyte != iov->iov_len) {
+					break;
+				}
+				++iov;
+				--iovcnt;
+			}
+			if (ret > 0) {
+				if (KERN_FDS[a->fd].type == BOGFD_TERMIN || KERN_FDS[a->fd].type == BOGFD_TERMOUT) {
+					move_cursor();
+				}
+				SYSCALL_SUCCESS(ret);
+			} else if (ret == 0) {
+				SYSCALL_FAILURE(EAGAIN);
 			} else {
 				ERROR_PRINTF("writev (%d, %08x, %d)\n", a->fd, a->iovp, a->iovcnt);
-				SYSCALL_FAILURE(EBADF);
+				SYSCALL_FAILURE(-ret);
 			}
 		}
 		case SYS_openat:
@@ -611,7 +644,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				DEBUG_PRINTF("open (%s, ...) = %d\n", path, next_fd);
 				SYSCALL_SUCCESS(next_fd++);
 			}
-			DEBUG_PRINTF ("open (%s, %08x) = ENOENT\n", path, a->flags);
+			ERROR_PRINTF ("open (%s, %08x) = ENOENT\n", path, a->flags);
 			SYSCALL_FAILURE(ENOENT);
 		}
 		case SYS_close: {
@@ -635,6 +668,42 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			}
 		}
 		case SYS_getpid: SYSCALL_SUCCESS(2);
+		case SYS_recvfrom: {
+			struct recvfrom_args *a = argp;
+			if (a->s < 0 || a->s > BOGFD_MAX) {
+				ERROR_PRINTF("recvfrom (%d, ...) = EBADF\n", a->s);
+				SYSCALL_FAILURE(EBADF);
+			}
+			int read = 0;
+			struct BogusFD *fd = &KERN_FDS[a->s];
+			if (fd->type == BOGFD_PIC1) {
+				if (fd->status[1]) {
+					a->buf[0] = '!';
+					read = 1;
+					fd->status[1] = 0;
+				}
+			} else if (fd->type == BOGFD_PIPE) {
+				if (fd->pb->length) {
+					read = min(a->len, fd->pb->length);
+					memcpy(a->buf, fd->pb->data, read);
+					fd->pb->length -= read;
+					if (fd->pb->length) {
+						memmove(fd->pb->data, &fd->pb->data[read], fd->pb->length);
+					}
+				}
+			} else {
+				ERROR_PRINTF("recvfrom (%d, ...) = ENOTSOCK\n", a->s);
+				SYSCALL_FAILURE(ENOTSOCK);
+			}
+			if (read) {
+				if (a->from != NULL) {
+					bzero(a->from, *a->fromlenaddr);
+				}
+				SYSCALL_SUCCESS(read);
+			} else {
+				SYSCALL_FAILURE(EAGAIN);
+			}
+		}
 		case SYS_munmap: {
 			struct munmap_args *a = argp;
 			DEBUG_PRINTF("munmap (%08x, %d)\n",
@@ -642,6 +711,68 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			kern_munmap(0, (uintptr_t) a->addr, a->len);
 			SYSCALL_SUCCESS(0);
 		}
+		case SYS_socket: {
+			struct socket_args *a = argp;
+			DEBUG_PRINTF("socket (%d, %d, %d)\n", a->domain, a->type, a->protocol);
+			if (a->domain == PF_UNIX) {
+				while (next_fd < BOGFD_MAX && KERN_FDS[next_fd].type != BOGFD_CLOSED) {
+					++next_fd;
+				}
+				if (next_fd >= BOGFD_MAX) {
+					ERROR_PRINTF("socket (..) = EMFILE\n");
+					SYSCALL_FAILURE(EMFILE);
+				}
+				KERN_FDS[next_fd].type = BOGFD_UNIX;
+				SYSCALL_SUCCESS(next_fd++);
+			}
+			SYSCALL_FAILURE(EACCES);
+		}
+		case SYS_bind: {
+			struct bind_args *a = argp;
+			if (a->s < 0 || a->s > BOGFD_MAX) {
+				ERROR_PRINTF("bind (%d, %08x, %d) = EBADF\n", a->s, a->name, a->namelen);
+				SYSCALL_FAILURE(EBADF);
+			}
+			if (KERN_FDS[a->s].type == BOGFD_UNIX) {
+				if (strncmp("/kern/pic1/", ((const struct sockaddr *)a->name)->sa_data, 11) == 0) {
+					int irq = ((const struct sockaddr *)a->name)->sa_data[11] - '0';
+					if (irq >= 0 && irq < 8) {
+						DEBUG_PRINTF("pic1 irq %d requested\n", irq);
+
+						IDT[0x20 + irq].offset_1 = ((uint32_t)&pic1_int + (irq * 5)) & 0xFFFF;
+						IDT[0x20 + irq].offset_2 = ((uint32_t)&pic1_int + (irq * 5)) >> 16;
+
+						KERN_FDS[a->s].type = BOGFD_PIC1;
+						KERN_FDS[a->s].status[0] = irq;
+						KERN_FDS[a->s].status[1] = 0;
+						SYSCALL_SUCCESS(0);
+					}
+				} else if (strncmp("/kern/fd/", ((const struct sockaddr *)a->name)->sa_data, 9) == 0) {
+					int fd = ((const struct sockaddr *)a->name)->sa_data[9] - '0';
+					if (fd >= 0 && fd <= 2) {
+						ERROR_PRINTF("fd %d requested by %d\n", fd, a->s);
+						if (KERN_FDS[fd].type == BOGFD_TERMIN || KERN_FDS[fd].type == BOGFD_TERMOUT) {
+							KERN_FDS[a->s].type = BOGFD_PIPE;
+							KERN_FDS[a->s].pipe = &KERN_FDS[fd];
+							if (!kern_mmap((uintptr_t*)&KERN_FDS[a->s].pb, NULL, PAGE_SIZE, PROT_READ | PROT_WRITE | PROT_KERNEL, 0)) {
+								halt ("couldn't allocate buffer for /kern/fd/");
+							}
+							KERN_FDS[a->s].pb->length = 0;
+							
+							KERN_FDS[fd].type = BOGFD_PIPE;
+							KERN_FDS[fd].pipe = &KERN_FDS[a->s];
+							KERN_FDS[fd].pb = (struct pipe_buffer *)((uintptr_t)KERN_FDS[a->s].pb + (PAGE_SIZE >> 1));
+							KERN_FDS[a->s].pb->length = 0;
+
+							SYSCALL_SUCCESS(0);
+						}
+					}
+				}
+				SYSCALL_FAILURE(EACCES);
+			}
+			SYSCALL_FAILURE(ENOTSOCK);
+		}
+
 		case SYS_mprotect: SYSCALL_SUCCESS(0); //ignore
 		case SYS_madvise: SYSCALL_SUCCESS(0); //ignore
 		case SYS_gettimeofday: {
@@ -780,38 +911,6 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			}
 			SYSCALL_FAILURE(ENOENT);
 		}
-		/*case SYS_poll: {
-			struct poll_args *a = argp;
-			int waitleft = a->timeout;
-			int lastsecond = last_time[1];
-			int printed = 0;
-			int changedfds = 0;
-			while (waitleft > 0) {
-				for (int i = 0; i < a->nfds; ++i) {
-					if (a->fds[i].fd >= BOGFD_MAX) { continue; } // no EBADF?
-					struct BogusFD *fd = &KERN_FDS[a->fds[i].fd];
-					if (a->fds[i].events & POLLIN && fd->type == BOGFD_TERMIN && fd->status[0] != fd->status[1]) {
-						a->fds[i].revents = POLLIN;
-						++changedfds;
-					}
-				}
-				if (changedfds) { SYSCALL_SUCCESS(changedfds); }
-				if (!printed && a->timeout > 60000) {
-					printed = 1;
-					DEBUG_PRINTF("poll for %d fds, timeout %d\n", a->nfds, a->timeout);
-					for (int i = 0; i < a->nfds; ++i) {
-						DEBUG_PRINTF("  FD %d: events %08x\n", a->fds[i].fd, a->fds[i].events);
-					}
-				}
-				// enable interrupts, and wait for one; time keeping interrupts will move us forward
-				asm volatile ( "sti; hlt" :: );
-				if (last_time[1] != lastsecond) {
-					lastsecond = last_time[1];
-					waitleft -= 1000;
-				}
-			}
-			SYSCALL_SUCCESS(0);
-		}*/
 		case SYS_clock_gettime: {
 			struct clock_gettime_args *a = argp;
 			a->tp->tv_sec = unix_time();
@@ -903,21 +1002,29 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				for (int i = 0; i < a->nfds; ++i) {
 					if (a->fds[i].fd < 0 || a->fds[i].fd >= BOGFD_MAX) { continue; } // no EBADF?
 					struct BogusFD *fd = &KERN_FDS[a->fds[i].fd];
-					if (a->fds[i].events & POLLIN && fd->type == BOGFD_TERMIN && fd->status[0] != fd->status[1]) {
-						a->fds[i].revents = POLLIN;
+					a->fds[i].revents = 0;
+					if ((a->fds[i].events & POLLIN && fd->type == BOGFD_TERMIN && fd->status[0] != fd->status[1]) ||
+					    (a->fds[i].events & POLLIN && fd->type == BOGFD_PIC1 && fd->status[1] != 0) ||
+					    (a->fds[i].events & POLLIN && fd->type == BOGFD_PIPE && fd->pb->length != 0)
+					   ) {
+						a->fds[i].revents |= POLLIN;
+						++changedfds;
+					}
+					if (a->fds[i].events & POLLOUT && fd->type == BOGFD_PIPE && fd->pipe->pb->length < BOGFD_PB_LEN) {
+						a->fds[i].revents |= POLLOUT;
 						++changedfds;
 					}
 				}
 				if (changedfds) { SYSCALL_SUCCESS(changedfds); }
-				if (!printed) { // && a->ts->tv_sec > 60) {
+				/*if (!printed) { // && a->ts->tv_sec > 60) {
 					printed = 1;
-					DEBUG_PRINTF("ppoll for %d fds, timeout %d\n", a->nfds, a->ts->tv_sec);
+					ERROR_PRINTF("ppoll for %d fds, timeout %d\n", a->nfds, a->ts->tv_sec);
 					for (int i = 0; i < a->nfds; ++i) {
-						DEBUG_PRINTF("  FD %d: events %08x\n", a->fds[i].fd, a->fds[i].events);
+						ERROR_PRINTF("  FD %d: events %08x -> %08x\n", a->fds[i].fd, a->fds[i].events, a->fds[i].revents);
 					}
-				}
+				}*/
 				// enable interrupts, and wait for one; time keeping interrupts will move us forward
-				asm volatile ( "sti; hlt" :: );
+				asm volatile ( "sti; hlt; cli" :: );
 				if (last_time[1] != lastsecond) {
 					lastsecond = last_time[1];
 					waitleft -= 1;
@@ -1057,9 +1164,6 @@ void interrupt_setup()
 
 	IDT[0x21].offset_1 = ((uint32_t) &handle_keyboard) & 0xFFFF;
 	IDT[0x21].offset_2 = ((uint32_t) &handle_keyboard) >> 16;
-
-	IDT[0x24].offset_1 = ((uint32_t) &handle_com1) & 0xFFFF;
-	IDT[0x24].offset_2 = ((uint32_t) &handle_com1) >> 16;
 
 	IDT[0x80].offset_1 = ((uint32_t) &handle_int_80) & 0xFFFF;
 	IDT[0x80].offset_2 = ((uint32_t) &handle_int_80) >> 16;
@@ -1235,6 +1339,7 @@ void setup_entrypoint()
 	char *argv[] = {"/beam", "--", "-root", "",
 			"-progname", "erl", "--", "-home", "/",
 			"-pz", "/obj/",
+			"-s", "crazierl",
 			"--", 
 			NULL};
 
@@ -1376,10 +1481,5 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 	if (entrypoint) {
 		setup_entrypoint();
 	}
-	while (1) {
-		while (TIMER_COUNT) {
-			term_print(".");
-			--TIMER_COUNT;
-		}
-	}
+	halt("end of kernel!");
 }

@@ -1,5 +1,5 @@
 -module(crazierl).
--export([inb/1, outb/2, read_com/0]).
+-export([start/0, inb/1, outb/2, read_com/0]).
 
 -on_load(init/0).
 
@@ -20,4 +20,9 @@ read_com() ->
 			io:put_chars([$\n]),
 			ok
 	end.
-	
+
+% setup console
+start() ->
+	console:start([
+		{comport, start, [16#3f8, "/kern/pic1/4"]}
+	]).
