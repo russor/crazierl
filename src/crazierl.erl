@@ -24,5 +24,6 @@ read_com() ->
 % setup console
 start() ->
 	console:start([
-		{comport, start, [16#3f8, "/kern/pic1/4"]}
+		{comport, start, [16#3f8, "/kern/pic1/4"]},
+		{vgakb, start, [16#60, "/kern/pic1/1"]}
 	]).

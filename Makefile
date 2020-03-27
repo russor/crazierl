@@ -111,3 +111,7 @@ obj/comport.beam: comport.erl
 obj/console.beam: console.erl
 	../installed/bin/erlc $^
 	mv console.beam obj/
+
+obj/vgakb.beam: vgakb.erl
+	../installed/bin/erlc $^
+	mv vgakb.beam obj/

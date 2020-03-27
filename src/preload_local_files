@@ -5,3 +5,4 @@ obj/crazierl_nif.so
 obj/crazierl.beam
 obj/comport.beam
 obj/console.beam
+obj/vgakb.beam
