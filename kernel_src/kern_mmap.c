@@ -174,14 +174,14 @@ void kern_munmap (uint16_t mode, uintptr_t addr, size_t size)
 
 void kern_mmap_init (unsigned int length, unsigned int addr)
 {
-	intptr_t mmap;
+	uintptr_t mmap;
 	DEBUG_PRINTF ("memory map at 0x%08x, length %d\n", addr, length);
 	for (mmap = addr; mmap < (addr + length); mmap += ((multiboot_memory_map_t *)mmap)->size + sizeof (((multiboot_memory_map_t *)mmap)->size)) {
 		multiboot_memory_map_t * mmm = (multiboot_memory_map_t *) mmap;
 		if (mmm->type == 1 && (mmm->addr + mmm->len - 1) <= SIZE_MAX) {
-			intptr_t addr = mmm->addr;
-			intptr_t len = mmm->len;
-			DEBUG_PRINTF("Available memory at 0x%08x; 0x%08x (%d) bytes\n", addr, len, len);
+			uintptr_t addr = mmm->addr;
+			uintptr_t len = mmm->len;
+			DEBUG_PRINTF("Available memory at 0x%08x; 0x%08x (%u) bytes\n", addr, len, len);
 			if (addr < ONE_MB) {
 				if (addr + len <= ONE_MB) {
 					DEBUG_PRINTF(" ignoring, because whole range is under 1 MB\n");
