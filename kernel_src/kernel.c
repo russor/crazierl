@@ -1015,7 +1015,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 						++changedfds;
 					}
 				}
-				if (changedfds) { SYSCALL_SUCCESS(changedfds); }
+				if (changedfds || waitleft == 0) { SYSCALL_SUCCESS(changedfds); }
 				/*if (!printed) { // && a->ts->tv_sec > 60) {
 					printed = 1;
 					ERROR_PRINTF("ppoll for %d fds, timeout %d\n", a->nfds, a->ts->tv_sec);
