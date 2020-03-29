@@ -298,7 +298,7 @@ void halt(char * message) {
 	if (message) {
 		term_print(message);
 	}
-	while (1) { }
+	asm volatile ( "hlt" :: );
 }
 
 uint8_t read_cmos(uint8_t reg)
