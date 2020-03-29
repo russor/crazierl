@@ -367,7 +367,7 @@ void handle_unknown_irq(struct interrupt_frame *frame, uint32_t irq)
 {
 	ERROR_PRINTF("Got unexpected interrupt 0x%02x IP: %08x at ", irq, frame->ip);
 	print_time(last_time);
-	while (1) { }
+	halt(NULL);
 }
 
 void handle_pic1_irq(struct interrupt_frame *frame, uint32_t irq)
@@ -389,7 +389,7 @@ void handle_unknown_error(struct interrupt_frame *frame, uint32_t irq, uint32_t 
 {
 	ERROR_PRINTF("Got unexpected error %d (%d) IP: %08x at ", irq, error_code, frame->ip);
 	print_time(last_time);
-	while (1) { }
+	halt(NULL);
 }
 
 __attribute__ ((interrupt))
@@ -1080,9 +1080,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 		ERROR_PRINTF("got unknown syscall %d", call);
 	}
 	//print_time(last_time);
-	term_print ("halting\n");
-	while (1) {
-	}
+	halt ("halting\n");
 }
 
 __attribute__ ((interrupt))
@@ -1094,7 +1092,7 @@ void handle_gp(struct interrupt_frame *frame, uint32_t error_code)
 		ERROR_PRINTF("Got #GP, no stack frame\n");
 	}
 	print_time(last_time);
-	while (1) { } // loop forever
+	halt(NULL);
 }
 
 __attribute__ ((interrupt))
@@ -1110,7 +1108,7 @@ void handle_pf(struct interrupt_frame *frame, uint32_t error_code)
 		ERROR_PRINTF("Got #PF, no stack frame\n");
 	}
 	print_time(last_time);
-	while (1) { } // loop forever
+	halt(NULL);
 }
 
 __attribute__ ((interrupt))
@@ -1118,7 +1116,7 @@ void handle_ud(struct interrupt_frame *frame)
 {
 	ERROR_PRINTF("Got #UD IP: %08x at ", frame->ip);
 	print_time(last_time);
-	while (1) { } // loop forever
+	halt(NULL);
 }
 void interrupt_setup()
 {
@@ -1238,7 +1236,7 @@ void load_file(void *start, char *name, size_t size)
 				phead->p_filesz, phead->p_memsz);
 			if (phead->p_offset < lastoffset) {
 				ERROR_PRINTF("elf header %d has p_offset > last_offset; halting\n", i);
-				while (1) {}
+				halt(NULL);
 			}
 			if (phead->p_offset > lastoffset) {
 				size_t count = phead->p_offset - lastoffset;
@@ -1248,7 +1246,7 @@ void load_file(void *start, char *name, size_t size)
 
 			if (phead->p_filesz > phead->p_memsz) {
 				ERROR_PRINTF("elf header %d has p_filesz > p_memsz; halting\n", i);
-				while (1) { }
+				halt(NULL);
 			}
 			uint8_t *src = start + phead->p_offset;
 			uint8_t *dst = (void*) (load_addr - first_virtual +  phead->p_vaddr);
@@ -1315,8 +1313,7 @@ void setup_entrypoint()
 	KERN_FDS[next_fd].pos = file->start;
 	++next_fd;
 	if (!kern_mmap(&user_stack, NULL, USER_STACK_SIZE, PROT_WRITE | PROT_READ, MAP_STACK | MAP_ANON)) {
-		ERROR_PRINTF("couldn't get map for user stack\n");
-		while (1) {}
+		halt("couldn't get map for user stack\n");
 	}
 	user_stack += USER_STACK_SIZE; // we actually want to keep track of the top of the stack
 
@@ -1433,14 +1430,12 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 	ERROR_PRINTF("kernel read-only %08x - %08x\n", &__executable_start, &__etext);
 
 	if (!kern_mmap(&scratch, &__executable_start, &__etext - &__executable_start, PROT_KERNEL | PROT_READ, 0)) {
-		ERROR_PRINTF("couldn't map read only kernel section\n");
-		while (1) { }
+		halt("couldn't map read only kernel section\n");
 	}
 
 	ERROR_PRINTF("kernel read-write %08x - %08x\n", &__data_start, &__edata);
 	if (!kern_mmap(&scratch, &__data_start, &__edata - &__data_start, PROT_KERNEL | PROT_READ | PROT_WRITE, 0)) {
-		ERROR_PRINTF("couldn't map read/write kernel section\n");
-		while (1) { }
+		halt("couldn't map read/write kernel section\n");
 	}
 	
 	if (!kern_mmap(&scratch, (void *)vga_buffer, 80 * 25 * 2, PROT_KERNEL | PROT_FORCE | PROT_READ | PROT_WRITE, 0)) {
