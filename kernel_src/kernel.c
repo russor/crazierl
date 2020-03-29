@@ -267,8 +267,20 @@ void _putchar(char c)
 // This function prints an entire string onto the screen
 void term_print(const char* str)
 {
+//	find_cursor();
 	for (size_t i = 0; str[i] != '\0'; i ++) // Keep placing characters until we hit the null-terminating character ('\0')
 		_putchar(str[i]);
+	move_cursor();
+}
+
+void term_printn (const uint8_t* str, ssize_t len)
+{
+//	find_cursor();
+	while (len) {
+		_putchar(*str);
+		++str;
+		--len;
+	}
 	move_cursor();
 }
 
@@ -370,6 +382,7 @@ void handle_unknown_irq(struct interrupt_frame *frame, uint32_t irq)
 	halt(NULL);
 }
 
+int UNCLAIMED_PIC_INT = 0;
 void handle_pic1_irq(struct interrupt_frame *frame, uint32_t irq)
 {
 	outb(PORT_PIC1, PIC_INTERRUPT_ACK);
@@ -380,7 +393,8 @@ void handle_pic1_irq(struct interrupt_frame *frame, uint32_t irq)
 			KERN_FDS[i].status[1] = 1;
 		}
 	}
-	if (!found) {
+	if (!found && !UNCLAIMED_PIC_INT) {
+		UNCLAIMED_PIC_INT = 1;
 		ERROR_PRINTF("didn't find FD for pic interrupt %d\n", irq);
 	}
 }
@@ -488,13 +502,7 @@ ssize_t write(int fd, const void * buf, size_t nbyte) {
 		return -EBADF;
 	}
 	if (KERN_FDS[fd].type == BOGFD_TERMOUT || KERN_FDS[fd].type == BOGFD_TERMIN) {
-		uint8_t *buffer = (uint8_t *)buf;
-		size_t nbytes = nbyte;
-		while (nbytes) {
-			_putchar(*buffer);
-			++buffer;
-			--nbytes;
-		}
+		term_printn(buf, nbyte);
 		return nbyte;
 	} else if (KERN_FDS[fd].type == BOGFD_PIPE) {
 		int written = min(nbyte, BOGFD_PB_LEN - KERN_FDS[fd].pipe->pb->length);
@@ -573,9 +581,6 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			struct write_args *a = argp;
 			ssize_t ret = write(a->fd, a->buf, a->nbyte);
 			if (ret > 0) {
-				if (KERN_FDS[a->fd].type == BOGFD_TERMIN || KERN_FDS[a->fd].type == BOGFD_TERMOUT) {
-					move_cursor();
-				}
 				SYSCALL_SUCCESS(ret);
 			} else if (ret == 0) {
 				SYSCALL_FAILURE(EAGAIN);
@@ -602,9 +607,6 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				--iovcnt;
 			}
 			if (ret > 0) {
-				if (KERN_FDS[a->fd].type == BOGFD_TERMIN || KERN_FDS[a->fd].type == BOGFD_TERMOUT) {
-					move_cursor();
-				}
 				SYSCALL_SUCCESS(ret);
 			} else if (ret == 0) {
 				SYSCALL_FAILURE(EAGAIN);
@@ -653,6 +655,38 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				ERROR_PRINTF("close (%d) after FS transferred\n", a->fd);
 				break;
 			}
+			if (KERN_FDS[a->fd].type == BOGFD_PIPE) {
+				if (KERN_FDS[a->fd].pipe == &KERN_FDS[0]) {
+					term_print("unpiping STDIN\n");
+					term_printn(KERN_FDS[a->fd].pb->data, KERN_FDS[a->fd].pb->length);
+
+					kern_munmap(PROT_KERNEL, (uintptr_t) KERN_FDS[a->fd].pb, PAGE_SIZE);
+					KERN_FDS[0].type = BOGFD_TERMIN;
+					KERN_FDS[0].buffer = INPUTBUFFER;
+					KERN_FDS[0].status[0] = 0;
+					KERN_FDS[0].status[1] = 0;
+					KERN_FDS[0].status[2] = sizeof(INPUTBUFFER) -1; // hope this is a power of two
+				} else if (KERN_FDS[a->fd].pipe == &KERN_FDS[1]) {
+					term_print("unpiping STDOUT\n");
+					term_printn(KERN_FDS[a->fd].pb->data, KERN_FDS[a->fd].pb->length);
+
+					kern_munmap(PROT_KERNEL, (uintptr_t) KERN_FDS[a->fd].pb, PAGE_SIZE);
+					KERN_FDS[1].type = BOGFD_TERMOUT;
+					KERN_FDS[1].file = NULL;
+					KERN_FDS[1].buffer = NULL;
+				} else if (KERN_FDS[a->fd].pipe == &KERN_FDS[2]) {
+					term_print("unpiping STDERR\n");
+					term_printn(KERN_FDS[a->fd].pb->data, KERN_FDS[a->fd].pb->length);
+
+					kern_munmap(PROT_KERNEL, (uintptr_t) KERN_FDS[a->fd].pb, PAGE_SIZE);
+					KERN_FDS[2].type = BOGFD_TERMOUT;
+					KERN_FDS[2].file = NULL;
+					KERN_FDS[2].buffer = NULL;
+				} else {
+					halt("pipe close and pipe isn't STDIN/STDOUT/STDERR");
+				}
+			}
+
 			if (KERN_FDS[a->fd].type != BOGFD_CLOSED) {
 				DEBUG_PRINTF("close (%d)\n", a->fd);
 				KERN_FDS[a->fd].type = BOGFD_CLOSED;
@@ -745,6 +779,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 						KERN_FDS[a->s].type = BOGFD_PIC1;
 						KERN_FDS[a->s].status[0] = irq;
 						KERN_FDS[a->s].status[1] = 0;
+						UNCLAIMED_PIC_INT = 0;
 						SYSCALL_SUCCESS(0);
 					}
 				} else if (strncmp("/kern/fd/", ((const struct sockaddr *)a->name)->sa_data, 9) == 0) {
@@ -1075,9 +1110,9 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				
 	if (call < SYS_MAXSYSCALL) {
 		unsigned int *args = argp;
-		ERROR_PRINTF("Got syscall %d (%s) (%08x, %08x) @%08x", call, syscallnames[call], args[0], args[1], args[-1]);
+		ERROR_PRINTF("Got syscall %d (%s) (%08x, %08x) @%08x\n", call, syscallnames[call], args[0], args[1], args[-1]);
 	} else {
-		ERROR_PRINTF("got unknown syscall %d", call);
+		ERROR_PRINTF("got unknown syscall %d\n", call);
 	}
 	//print_time(last_time);
 	halt ("halting\n");
