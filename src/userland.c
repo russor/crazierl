@@ -49,11 +49,6 @@ void init_userland () {
 	printf("hi from userland\n");
 }
 
-void _exit(int status) {
-	printf("exit %d\n", status);
-	while (1) { }
-}
-
 ssize_t readlink(const char *restrict path, char *restrict buf, size_t bufsiz)
 {
 	errno = ENOENT;
