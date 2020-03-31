@@ -81,14 +81,17 @@ size_t next_fd;
 uint8_t WANT_NMI = 0;
  
 // This is the x86's VGA textmode buffer. To display text, we write data to this memory location
-volatile uint16_t* vga_buffer = (uint16_t*)0xB8000;
+#define VGA_BUFFER_SIZE 0x8000
+
+volatile uint16_t *vga_buffer = (uint16_t*)0xB8000;
 // By default, the VGA textmode buffer has a size of 80x25 characters
 const int VGA_COLS = 80;
 const int VGA_ROWS = 25;
+int vga_current_index = 0;
+int vga_last_line = 0;
  
 // We start displaying text in the top-left of the screen (column = 0, row = 0)
 int term_col = 0;
-int term_row = 0;
 uint8_t term_color = 0x0F; // Black background, White foreground
 
 struct GDTDescr {
@@ -150,32 +153,22 @@ static inline uint8_t inb(uint16_t port)
 
 void move_cursor()
 {
-	const size_t index = (VGA_COLS * term_row) + term_col; // Like before, calculate the buffer index
 	outb(0x3D4, 0x0F);
-	outb(0x3D5, (uint8_t) (index & 0xFF));
+	outb(0x3D5, (uint8_t) (vga_current_index & 0xFF));
 
 	outb(0x3D4, 0x0E);
-	outb(0x3D5, (uint8_t) ((index >> 8) & 0xFF));
+	outb(0x3D5, (uint8_t) ((vga_current_index >> 8) & 0xFF));
 }
  
 // This function initiates the terminal by clearing it
 void term_init()
 {
 	// Clear the textmode buffer
-	for (int col = 0; col < VGA_COLS; col ++)
-	{
-		for (int row = 0; row < VGA_ROWS; row ++)
-		{
-			// The VGA textmode buffer has size (VGA_COLS * VGA_ROWS).
-			// Given this, we find an index into the buffer for our character
-			const size_t index = (VGA_COLS * row) + col;
-			// Entries in the VGA buffer take the binary form BBBBFFFFCCCCCCCC, where:
-			// - B is the background color
-			// - F is the foreground color
-			// - C is the ASCII character
-			vga_buffer[index] = ((uint16_t)term_color << 8) | ' '; // Set the character to blank (a space character)
-		}
+	for (int i = 0; i < (VGA_BUFFER_SIZE / sizeof(vga_buffer[0])); ++i) {
+		vga_buffer[i] = ((uint16_t)term_color << 8) | ' '; // Set the character to blank (a space character)
 	}
+	vga_current_index = VGA_COLS * (VGA_ROWS - 1);
+	vga_last_line = vga_current_index;
 	// enable cursor
 	outb(0x3D4, 0x0A);
 	outb(0x3D5, (inb(0x3D5) & 0xCE));
@@ -207,6 +200,7 @@ void write_serial(char a) {
 // This function places a single character onto the screen
 void _putchar(char c)
 {
+	int endofline = 0;
 	write_serial(c);
 	// Remember - we don't want to display ALL characters!
 	switch (c)
@@ -214,20 +208,27 @@ void _putchar(char c)
 	case '\r': break;
 	case '\n': // Newline characters should return the column to 0, and increment the row
 		{
-			term_col = 0;
-			term_row ++;
+			endofline = 1;
 			break;
 		}
 	case '\t': {
 		if (term_col & 7) {
 			term_col = (term_col & ~7) + 8;
+			vga_current_index = ((vga_current_index & ~7) + 8) % (VGA_BUFFER_SIZE / sizeof(vga_buffer[0]));
 		} else {
 			term_col += 8;
+			vga_current_index = (vga_current_index + 8) % (VGA_BUFFER_SIZE / sizeof(vga_buffer[0]));
 		}
 		break;
 	}
 	case 0x08: { // backspace
-		if (term_col) { --term_col; }
+		if (term_col) { 
+			--term_col; 
+			--vga_current_index;
+			if (vga_current_index < 0) {
+				vga_current_index += (VGA_BUFFER_SIZE / sizeof(vga_buffer[0]));
+			}
+		}
 		break;
 	}
 	default: // Normal characters just get displayed and then increment the column
@@ -235,9 +236,9 @@ void _putchar(char c)
 			if (c < 0x20 || c >= 0x7f) {
 				//ERROR_PRINTF("unhandled control character %x\n", c);
 			}
-			const size_t index = (VGA_COLS * term_row) + term_col; // Like before, calculate the buffer index
-			vga_buffer[index] = ((uint16_t)term_color << 8) | c;
-			term_col ++;
+			vga_buffer[vga_current_index] = ((uint16_t)term_color << 8) | c;
+			++term_col;
+			vga_current_index = (vga_current_index + 1) % (VGA_BUFFER_SIZE / sizeof(vga_buffer[0]));
 			break;
 		}
 	}
@@ -245,22 +246,26 @@ void _putchar(char c)
 	// What happens if we get past the last column? We need to reset the column to 0, and increment the row to get to a new line
 	if (term_col >= VGA_COLS)
 	{
-		term_col = 0;
-		term_row ++;
+		endofline = 1;
 	}
  
 	// What happens if we get past the last row? We need to reset both column and row to 0 in order to loop back to the top of the screen
-	if (term_row >= VGA_ROWS)
-	{
+	if (endofline) {
 		term_col = 0;
-		term_row = 0;
-	}
-	if (term_col == 0) {
+		vga_current_index = (vga_last_line + VGA_COLS) % (VGA_BUFFER_SIZE / sizeof(vga_buffer[0]));
+		vga_last_line = vga_current_index;
 		// clear the line if we're starting a new line
-		size_t index = (VGA_COLS * term_row);
-		for (int i = 0; i < 80; ++i) {
-			vga_buffer[index +i] = ((uint16_t)term_color << 8) | ' ';
+		for (int i = 0; i < VGA_COLS; ++i) {
+			vga_buffer[(vga_current_index + i) % (VGA_BUFFER_SIZE / sizeof(vga_buffer[0]))] = ((uint16_t)term_color << 8) | ' ';
 		}
+		int index = vga_current_index - (VGA_COLS * (VGA_ROWS -1));
+		if (index < 0) {
+			index += (VGA_BUFFER_SIZE / sizeof(vga_buffer[0]));
+		}
+		outb(0x3D4, 12);
+		outb(0x3D5, index >> 8);
+		outb(0x3D4, 13);
+		outb(0x3D5, index & 0xFF);
 	}
 }
  
@@ -294,11 +299,13 @@ void term_printf(const char* format, ...)
        write(2, foo, strlen(foo));
 }
 
+_Noreturn
 void halt(char * message) {
 	if (message) {
 		term_print(message);
 	}
 	asm volatile ( "hlt" :: );
+	while (1) { }
 }
 
 uint8_t read_cmos(uint8_t reg)
@@ -1473,7 +1480,7 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 		halt("couldn't map read/write kernel section\n");
 	}
 	
-	if (!kern_mmap(&scratch, (void *)vga_buffer, 80 * 25 * 2, PROT_KERNEL | PROT_FORCE | PROT_READ | PROT_WRITE, 0)) {
+	if (!kern_mmap(&scratch, (void *)vga_buffer, VGA_BUFFER_SIZE, PROT_KERNEL | PROT_FORCE | PROT_READ | PROT_WRITE, 0)) {
 		ERROR_PRINTF("couldn't map vga buffer\n");
 	}
 	
