@@ -81,9 +81,9 @@ size_t next_fd;
 uint8_t WANT_NMI = 0;
  
 // This is the x86's VGA textmode buffer. To display text, we write data to this memory location
-#define VGA_BUFFER_SIZE 0x8000
+#define VGA_BUFFER_SIZE 0x20000
 #define VGA_BUFFER_ELEMENTS (VGA_BUFFER_SIZE / sizeof(vga_buffer[0]))
-volatile uint16_t *vga_buffer = (uint16_t*)0xB8000;
+volatile uint16_t *vga_buffer = (uint16_t*)0xA0000;
 // By default, the VGA textmode buffer has a size of 80x25 characters
 #define VGA_COLS 80
 #define VGA_MEM_COLS 128
@@ -165,8 +165,15 @@ void move_cursor()
 // This function initiates the terminal by clearing it
 void term_init()
 {
+	// setup (horizontal) output offset
 	outb(0x3D4, 0x13);
 	outb(0x3D5, VGA_MEM_COLS / 2);
+
+	// select 0xA0000 - 0xBFFFF memory range
+	outb(0x3CE, 0x06);
+	uint8_t misc_gfx = inb(0x3CF);
+	misc_gfx &= 0xF3; // clear bits 2 and 3
+	outb(0x3CF, misc_gfx);
 
 	// Clear the textmode buffer
 	for (int i = 0; i < VGA_BUFFER_ELEMENTS; ++i) {
@@ -1416,7 +1423,7 @@ void setup_entrypoint()
 	char *argv[] = {"/beam", "--", "-root", "",
 			"-progname", "erl", "--", "-home", "/",
 			"-pz", "/obj/",
-//			"-s", "crazierl",
+			"-s", "crazierl",
 			"--", 
 			NULL};
 
