@@ -82,11 +82,13 @@ uint8_t WANT_NMI = 0;
  
 // This is the x86's VGA textmode buffer. To display text, we write data to this memory location
 #define VGA_BUFFER_SIZE 0x8000
-
+#define VGA_BUFFER_ELEMENTS (VGA_BUFFER_SIZE / sizeof(vga_buffer[0]))
 volatile uint16_t *vga_buffer = (uint16_t*)0xB8000;
 // By default, the VGA textmode buffer has a size of 80x25 characters
-const int VGA_COLS = 80;
-const int VGA_ROWS = 25;
+#define VGA_COLS 80
+#define VGA_MEM_COLS 128
+#define VGA_ROWS 25
+
 int vga_current_index = 0;
 int vga_last_line = 0;
  
@@ -163,11 +165,14 @@ void move_cursor()
 // This function initiates the terminal by clearing it
 void term_init()
 {
+	outb(0x3D4, 0x13);
+	outb(0x3D5, VGA_MEM_COLS / 2);
+
 	// Clear the textmode buffer
-	for (int i = 0; i < (VGA_BUFFER_SIZE / sizeof(vga_buffer[0])); ++i) {
+	for (int i = 0; i < VGA_BUFFER_ELEMENTS; ++i) {
 		vga_buffer[i] = ((uint16_t)term_color << 8) | ' '; // Set the character to blank (a space character)
 	}
-	vga_current_index = VGA_COLS * (VGA_ROWS - 1);
+	vga_current_index = VGA_BUFFER_ELEMENTS - (40 * VGA_MEM_COLS); // set to trigger wrapparound
 	vga_last_line = vga_current_index;
 	// enable cursor
 	outb(0x3D4, 0x0A);
@@ -200,8 +205,8 @@ void write_serial(char a) {
 // This function places a single character onto the screen
 void _putchar(char c)
 {
-	int endofline = 0;
 	write_serial(c);
+	int endofline = 0;
 	// Remember - we don't want to display ALL characters!
 	switch (c)
 	{
@@ -214,10 +219,10 @@ void _putchar(char c)
 	case '\t': {
 		if (term_col & 7) {
 			term_col = (term_col & ~7) + 8;
-			vga_current_index = ((vga_current_index & ~7) + 8) % (VGA_BUFFER_SIZE / sizeof(vga_buffer[0]));
+			vga_current_index = ((vga_current_index & ~7) + 8);
 		} else {
 			term_col += 8;
-			vga_current_index = (vga_current_index + 8) % (VGA_BUFFER_SIZE / sizeof(vga_buffer[0]));
+			vga_current_index+= 8;
 		}
 		break;
 	}
@@ -225,9 +230,6 @@ void _putchar(char c)
 		if (term_col) { 
 			--term_col; 
 			--vga_current_index;
-			if (vga_current_index < 0) {
-				vga_current_index += (VGA_BUFFER_SIZE / sizeof(vga_buffer[0]));
-			}
 		}
 		break;
 	}
@@ -237,8 +239,11 @@ void _putchar(char c)
 				//ERROR_PRINTF("unhandled control character %x\n", c);
 			}
 			vga_buffer[vga_current_index] = ((uint16_t)term_color << 8) | c;
+			/*if (vga_current_index + VGA_SCREEN >= VGA_BUFFER_SIZE) {
+				vga_buffer[vga_current_index - (VGA_BUFFER_SIZE - VGA_SCREEN)] = ((uint16_t)term_color << 8) | c;
+			}*/
 			++term_col;
-			vga_current_index = (vga_current_index + 1) % (VGA_BUFFER_SIZE / sizeof(vga_buffer[0]));
+			++vga_current_index;
 			break;
 		}
 	}
@@ -252,15 +257,48 @@ void _putchar(char c)
 	// What happens if we get past the last row? We need to reset both column and row to 0 in order to loop back to the top of the screen
 	if (endofline) {
 		term_col = 0;
-		vga_current_index = (vga_last_line + VGA_COLS) % (VGA_BUFFER_SIZE / sizeof(vga_buffer[0]));
+		vga_current_index = vga_last_line + VGA_MEM_COLS;
+		if (vga_current_index == VGA_BUFFER_ELEMENTS) {
+			vga_current_index = 0;
+		}
 		vga_last_line = vga_current_index;
 		// clear the line if we're starting a new line
 		for (int i = 0; i < VGA_COLS; ++i) {
-			vga_buffer[(vga_current_index + i) % (VGA_BUFFER_SIZE / sizeof(vga_buffer[0]))] = ((uint16_t)term_color << 8) | ' ';
+			vga_buffer[(vga_current_index + i) % VGA_BUFFER_ELEMENTS] = ((uint16_t)term_color << 8) | ' ';
 		}
-		int index = vga_current_index - (VGA_COLS * (VGA_ROWS -1));
+		int index = vga_current_index - (VGA_MEM_COLS * (VGA_ROWS -1));
+
+		static int last_line_compare = 0x3FF;
+		int line_compare = 0x3FF;
 		if (index < 0) {
-			index += (VGA_BUFFER_SIZE / sizeof(vga_buffer[0]));
+			line_compare = 16 * (-index / VGA_MEM_COLS);
+			index += VGA_BUFFER_ELEMENTS;
+		}
+		if (line_compare != last_line_compare) {
+			outb(0x3D4, 0x07);
+			uint8_t tmp = inb(0x3D5);
+			uint8_t out;
+			if (line_compare & 0x100) {
+				out = tmp | 0x10;
+			} else {
+				out = tmp & ~0x10;
+			}
+			if (out != tmp) {
+				outb(0x3D5, out);
+			}
+			outb(0x3D4, 0x09);
+			tmp = inb(0x3D5);
+			if (line_compare & 0x200) {
+				out = tmp | 0x40;
+			} else {
+				out = tmp & ~ 0x40;
+			}
+			if (out != tmp) {
+				outb(0x3D5, out);
+			}
+			outb(0x3D4, 0x18);
+			outb(0x3D5, line_compare & 0xFF);
+			last_line_compare = line_compare;
 		}
 		outb(0x3D4, 12);
 		outb(0x3D5, index >> 8);
@@ -1378,7 +1416,7 @@ void setup_entrypoint()
 	char *argv[] = {"/beam", "--", "-root", "",
 			"-progname", "erl", "--", "-home", "/",
 			"-pz", "/obj/",
-			"-s", "crazierl",
+//			"-s", "crazierl",
 			"--", 
 			NULL};
 
