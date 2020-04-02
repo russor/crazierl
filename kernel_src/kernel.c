@@ -90,10 +90,8 @@ volatile uint16_t *vga_buffer = (uint16_t*)0xA0000;
 #define VGA_ROWS 25
 
 int vga_current_index = 0;
-int vga_last_line = 0;
  
 // We start displaying text in the top-left of the screen (column = 0, row = 0)
-int term_col = 0;
 uint8_t term_color = 0x0F; // Black background, White foreground
 
 struct GDTDescr {
@@ -153,6 +151,15 @@ static inline uint8_t inb(uint16_t port)
 	return ret;
 }
 
+void find_cursor()
+{
+	outb(0x3D4, 0x0F);
+	vga_current_index = inb(0x3D5);
+
+	outb(0x3D4, 0x0E);
+	vga_current_index |= inb(0x3d5) << 8;
+}
+
 void move_cursor()
 {
 	outb(0x3D4, 0x0F);
@@ -179,8 +186,7 @@ void term_init()
 	for (int i = 0; i < VGA_BUFFER_ELEMENTS; ++i) {
 		vga_buffer[i] = ((uint16_t)term_color << 8) | ' '; // Set the character to blank (a space character)
 	}
-	vga_current_index = VGA_BUFFER_ELEMENTS - (40 * VGA_MEM_COLS); // set to trigger wrapparound
-	vga_last_line = vga_current_index;
+	vga_current_index = VGA_BUFFER_ELEMENTS - (50 * VGA_MEM_COLS); // set to trigger wrapparound
 	// enable cursor
 	outb(0x3D4, 0x0A);
 	outb(0x3D5, (inb(0x3D5) & 0xCE));
@@ -224,18 +230,15 @@ void _putchar(char c)
 			break;
 		}
 	case '\t': {
-		if (term_col & 7) {
-			term_col = (term_col & ~7) + 8;
+		if (vga_current_index & 7) {
 			vga_current_index = ((vga_current_index & ~7) + 8);
 		} else {
-			term_col += 8;
 			vga_current_index+= 8;
 		}
 		break;
 	}
 	case 0x08: { // backspace
-		if (term_col) { 
-			--term_col; 
+		if (vga_current_index & (VGA_MEM_COLS - 1)) {
 			--vga_current_index;
 		}
 		break;
@@ -249,26 +252,23 @@ void _putchar(char c)
 			/*if (vga_current_index + VGA_SCREEN >= VGA_BUFFER_SIZE) {
 				vga_buffer[vga_current_index - (VGA_BUFFER_SIZE - VGA_SCREEN)] = ((uint16_t)term_color << 8) | c;
 			}*/
-			++term_col;
 			++vga_current_index;
 			break;
 		}
 	}
  
 	// What happens if we get past the last column? We need to reset the column to 0, and increment the row to get to a new line
-	if (term_col >= VGA_COLS)
+	if ((vga_current_index & (VGA_MEM_COLS - 1)) >= VGA_COLS)
 	{
 		endofline = 1;
 	}
  
 	// What happens if we get past the last row? We need to reset both column and row to 0 in order to loop back to the top of the screen
 	if (endofline) {
-		term_col = 0;
-		vga_current_index = vga_last_line + VGA_MEM_COLS;
+		vga_current_index = (vga_current_index & ~(VGA_MEM_COLS - 1)) + VGA_MEM_COLS;
 		if (vga_current_index == VGA_BUFFER_ELEMENTS) {
 			vga_current_index = 0;
 		}
-		vga_last_line = vga_current_index;
 		// clear the line if we're starting a new line
 		for (int i = 0; i < VGA_COLS; ++i) {
 			vga_buffer[(vga_current_index + i) % VGA_BUFFER_ELEMENTS] = ((uint16_t)term_color << 8) | ' ';
@@ -317,7 +317,6 @@ void _putchar(char c)
 // This function prints an entire string onto the screen
 void term_print(const char* str)
 {
-//	find_cursor();
 	for (size_t i = 0; str[i] != '\0'; i ++) // Keep placing characters until we hit the null-terminating character ('\0')
 		_putchar(str[i]);
 	move_cursor();
@@ -325,7 +324,6 @@ void term_print(const char* str)
 
 void term_printn (const uint8_t* str, ssize_t len)
 {
-//	find_cursor();
 	while (len) {
 		_putchar(*str);
 		++str;
@@ -709,6 +707,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			}
 			if (KERN_FDS[a->fd].type == BOGFD_PIPE) {
 				if (KERN_FDS[a->fd].pipe == &KERN_FDS[0]) {
+					find_cursor();
 					term_print("unpiping STDIN\n");
 					term_printn(KERN_FDS[a->fd].pb->data, KERN_FDS[a->fd].pb->length);
 
@@ -719,6 +718,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					KERN_FDS[0].status[1] = 0;
 					KERN_FDS[0].status[2] = sizeof(INPUTBUFFER) -1; // hope this is a power of two
 				} else if (KERN_FDS[a->fd].pipe == &KERN_FDS[1]) {
+					find_cursor();
 					term_print("unpiping STDOUT\n");
 					term_printn(KERN_FDS[a->fd].pb->data, KERN_FDS[a->fd].pb->length);
 
@@ -727,6 +727,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					KERN_FDS[1].file = NULL;
 					KERN_FDS[1].buffer = NULL;
 				} else if (KERN_FDS[a->fd].pipe == &KERN_FDS[2]) {
+					find_cursor();
 					term_print("unpiping STDERR\n");
 					term_printn(KERN_FDS[a->fd].pb->data, KERN_FDS[a->fd].pb->length);
 
@@ -1071,7 +1072,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					} else {
 						memcpy((void *)ret_addr, KERN_FDS[a->fd].file->start + a->pos, a->len);
 					}
-				} else if (a->prot != PROT_NONE) {
+				} else if (a->prot != PROT_NONE && (a->prot & PROT_FORCE) == 0) {
 					explicit_bzero((void*)ret_addr, a->len);
 				}
 				SYSCALL_SUCCESS(ret_addr);

@@ -1,5 +1,5 @@
 -module(crazierl).
--export([start/0, inb/1, outb/2, read_com/0]).
+-export([start/0, inb/1, outb/2, map/2, bcopy_to/2, bcopy_from/2]).
 
 -on_load(init/0).
 
@@ -9,17 +9,9 @@ init() ->
 inb(_Port) -> exit(nif_library_not_loaded).
 outb(_Port, _Value) -> exit(nif_library_not_loaded).
 
-
-read_com() ->
-	case inb(16#3f8 + 5) band 1 of
-		1 ->
-			In = inb(16#3f8),
-			io:put_chars([In]),
-			read_com();
-		0 ->
-			io:put_chars([$\n]),
-			ok
-	end.
+map(_Start, _Length) -> exit(nif_library_not_loaded).
+bcopy_to(_Start, _Binary) -> exit(nif_library_not_loaded).
+bcopy_from(_Start, _Length) -> exit(nif_library_not_loaded).
 
 % setup console
 start() ->

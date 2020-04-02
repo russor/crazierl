@@ -5,7 +5,11 @@
 		owner,
 		io_port,
 		irq,
-		mods
+		mods,
+		current_index,
+		cursor_visible,
+		in_buffer, out_buffer,
+		last_line_compare = -1
 }).
 
 -record (mods, {
@@ -18,30 +22,168 @@
 	scroll_lock = false
 }).
 
+-define(VGA_FB, 16#a0000).
+-define(VGA_LEN, 16#20000).
+-define(VGA_ELEMENTS, (?VGA_LEN div 2)).
+-define(VGA_ROWS, 25).
+-define(VGA_COLS, 80).
+-define(VGA_MEM_COLS, 128).
+-define(TERM_COLOR, 16#F). % Black background, White foreground
+
 start(IoPort, Interrupt) ->
 	spawn(?MODULE, init, [self(), IoPort, Interrupt]).
 
 init(Owner, IoPort, Interrupt) ->
+	register(?MODULE, self()),
 	{ok, InterruptSocket} = gen_udp:open(0, [
 		{ifaddr, {local, Interrupt}},
 		{active, true}
 	]),
+	VgaInited = init_vga(),
 	Key = crazierl:inb(IoPort), % read and process any pending keystroke
-	loop(key_decode(#s{owner = Owner, io_port = IoPort, irq = InterruptSocket, mods = #mods{}}, Key)).
+	loop(key_decode(VgaInited#s{owner = Owner, io_port = IoPort, irq = InterruptSocket, mods = #mods{}}, Key)).
 
-loop(State = #s{irq = Irq, io_port = Port}) ->
+init_vga() ->
+	% assumption: kernel is already writing to VGA
+	% vga memory map is set to 16#a0000 - 16#bffff
+	% horizontal offset set to 128
+	% vga is in text mode
+	% cursor is placed by kernel where we should start writing new data
+	% CRT controller register is at 16#3D4
+
+	ok = crazierl:map(?VGA_FB, ?VGA_LEN),
+
+	% fetch cursor location
+	crazierl:outb(16#3D4, 16#F),
+	CurIndexLo = crazierl:inb(16#3D5),
+	crazierl:outb(16#3D4, 16#E),
+	CurIndexHi = crazierl:inb(16#3D5),
+	<<CurIndex:16>> = <<CurIndexHi:8, CurIndexLo:8>>,
+
+	#s{current_index = CurIndex, cursor_visible = true, in_buffer = <<>>, out_buffer = <<>>}.
+
+
+loop(State = #s{irq = Irq, io_port = Port, in_buffer = IB}) ->
+	Timeout = case {State#s.out_buffer, State#s.cursor_visible} of
+		{<<>>, true} -> infinity;
+		{<<>>, false} -> 25;
+		_ -> 0
+	end,
 	NewState = receive
 		{udp, Irq, _, _, _} ->
 			Key = crazierl:inb(Port),
 			key_decode(State, Key);
-		{stdin, _Data} ->
-			State;
-		{stdout, _Data} ->
-			State;
-		{stderr, _Data} ->
-			State
+		{stdin, Data} ->
+			output_decode(State#s{in_buffer = <<IB/binary, Data/binary>>});
+		{stdout, Data} ->
+			output_decode(State#s{in_buffer = <<IB/binary, Data/binary>>});
+		{stderr, Data} ->
+			output_decode(State#s{in_buffer = <<IB/binary, Data/binary>>})
+	after Timeout ->
+		flush(State)
 	end,
 	loop(NewState).
+
+output_decode(State = #s{out_buffer = OB, current_index = CI})
+	when (CI band (?VGA_MEM_COLS - 1)) + (size(OB) div 2) >= ?VGA_COLS ->
+	output_decode(flush(State));
+
+output_decode(State = #s{in_buffer = <<$\r, IB/binary>>, out_buffer = <<>>, current_index = CI}) ->
+	output_decode(disable_cursor(State#s{in_buffer = IB, current_index = CI band (bnot(?VGA_MEM_COLS - 1))}));
+
+output_decode(State = #s{in_buffer = <<$\n, IB/binary>>, out_buffer = <<>>}) ->
+	output_decode(disable_cursor(newline(State#s{in_buffer = IB})));
+
+output_decode(State = #s{in_buffer = <<$\r, _/binary>>}) ->
+	output_decode(flush(State));
+output_decode(State = #s{in_buffer = <<$\n, _/binary>>}) ->
+	output_decode(flush(State));
+
+output_decode(State = #s{in_buffer = <<Char:8, IB/binary>>, out_buffer = OB}) ->
+	output_decode(State#s{in_buffer = IB, out_buffer = <<OB/binary, Char:8, ?TERM_COLOR:8>>});
+
+output_decode(State = #s{in_buffer = <<>>}) ->
+	State.
+
+
+flush (State = #s{out_buffer = <<>>, cursor_visible = true}) -> State; % nothing to flush
+flush (State = #s{out_buffer = <<>>, cursor_visible = false, current_index = CI}) ->  % all data output, need to move cursor
+	% enable cursor
+	crazierl:outb(16#3D4, 16#0A),
+	crazierl:outb(16#3D5, crazierl:inb(16#3D5) band 2#11011111),
+
+	% set cursor location
+	CursorIndex = CI,
+	<<CurIndexHi:8, CurIndexLo:8>> = <<CursorIndex:16>>,
+	crazierl:outb(16#3D4, 16#E),
+	crazierl:outb(16#3D5, CurIndexHi),
+	crazierl:outb(16#3D4, 16#F),
+	crazierl:outb(16#3D5, CurIndexLo),
+	State#s{cursor_visible = true};
+
+flush (State = #s{out_buffer = OB}) ->
+	crazierl:bcopy_to(?VGA_FB + (State#s.current_index * 2), OB),
+	AddedIndex = State#s.current_index + (size(OB) div 2),
+	if
+		AddedIndex band (?VGA_MEM_COLS - 1) >= ?VGA_COLS ->
+			newline(disable_cursor(State#s{out_buffer = <<>>, current_index = AddedIndex}));
+		true ->
+			disable_cursor(State#s{out_buffer = <<>>, current_index = AddedIndex})
+	end.
+
+disable_cursor(State = #s{cursor_visible = false}) ->
+	State;
+disable_cursor(State) ->
+	% disable cursor
+	crazierl:outb(16#3D4, 16#0A),
+	crazierl:outb(16#3D5, crazierl:inb(16#3D5) bor 2#00100000),
+	State#s{cursor_visible = false}.
+
+newline(State = #s{current_index = OldIndex}) ->
+	Index = case (OldIndex band (bnot (?VGA_MEM_COLS - 1))) + ?VGA_MEM_COLS of
+		?VGA_LEN -> 0;
+		Other -> Other
+	end,
+
+	% clear next line
+	crazierl:bcopy_to(?VGA_FB + (Index * 2), binary:copy(<<" ", ?TERM_COLOR:8>>, ?VGA_COLS)),
+	RawDisplayIndex = Index - (?VGA_MEM_COLS * (?VGA_ROWS - 1)),
+	{LineCompare, DisplayIndex} = if
+		RawDisplayIndex < 0 ->
+			{16 * (-RawDisplayIndex div ?VGA_MEM_COLS), RawDisplayIndex + ?VGA_ELEMENTS};
+		true ->
+			{16#3FF, RawDisplayIndex}
+	end,
+	case State#s.last_line_compare of
+		LineCompare -> ok;
+		_ ->
+			crazierl:outb(16#3D4, 16#7),
+			Overflow = crazierl:inb(16#3D5),
+			NewOverflow = case ((LineCompare band 16#100) /= 0) of
+				true -> Overflow bor  2#00010000;
+				false ->Overflow band 2#11101111
+			end,
+			Overflow /= NewOverflow andalso crazierl:outb(16#3D5, NewOverflow),
+
+			crazierl:outb(16#3D4, 16#9),
+			MaxScan = crazierl:inb(16#3D5),
+			NewMaxScan = case ((LineCompare band 16#200) /= 0) of
+				true -> MaxScan bor  2#01000000;
+				false ->MaxScan band 2#10111111
+			end,
+			MaxScan /= NewMaxScan andalso crazierl:outb(16#3D5, NewMaxScan),
+
+			crazierl:outb(16#3D4, 16#18),
+			crazierl:outb(16#3D5, LineCompare band 16#FF)
+	end,
+
+	<<IndexHi:8, IndexLo:8>> = <<DisplayIndex:16>>,
+	crazierl:outb(16#3D4, 16#C),
+	crazierl:outb(16#3D5, IndexHi),
+	crazierl:outb(16#3D4, 16#D),
+	crazierl:outb(16#3D5, IndexLo),
+	State#s{out_buffer = <<>>, last_line_compare = LineCompare, current_index = Index}.
+
 
 key_decode(State, 16#e0) -> State; %ignore escapes for the moment
 key_decode(State, 16#e1) -> State;
