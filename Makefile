@@ -115,7 +115,3 @@ obj/console.beam: console.erl
 obj/vgakb.beam: vgakb.erl
 	../installed/bin/erlc $^
 	mv vgakb.beam obj/
-
-obj/sieve.beam: sieve.erl
-	../installed/bin/erlc $^
-	mv sieve.beam obj/
