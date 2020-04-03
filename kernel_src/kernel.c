@@ -344,8 +344,14 @@ void term_printf(const char* format, ...)
 
 _Noreturn
 void halt(char * message) {
+	find_cursor();
 	if (message) {
 		term_print(message);
+	}
+	for (int i = 2; i >= 0; --i) {
+		if (KERN_FDS[i].type == BOGFD_PIPE) {
+			term_printn(KERN_FDS[i].pipe->pb->data, KERN_FDS[i].pipe->pb->length);
+		}
 	}
 	asm volatile ( "hlt" :: );
 	while (1) { }
@@ -1196,7 +1202,7 @@ void handle_pf(struct interrupt_frame *frame, uint32_t error_code)
 		ERROR_PRINTF("Got #PF, no stack frame\n");
 	}
 	print_time(last_time);
-	halt(NULL);
+	halt("page fault");
 }
 
 __attribute__ ((interrupt))
