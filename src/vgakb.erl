@@ -66,7 +66,6 @@ init_vga() ->
 loop(State = #s{irq = Irq, io_port = Port, in_buffer = IB}) ->
 	Timeout = case {State#s.out_buffer, State#s.cursor_visible} of
 		{<<>>, true} -> infinity;
-		{<<>>, false} -> 25;
 		_ -> 0
 	end,
 	NewState = receive
