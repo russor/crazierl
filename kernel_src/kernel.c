@@ -186,7 +186,7 @@ void term_init()
 	for (int i = 0; i < VGA_BUFFER_ELEMENTS; ++i) {
 		vga_buffer[i] = ((uint16_t)term_color << 8) | ' '; // Set the character to blank (a space character)
 	}
-	vga_current_index = VGA_BUFFER_ELEMENTS - (50 * VGA_MEM_COLS); // set to trigger wrapparound
+	vga_current_index = VGA_BUFFER_ELEMENTS - (70 * VGA_MEM_COLS); // set to trigger wrapparound
 	// enable cursor
 	outb(0x3D4, 0x0A);
 	outb(0x3D5, (inb(0x3D5) & 0xCE));

@@ -496,7 +496,7 @@ int ppoll(struct pollfd fds[], nfds_t nfds, const struct timespec * restrict tim
 		struct BogusFD *fd = &FDS[fds[i].fd];
 		fds[i].revents = 0;
 		if (fds[i].events & POLLIN && fd->type == BOGFD_PIPE && fd->status[0] != 0) {
-			ERROR_PRINTF("fd %d ready to read\n", fds[i].fd);
+			//ERROR_PRINTF("fd %d ready to read\n", fds[i].fd);
 			fds[i].revents = POLLIN;
 			++changedfds;
 		} else if (fd->type == BOGFD_KERNEL) {

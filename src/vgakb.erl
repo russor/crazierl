@@ -7,8 +7,8 @@
 		irq,
 		mods,
 		current_index,
-		cursor_visible,
-		in_buffer, out_buffer,
+		cursor_updated,
+		in_buffer, out_buffer, frame_buffer,
 		last_line_compare = -1
 }).
 
@@ -51,7 +51,7 @@ init_vga() ->
 	% cursor is placed by kernel where we should start writing new data
 	% CRT controller register is at 16#3D4
 
-	ok = crazierl:map(?VGA_FB, ?VGA_LEN),
+	{ok, Map} = crazierl:map(?VGA_FB, ?VGA_LEN),
 
 	% fetch cursor location
 	crazierl:outb(16#3D4, 16#F),
@@ -60,12 +60,12 @@ init_vga() ->
 	CurIndexHi = crazierl:inb(16#3D5),
 	<<CurIndex:16>> = <<CurIndexHi:8, CurIndexLo:8>>,
 
-	#s{current_index = CurIndex, cursor_visible = true, in_buffer = <<>>, out_buffer = <<>>}.
+	#s{current_index = CurIndex, cursor_updated = false, in_buffer = <<>>, out_buffer = <<>>, frame_buffer = Map}.
 
 
 loop(State = #s{irq = Irq, io_port = Port, in_buffer = IB}) ->
-	Timeout = case {State#s.out_buffer, State#s.cursor_visible} of
-		{<<>>, true} -> infinity;
+	Timeout = case {State#s.out_buffer, State#s.cursor_updated} of
+		{<<>>, false} -> infinity;
 		_ -> 0
 	end,
 	NewState = receive
@@ -87,16 +87,39 @@ output_decode(State = #s{out_buffer = OB, current_index = CI})
 	when (CI band (?VGA_MEM_COLS - 1)) + (size(OB) div 2) >= ?VGA_COLS ->
 	output_decode(flush(State));
 
-output_decode(State = #s{in_buffer = <<$\r, IB/binary>>, out_buffer = <<>>, current_index = CI}) ->
-	output_decode(disable_cursor(State#s{in_buffer = IB, current_index = CI band (bnot(?VGA_MEM_COLS - 1))}));
-
-output_decode(State = #s{in_buffer = <<$\n, IB/binary>>, out_buffer = <<>>}) ->
-	output_decode(disable_cursor(newline(State#s{in_buffer = IB})));
-
-output_decode(State = #s{in_buffer = <<$\r, _/binary>>}) ->
+output_decode(State = #s{in_buffer = <<CtrlChar:8, _/binary>>, out_buffer = OB})
+	when CtrlChar =< 31, OB /= <<>> ->
 	output_decode(flush(State));
-output_decode(State = #s{in_buffer = <<$\n, _/binary>>}) ->
-	output_decode(flush(State));
+
+output_decode(State = #s{in_buffer = <<$\r, IB/binary>>, current_index = CI}) ->
+	output_decode(State#s{in_buffer = IB, cursor_updated = true, current_index = CI band (bnot(?VGA_MEM_COLS - 1))});
+
+output_decode(State = #s{in_buffer = <<$\b, IB/binary>>, current_index = CI}) ->
+	case CI band (bnot(?VGA_MEM_COLS - 1)) of
+		0 -> output_decode(State#s{in_buffer = IB});
+		_ -> output_decode(State#s{in_buffer = IB, cursor_updated = true, current_index = CI - 1})
+	end;
+
+output_decode(State = #s{in_buffer = <<$\n, IB/binary>>}) ->
+	output_decode(newline(State#s{in_buffer = IB, cursor_updated = true}));
+
+% ignore bell
+output_decode(State = #s{in_buffer = <<$\^g, IB/binary>>}) -> State#s{in_buffer = IB};
+
+
+output_decode(State = #s{in_buffer = <<$\e, $[, $C, IB/binary>>, current_index = CI}) ->
+	output_decode(State#s{in_buffer = IB, cursor_updated = true, current_index = CI + 1});
+
+output_decode(State = #s{in_buffer = <<$\e, $[, $A, IB/binary>>, current_index = CI}) ->
+	NewCI = (CI - ?VGA_MEM_COLS) band (?VGA_ELEMENTS - 1),
+	output_decode(State#s{in_buffer = IB, cursor_updated = true, current_index = NewCI});
+
+output_decode(State = #s{in_buffer = <<$\e, A, B, C, IB/binary>>}) ->
+	io:format("vgakb ignoring ESC + 16#~2.16.0B~2.16.0B~2.16.0B~n", [A, B, C]),
+	output_decode(State#s{in_buffer = IB});
+
+output_decode(State = #s{in_buffer = <<$\e, _/binary>>}) ->
+	State;
 
 output_decode(State = #s{in_buffer = <<Char:8, IB/binary>>, out_buffer = OB}) ->
 	output_decode(State#s{in_buffer = IB, out_buffer = <<OB/binary, Char:8, ?TERM_COLOR:8>>});
@@ -105,12 +128,7 @@ output_decode(State = #s{in_buffer = <<>>}) ->
 	State.
 
 
-flush (State = #s{out_buffer = <<>>, cursor_visible = true}) -> State; % nothing to flush
-flush (State = #s{out_buffer = <<>>, cursor_visible = false, current_index = CI}) ->  % all data output, need to move cursor
-	% enable cursor
-	crazierl:outb(16#3D4, 16#0A),
-	crazierl:outb(16#3D5, crazierl:inb(16#3D5) band 2#11011111),
-
+flush (State = #s{out_buffer = <<>>, cursor_updated = true, current_index = CI}) ->  % all data output, need to move cursor
 	% set cursor location
 	CursorIndex = CI,
 	<<CurIndexHi:8, CurIndexLo:8>> = <<CursorIndex:16>>,
@@ -118,34 +136,26 @@ flush (State = #s{out_buffer = <<>>, cursor_visible = false, current_index = CI}
 	crazierl:outb(16#3D5, CurIndexHi),
 	crazierl:outb(16#3D4, 16#F),
 	crazierl:outb(16#3D5, CurIndexLo),
-	State#s{cursor_visible = true};
+	State#s{cursor_updated = false};
 
-flush (State = #s{out_buffer = OB}) ->
-	crazierl:bcopy_to(?VGA_FB + (State#s.current_index * 2), OB),
+flush (State = #s{out_buffer = OB, frame_buffer = FB}) ->
+	crazierl:bcopy_to(FB, (State#s.current_index * 2), OB),
 	AddedIndex = State#s.current_index + (size(OB) div 2),
 	if
 		AddedIndex band (?VGA_MEM_COLS - 1) >= ?VGA_COLS ->
-			newline(disable_cursor(State#s{out_buffer = <<>>, current_index = AddedIndex}));
+			newline(State#s{out_buffer = <<>>, cursor_updated = true, current_index = AddedIndex});
 		true ->
-			disable_cursor(State#s{out_buffer = <<>>, current_index = AddedIndex})
+			State#s{out_buffer = <<>>, cursor_updated = true, current_index = AddedIndex}
 	end.
 
-disable_cursor(State = #s{cursor_visible = false}) ->
-	State;
-disable_cursor(State) ->
-	% disable cursor
-	crazierl:outb(16#3D4, 16#0A),
-	crazierl:outb(16#3D5, crazierl:inb(16#3D5) bor 2#00100000),
-	State#s{cursor_visible = false}.
-
-newline(State = #s{current_index = OldIndex}) ->
+newline(State = #s{current_index = OldIndex, frame_buffer = FB}) ->
 	Index = case (OldIndex band (bnot (?VGA_MEM_COLS - 1))) + ?VGA_MEM_COLS of
-		?VGA_LEN -> 0;
+		?VGA_ELEMENTS -> 0;
 		Other -> Other
 	end,
 
 	% clear next line
-	crazierl:bcopy_to(?VGA_FB + (Index * 2), binary:copy(<<" ", ?TERM_COLOR:8>>, ?VGA_COLS)),
+	crazierl:bcopy_to(FB, (Index * 2), binary:copy(<<" ", ?TERM_COLOR:8>>, ?VGA_COLS)),
 	RawDisplayIndex = Index - (?VGA_MEM_COLS * (?VGA_ROWS - 1)),
 	{LineCompare, DisplayIndex} = if
 		RawDisplayIndex < 0 ->
@@ -181,7 +191,7 @@ newline(State = #s{current_index = OldIndex}) ->
 	crazierl:outb(16#3D5, IndexHi),
 	crazierl:outb(16#3D4, 16#D),
 	crazierl:outb(16#3D5, IndexLo),
-	State#s{out_buffer = <<>>, last_line_compare = LineCompare, current_index = Index}.
+	State#s{out_buffer = <<>>, cursor_updated = true, last_line_compare = LineCompare, current_index = Index}.
 
 
 key_decode(State, 16#e0) -> State; %ignore escapes for the moment
