@@ -95,17 +95,13 @@ output_decode(State = #s{in_buffer = <<$\r, IB/binary>>, current_index = CI}) ->
 	output_decode(State#s{in_buffer = IB, cursor_updated = true, current_index = CI band (bnot(?VGA_MEM_COLS - 1))});
 
 output_decode(State = #s{in_buffer = <<$\b, IB/binary>>, current_index = CI}) ->
-	case CI band (bnot(?VGA_MEM_COLS - 1)) of
-		0 -> output_decode(State#s{in_buffer = IB});
-		_ -> output_decode(State#s{in_buffer = IB, cursor_updated = true, current_index = CI - 1})
-	end;
+	output_decode(State#s{in_buffer = IB, cursor_updated = true, current_index = CI - 1});
 
 output_decode(State = #s{in_buffer = <<$\n, IB/binary>>}) ->
 	output_decode(newline(State#s{in_buffer = IB, cursor_updated = true}));
 
 % ignore bell
 output_decode(State = #s{in_buffer = <<$\^g, IB/binary>>}) -> State#s{in_buffer = IB};
-
 
 output_decode(State = #s{in_buffer = <<$\e, $[, $C, IB/binary>>, current_index = CI}) ->
 	output_decode(State#s{in_buffer = IB, cursor_updated = true, current_index = CI + 1});
@@ -262,6 +258,8 @@ key_decode(State = #s{mods = Mods}, RawKey) ->
 		Key > 0 andalso Key =< tuple_size(ScanTable) ->
 			DecodedKey = element(Key, ScanTable),
 			key_process(State, KeyMake, DecodedKey);
+		RawKey == 16#FA ->
+			State;
 		true ->
 			io:format("couldn't handle scancode ~.16B (~.16B)~n", [Key, RawKey]),
 			State
@@ -282,6 +280,18 @@ key_process(State = #s {mods = Mods}, Bool, Modifier) when is_atom(Modifier) ->
 key_process(State, false, _DecodedKey) -> State; % ignore other key up events
 key_process(State, true, DecodedKey) when is_integer(DecodedKey) ->
 	State#s.owner ! { self(), [DecodedKey] },
+	State;
+key_process(State, true, {f, up}) ->
+	State#s.owner ! { self(), ["\e[A"]},
+	State;
+key_process(State, true, {f, down}) ->
+	State#s.owner ! { self(), ["\e[B"]},
+	State;
+key_process(State, true, {f, right}) ->
+	State#s.owner ! { self(), ["\e[C"]},
+	State;
+key_process(State, true, {f, left}) ->
+	State#s.owner ! { self(), ["\e[D"]},
 	State;
 key_process(State, true, DecodedKey) ->
 	io:format("key down ~2000p~n", [DecodedKey]),
