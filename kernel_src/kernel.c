@@ -126,11 +126,6 @@ uint8_t last_time[9];
 
 uintptr_t user_stack;
 
-char INPUTBUFFER[16]; // must be a power of 2!
-size_t INPUT_FD;
-
-
-
 static inline void outb(uint16_t port, uint8_t val)
 {
 	asm volatile ( "outb %0, %1" : : "a"(val), "Nd"(port) );
@@ -476,77 +471,6 @@ void handle_timer(struct interrupt_frame *frame)
 	++TIMER_COUNT;
 }
 
-char unshifted_scancodes[] = {
-	0, 0x1B,
-	'1', '2', '3', '4', '5', '6', '7', '8',	'9', '0', '-', '=', 0x7F,
-	'\t', 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n',
-	-4, 'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', ';', '\'', '`',
-	-1, '\\', 'z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', '/', -2,
-	'*', -8, ' ' // ignore the rest of the keys
-};
-
-char shifted_scancodes[] = {
-	0, 0x1B,
-	'!', '@', '#', '$', '%', '^', '&', '*',	'(', ')', '_', '+', 0x7F,
-	'\t', 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '{', '}', '\n',
-	-4, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', ':', '"', '~',
-	-1, '|', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', '<', '>', '?', -2,
-	'*', -8, ' ' // ignore the rest of the keys
-};
-
-uint8_t keyboard_shifts = 0;
-
-void read_keyboard (struct BogusFD * fd) {
-	fd->status[3] &= ~ 0x02; // clear data pending flag
-	if (((fd->status[0] + 1) & fd->status[2]) != fd->status[1]) {
-		uint8_t c = inb(0x60);
-		if (c == 0xe0 || c== 0xe1) {
-			// keyboard escape code; ignore for now
-			return;
-		}
-		int down = 1;
-		if (c & 0x80) {
-			down = 0;
-			c &= 0x7F;
-		}
-		if (c < sizeof(unshifted_scancodes)) {
-			char o;
-			if (keyboard_shifts & 0x3) {
-				o = shifted_scancodes[c];
-			} else {
-				o = unshifted_scancodes[c];
-			}
-			if (o > 0) {
-				if (down) {
-					fd->buffer[fd->status[0]] = o;
-					++fd->status[0];
-					fd->status[0] &= fd->status[2];
-				}
-			} else {
-				if (down) {
-					keyboard_shifts |= (-o);
-				} else {
-					keyboard_shifts &= ~(-o);
-				}
-			}
-		}
-	} else {
-		ERROR_PRINTF("keyboard buffer full\n");
-		fd->status[3] |= 0x02;
-		return;
-	}
-}
-
-__attribute__ ((interrupt))
-void handle_keyboard(struct interrupt_frame *frame)
-{
-	struct BogusFD *fd = &FDS[INPUT_FD];
-	if (fd->type == BOGFD_TERMIN) {
-		read_keyboard(fd);
-	}
-	outb(PORT_PIC1, PIC_INTERRUPT_ACK);
-}
-
 #define CARRY 1
 #define SYSCALL_SUCCESS(ret) { iframe->flags &= ~CARRY; return ret; }
 #define SYSCALL_FAILURE(ret) { iframe->flags |= CARRY; return ret; }
@@ -604,24 +528,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				fd->pos += read;
 				SYSCALL_SUCCESS(read);
 			} else if (fd->type == BOGFD_TERMIN) {
-				uint8_t * buffer = a->buf;
-				while (read < a->nbyte) {
-					if (fd->status[0] == fd->status[1]) {
-						if (fd->status[3] & 0x03) {
-							if (fd->status[3] & 0x02) {
-								ERROR_PRINTF("keyboard buffer empty\n");
-								read_keyboard(fd);
-							}
-						} else {
-							break;
-						}
-					} else {
-						buffer[read] = fd->buffer[fd->status[1]];
-						++read;
-						++fd->status[1];
-						fd->status[1] &= fd->status[2];
-					}
-				}
+				SYSCALL_FAILURE(EAGAIN);
 			} else {
 				SYSCALL_FAILURE(EBADF);
 			}
@@ -756,10 +663,8 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 
 					kern_munmap(PROT_KERNEL, (uintptr_t) FDS[a->fd].pb, PAGE_SIZE);
 					FDS[0].type = BOGFD_TERMIN;
-					FDS[0].buffer = INPUTBUFFER;
-					FDS[0].status[0] = 0;
-					FDS[0].status[1] = 0;
-					FDS[0].status[2] = sizeof(INPUTBUFFER) -1; // hope this is a power of two
+					FDS[0].buffer = NULL;
+					FDS[0].file = NULL;
 				} else if (FDS[a->fd].pipe == &FDS[1]) {
 					find_cursor();
 					term_print("unpiping STDOUT\n");
@@ -1214,8 +1119,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 						++changedfds;
 						continue;
 					}
-					if ((a->fds[i].events & POLLIN && fd->type == BOGFD_TERMIN && fd->status[0] != fd->status[1]) ||
-					    (a->fds[i].events & POLLIN && fd->type == BOGFD_PIC1 && fd->status[1] != 0) ||
+					if ((a->fds[i].events & POLLIN && fd->type == BOGFD_PIC1 && fd->status[1] != 0) ||
 					    (a->fds[i].events & POLLIN && fd->type == BOGFD_PIPE && fd->pb->length != 0)
 					   ) {
 						a->fds[i].revents |= POLLIN;
@@ -1441,9 +1345,6 @@ void interrupt_setup()
 	IDT[0x20].offset_1 = ((uint32_t) &handle_timer) & 0xFFFF;
 	IDT[0x20].offset_2 = ((uint32_t) &handle_timer) >> 16;
 
-	IDT[0x21].offset_1 = ((uint32_t) &handle_keyboard) & 0xFFFF;
-	IDT[0x21].offset_2 = ((uint32_t) &handle_keyboard) >> 16;
-
 	IDT[0x80].offset_1 = ((uint32_t) &handle_int_80) & 0xFFFF;
 	IDT[0x80].offset_2 = ((uint32_t) &handle_int_80) >> 16;
 	IDT[0x80].type_attr = 0xEE; // allow all rings to call in
@@ -1569,12 +1470,6 @@ void enable_sse() {
 void setup_fds() 
 {
 	FDS[0].type = BOGFD_TERMIN;
-	FDS[0].buffer = INPUTBUFFER;
-	FDS[0].status[0] = 0;
-	FDS[0].status[1] = 0;
-	FDS[0].status[2] = sizeof(INPUTBUFFER) -1; // hope this is a power of two
-	
-	INPUT_FD = 0;
 	FDS[1].type = BOGFD_TERMOUT;
 	FDS[2].type = BOGFD_TERMOUT;
 	next_fd = 3;
