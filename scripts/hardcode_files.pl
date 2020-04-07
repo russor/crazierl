@@ -51,14 +51,15 @@ if (!$bindir) {
 }
 
 $OTP_DIR .= '/lib/erlang';
-my @LDD = `/usr/bin/ldd $OTP_DIR/$bindir/beam`;
+my $BEAM = "$OTP_DIR/$bindir/beam";
+my @LDD = `/usr/bin/ldd $BEAM`;
 foreach my $l (@LDD) {
 	if ($l =~ m@ => (.*) \(@) {
 		push @LOCAL_FILES, $1;
 	}
 }
 
-$FILES{'beam'} = slurp ("$OTP_DIR/$bindir/beam");
+$FILES{'beam'} = slurp ("$BEAM");
 $FILES{'bin/start.boot'} = slurp("$OTP_DIR/bin/start.boot");
 
 my $start_script = "myfun() -> \n";
