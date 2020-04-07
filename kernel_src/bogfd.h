@@ -1,12 +1,4 @@
-#define BOGFD_MAX_KERNEL 32 // need 4 for startup, and some number for irqs
-#define BOGFD_MAX_USER 1024
-
-#ifdef CRAZIERL_USER
-#define BOGFD_MAX BOGFD_MAX_USER
-#endif
-#ifdef CRAZIERL_KERNEL
-#define BOGFD_MAX BOGFD_MAX_KERNEL
-#endif
+#define BOGFD_MAX 1024
 
 #define BOGFD_CLOSED 0
 #define BOGFD_TERMIN 1

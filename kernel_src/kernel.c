@@ -20,8 +20,6 @@ extern void __executable_start, __etext, __data_start, __edata;
 char **environ = {NULL};
 char *__progname = "crazierlkernel";
 
-char FS_TRANSFERRED = 0;
-
 #define PORT_PIC1 0x20
 #define PORT_COM1 0x3f8   /* COM1 */
 
@@ -75,7 +73,7 @@ typedef uint32_t u_int32_t;
 #include <machine/sysarch.h>
 #undef _KERNEL
 
-struct BogusFD KERN_FDS[BOGFD_MAX];
+struct BogusFD FDS[BOGFD_MAX];
 size_t next_fd;
 
 uint8_t WANT_NMI = 0;
@@ -349,8 +347,8 @@ void halt(char * message) {
 		term_print(message);
 	}
 	for (int i = 2; i >= 0; --i) {
-		if (KERN_FDS[i].type == BOGFD_PIPE) {
-			term_printn(KERN_FDS[i].pipe->pb->data, KERN_FDS[i].pipe->pb->length);
+		if (FDS[i].type == BOGFD_PIPE) {
+			term_printn(FDS[i].pipe->pb->data, FDS[i].pipe->pb->length);
 		}
 	}
 	asm volatile ( "hlt" :: );
@@ -444,9 +442,9 @@ void handle_pic1_irq(struct interrupt_frame *frame, uint32_t irq)
 	outb(PORT_PIC1, PIC_INTERRUPT_ACK);
 	int found = 0;
 	for (int i = 0; i < BOGFD_MAX; ++i) {
-		if (KERN_FDS[i].type == BOGFD_PIC1 && KERN_FDS[i].status[0] == irq) {
+		if (FDS[i].type == BOGFD_PIC1 && FDS[i].status[0] == irq) {
 			++found;
-			KERN_FDS[i].status[1] = 1;
+			FDS[i].status[1] = 1;
 		}
 	}
 	if (!found && !UNCLAIMED_PIC_INT) {
@@ -542,7 +540,7 @@ void read_keyboard (struct BogusFD * fd) {
 __attribute__ ((interrupt))
 void handle_keyboard(struct interrupt_frame *frame)
 {
-	struct BogusFD *fd = &KERN_FDS[INPUT_FD];
+	struct BogusFD *fd = &FDS[INPUT_FD];
 	if (fd->type == BOGFD_TERMIN) {
 		read_keyboard(fd);
 	}
@@ -557,15 +555,19 @@ ssize_t write(int fd, const void * buf, size_t nbyte) {
 	if (fd < 0 || fd >= BOGFD_MAX) {
 		return -EBADF;
 	}
-	if (KERN_FDS[fd].type == BOGFD_TERMOUT || KERN_FDS[fd].type == BOGFD_TERMIN) {
+	if (FDS[fd].type == BOGFD_TERMOUT || FDS[fd].type == BOGFD_TERMIN) {
 		term_printn(buf, nbyte);
 		return nbyte;
-	} else if (KERN_FDS[fd].type == BOGFD_PIPE) {
-		int written = min(nbyte, BOGFD_PB_LEN - KERN_FDS[fd].pipe->pb->length);
-		//ERROR_PRINTF("write (%d, \"%s\", %d) = %d\n", fd, buf, nbyte, written);
-		memcpy(&KERN_FDS[fd].pipe->pb->data[KERN_FDS[fd].pipe->pb->length], buf, written);
-		KERN_FDS[fd].pipe->pb->length += written;
-		return written;
+	} else if (FDS[fd].type == BOGFD_PIPE) {
+		if (FDS[fd].pipe == NULL) {
+			return -EPIPE;
+		} else {
+			int written = min(nbyte, BOGFD_PB_LEN - FDS[fd].pipe->pb->length);
+			//ERROR_PRINTF("write (%d, \"%s\", %d) = %d\n", fd, buf, nbyte, written);
+			memcpy(&FDS[fd].pipe->pb->data[FDS[fd].pipe->pb->length], buf, written);
+			FDS[fd].pipe->pb->length += written;
+			return written;
+		} 
 	} else {
 		ERROR_PRINTF("write (%d, %08x, %d) = EBADF\n", fd, buf, nbyte);
 		return -EBADF;
@@ -578,14 +580,31 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 	switch(call) {
 		case SYS_read: {
 			struct read_args *a = argp;
-			if (a->fd < 0 || a->fd > BOGFD_MAX) {
+			if (a->fd < 0 || a->fd >= BOGFD_MAX) {
 				ERROR_PRINTF("read (%d, %08x, %d) = EBADF\n", a->fd, a->buf, a->nbyte);
 				SYSCALL_FAILURE(EBADF);
 			}
-			int read = 0;
-			struct BogusFD *fd = &KERN_FDS[a->fd];
-			uint8_t * buffer = a->buf;
-			if (fd->type == BOGFD_TERMIN) {
+			size_t read = 0;
+			struct BogusFD *fd = &FDS[a->fd];
+			if (fd->type == BOGFD_PIPE) {
+				if (fd->pb->length) {
+					read = min(a->nbyte, fd->pb->length);
+					memcpy(a->buf, fd->pb->data, read);
+					fd->pb->length -= read;
+					if (fd->pb->length) {
+						memmove(&fd->pb->data, &fd->pb->data[read], fd->pb->length);
+					}
+				} else if (fd->pipe == NULL) {
+					SYSCALL_SUCCESS(0);
+				}
+			} else if (fd->type == BOGFD_FILE) {
+				DEBUG_PRINTF("read (%d, %p, %d)\n", a->fd, a->buf, a->nbyte);
+				read = min(a->nbyte, fd->file->end - fd->pos);
+				memcpy(a->buf, fd->pos, read);
+				fd->pos += read;
+				SYSCALL_SUCCESS(read);
+			} else if (fd->type == BOGFD_TERMIN) {
+				uint8_t * buffer = a->buf;
 				while (read < a->nbyte) {
 					if (fd->status[0] == fd->status[1]) {
 						if (fd->status[3] & 0x03) {
@@ -603,17 +622,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 						fd->status[1] &= fd->status[2];
 					}
 				}
-			} else if (fd->type == BOGFD_PIPE) {
-				if (fd->pb->length) {
-					read = min(a->nbyte, fd->pb->length);
-					memcpy(a->buf, fd->pb->data, read);
-					fd->pb->length -= read;
-					if (fd->pb->length) {
-						memmove(&fd->pb->data, &fd->pb->data[read], fd->pb->length);
-					}
-				}
 			} else {
-				ERROR_PRINTF("read (%d, %08x, %d) = EBADF\n", a->fd, a->buf, a->nbyte);
 				SYSCALL_FAILURE(EBADF);
 			}
 			if (read) {
@@ -621,6 +630,25 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			} else {
 				SYSCALL_FAILURE(EAGAIN);
 			}
+		}
+		case SYS_pread: {
+			struct pread_args *a = argp;
+			if (a->fd < 0 || a->fd >= BOGFD_MAX) {
+				ERROR_PRINTF("pread (...) = EBADF\n");
+				SYSCALL_FAILURE(EBADF);
+			}
+			if (FDS[a->fd].type == BOGFD_FILE) {
+				DEBUG_PRINTF("pread (%d, %p, %d)\n", a->fd, a->buf, a->nbyte);
+				size_t read = 0;
+				struct BogusFD *fd = &FDS[a->fd];
+				if (a->offset > 0 && a->offset < fd->file->size) {
+					read = min(a->nbyte, fd->file->size - a->offset);
+					memcpy(a->buf, fd->file->start + a->offset, read);
+				}
+				SYSCALL_SUCCESS(read);
+			}
+			ERROR_PRINTF("pread (%d, ...) = EBADF\n", a->fd);
+			SYSCALL_FAILURE(EBADF);
 		}
 		case SYS_sendto: {
 			struct sendto_args *a = argp;
@@ -675,7 +703,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			argp += sizeof(argp);
 		case SYS_open: {
 			struct open_args *a = argp;
-			while (next_fd < BOGFD_MAX && KERN_FDS[next_fd].type != BOGFD_CLOSED) {
+			while (next_fd < BOGFD_MAX && FDS[next_fd].type != BOGFD_CLOSED) {
 				++next_fd;
 			}
 			if (next_fd >= BOGFD_MAX) {
@@ -683,10 +711,6 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				SYSCALL_FAILURE(EMFILE);
 			}
 
-			if (FS_TRANSFERRED) {
-				ERROR_PRINTF("open (%s, %08x) after FS transferred\n", a->path, a->flags);
-				break;
-			}
 			char path[256];
 			strlcpy (path, a->path, sizeof(path));
 			if (strcmp(path, ".") == 0) {
@@ -694,63 +718,80 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			}
 
 			struct hardcoded_file * file;
-			file = find_file(path);
-			if (file != NULL) {
-				KERN_FDS[next_fd].type = BOGFD_FILE;
-				KERN_FDS[next_fd].file = file;
-				KERN_FDS[next_fd].pos = file->start;
+			if (a->flags & O_DIRECTORY) {
+				size_t len = strlen(path);
+				file = find_dir(path, len, 0);
+				if (file) {
+					FDS[next_fd].type = BOGFD_DIR;
+					FDS[next_fd].file = file;
+					FDS[next_fd].namelen = len;
+					DEBUG_PRINTF("open (%s, ...) = %d\n", path, next_fd);
+					SYSCALL_SUCCESS(next_fd++);
+				}
+			} else {
+				file = find_file(path);
+				if (file != NULL) {
+					FDS[next_fd].type = BOGFD_FILE;
+					FDS[next_fd].file = file;
+					FDS[next_fd].pos = file->start;
+					DEBUG_PRINTF("open (%s, ...) = %d\n", path, next_fd);
+					SYSCALL_SUCCESS(next_fd++);
+				}
+			}
+			if (strcmp("/dev/null", path) == 0) {
+				FDS[next_fd].type = BOGFD_NULL;
 				DEBUG_PRINTF("open (%s, ...) = %d\n", path, next_fd);
 				SYSCALL_SUCCESS(next_fd++);
 			}
-			ERROR_PRINTF ("open (%s, %08x) = ENOENT\n", path, a->flags);
+			DEBUG_PRINTF ("open (%s, %08x) = ENOENT\n", path, a->flags);
 			SYSCALL_FAILURE(ENOENT);
 		}
 		case SYS_close: {
 			struct close_args *a = argp;
-			if (FS_TRANSFERRED) {
-				ERROR_PRINTF("close (%d) after FS transferred\n", a->fd);
-				break;
-			}
-			if (KERN_FDS[a->fd].type == BOGFD_PIPE) {
-				if (KERN_FDS[a->fd].pipe == &KERN_FDS[0]) {
+			if (FDS[a->fd].type == BOGFD_PIPE) {
+				if (FDS[a->fd].pipe == &FDS[0]) {
 					find_cursor();
 					term_print("unpiping STDIN\n");
-					term_printn(KERN_FDS[a->fd].pb->data, KERN_FDS[a->fd].pb->length);
+					term_printn(FDS[a->fd].pb->data, FDS[a->fd].pb->length);
 
-					kern_munmap(PROT_KERNEL, (uintptr_t) KERN_FDS[a->fd].pb, PAGE_SIZE);
-					KERN_FDS[0].type = BOGFD_TERMIN;
-					KERN_FDS[0].buffer = INPUTBUFFER;
-					KERN_FDS[0].status[0] = 0;
-					KERN_FDS[0].status[1] = 0;
-					KERN_FDS[0].status[2] = sizeof(INPUTBUFFER) -1; // hope this is a power of two
-				} else if (KERN_FDS[a->fd].pipe == &KERN_FDS[1]) {
+					kern_munmap(PROT_KERNEL, (uintptr_t) FDS[a->fd].pb, PAGE_SIZE);
+					FDS[0].type = BOGFD_TERMIN;
+					FDS[0].buffer = INPUTBUFFER;
+					FDS[0].status[0] = 0;
+					FDS[0].status[1] = 0;
+					FDS[0].status[2] = sizeof(INPUTBUFFER) -1; // hope this is a power of two
+				} else if (FDS[a->fd].pipe == &FDS[1]) {
 					find_cursor();
 					term_print("unpiping STDOUT\n");
-					term_printn(KERN_FDS[a->fd].pb->data, KERN_FDS[a->fd].pb->length);
+					term_printn(FDS[a->fd].pb->data, FDS[a->fd].pb->length);
 
-					kern_munmap(PROT_KERNEL, (uintptr_t) KERN_FDS[a->fd].pb, PAGE_SIZE);
-					KERN_FDS[1].type = BOGFD_TERMOUT;
-					KERN_FDS[1].file = NULL;
-					KERN_FDS[1].buffer = NULL;
-				} else if (KERN_FDS[a->fd].pipe == &KERN_FDS[2]) {
+					kern_munmap(PROT_KERNEL, (uintptr_t) FDS[a->fd].pb, PAGE_SIZE);
+					FDS[1].type = BOGFD_TERMOUT;
+					FDS[1].file = NULL;
+					FDS[1].buffer = NULL;
+				} else if (FDS[a->fd].pipe == &FDS[2]) {
 					find_cursor();
 					term_print("unpiping STDERR\n");
-					term_printn(KERN_FDS[a->fd].pb->data, KERN_FDS[a->fd].pb->length);
+					term_printn(FDS[a->fd].pb->data, FDS[a->fd].pb->length);
 
-					kern_munmap(PROT_KERNEL, (uintptr_t) KERN_FDS[a->fd].pb, PAGE_SIZE);
-					KERN_FDS[2].type = BOGFD_TERMOUT;
-					KERN_FDS[2].file = NULL;
-					KERN_FDS[2].buffer = NULL;
+					kern_munmap(PROT_KERNEL, (uintptr_t) FDS[a->fd].pb, PAGE_SIZE);
+					FDS[2].type = BOGFD_TERMOUT;
+					FDS[2].file = NULL;
+					FDS[2].buffer = NULL;
 				} else {
-					halt("pipe close and pipe isn't STDIN/STDOUT/STDERR");
+					if (FDS[a->fd].pipe == NULL) {
+						kern_munmap(PROT_KERNEL, (uintptr_t) FDS[a->fd].pb & ~(PAGE_SIZE -1), PAGE_SIZE);
+					} else {
+						FDS[a->fd].pipe->pipe = NULL;
+					}
 				}
 			}
 
-			if (KERN_FDS[a->fd].type != BOGFD_CLOSED) {
+			if (FDS[a->fd].type != BOGFD_CLOSED) {
 				DEBUG_PRINTF("close (%d)\n", a->fd);
-				KERN_FDS[a->fd].type = BOGFD_CLOSED;
-				KERN_FDS[a->fd].file = NULL;
-				KERN_FDS[a->fd].buffer = NULL;
+				FDS[a->fd].type = BOGFD_CLOSED;
+				FDS[a->fd].file = NULL;
+				FDS[a->fd].buffer = NULL;
 				if (a->fd < next_fd) {
 					next_fd = a->fd;
 				}
@@ -768,7 +809,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				SYSCALL_FAILURE(EBADF);
 			}
 			int read = 0;
-			struct BogusFD *fd = &KERN_FDS[a->s];
+			struct BogusFD *fd = &FDS[a->s];
 			if (fd->type == BOGFD_PIC1) {
 				if (fd->status[1]) {
 					a->buf[0] = '!';
@@ -783,6 +824,8 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					if (fd->pb->length) {
 						memmove(fd->pb->data, &fd->pb->data[read], fd->pb->length);
 					}
+				} else if (fd->pipe == NULL) {
+					SYSCALL_SUCCESS(0);
 				}
 			} else {
 				ERROR_PRINTF("recvfrom (%d, ...) = ENOTSOCK\n", a->s);
@@ -797,6 +840,42 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				SYSCALL_FAILURE(EAGAIN);
 			}
 		}
+		case SYS_ioctl: {
+			struct ioctl_args *a = argp;
+			DEBUG_PRINTF("ioctl (%d, %08lx, ...)\n", a->fd, a->com);
+			int ret = -1;
+			switch (a->com) {
+				case TIOCGETA: {
+					if (a->fd >= BOGFD_MAX || (FDS[a->fd].type != BOGFD_TERMIN && FDS[a->fd].type != BOGFD_TERMOUT )) {
+						SYSCALL_FAILURE(ENOTTY);
+					}
+					struct termios *t = (struct termios *)a->data;
+					t->c_iflag = 11010;
+					t->c_oflag = 3;
+					t->c_cflag = 19200;
+					t->c_lflag = 1483;
+					//t->c_cc = "\004\377\377\177\027\025\022\b\003\034\032\031\021\023\026\017\001\000\024\377";
+					t->c_ispeed = 38400;
+					t->c_ospeed = 38400;
+					SYSCALL_SUCCESS(0);
+				}
+				case TIOCSETA: {
+					SYSCALL_SUCCESS(0);
+				}
+				case TIOCGWINSZ: {
+					if (a->fd >= BOGFD_MAX || (FDS[a->fd].type != BOGFD_TERMIN && FDS[a->fd].type != BOGFD_TERMOUT )) {
+						SYSCALL_FAILURE(ENOTTY);
+					}
+					struct winsize *w = (struct winsize *)a->data;
+					w->ws_row = 25;
+					w->ws_col = 80;
+					ret = 0;
+					SYSCALL_SUCCESS(0);
+				}
+			}
+			DEBUG_PRINTF("fd %d, parm_len %ld, cmd %ld, group %c\n", a->fd, IOCPARM_LEN(a->com), a->com & 0xff, (char) IOCGROUP(a->com));
+			SYSCALL_FAILURE(ENOTTY);
+		}
 		case SYS_munmap: {
 			struct munmap_args *a = argp;
 			DEBUG_PRINTF("munmap (%08x, %d)\n",
@@ -808,14 +887,14 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			struct socket_args *a = argp;
 			DEBUG_PRINTF("socket (%d, %d, %d)\n", a->domain, a->type, a->protocol);
 			if (a->domain == PF_UNIX) {
-				while (next_fd < BOGFD_MAX && KERN_FDS[next_fd].type != BOGFD_CLOSED) {
+				while (next_fd < BOGFD_MAX && FDS[next_fd].type != BOGFD_CLOSED) {
 					++next_fd;
 				}
 				if (next_fd >= BOGFD_MAX) {
 					ERROR_PRINTF("socket (..) = EMFILE\n");
 					SYSCALL_FAILURE(EMFILE);
 				}
-				KERN_FDS[next_fd].type = BOGFD_UNIX;
+				FDS[next_fd].type = BOGFD_UNIX;
 				SYSCALL_SUCCESS(next_fd++);
 			}
 			SYSCALL_FAILURE(EACCES);
@@ -826,7 +905,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				ERROR_PRINTF("bind (%d, %08x, %d) = EBADF\n", a->s, a->name, a->namelen);
 				SYSCALL_FAILURE(EBADF);
 			}
-			if (KERN_FDS[a->s].type == BOGFD_UNIX) {
+			if (FDS[a->s].type == BOGFD_UNIX) {
 				if (strncmp("/kern/pic1/", ((const struct sockaddr *)a->name)->sa_data, 11) == 0) {
 					int irq = ((const struct sockaddr *)a->name)->sa_data[11] - '0';
 					if (irq >= 0 && irq < 8) {
@@ -835,9 +914,9 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 						IDT[0x20 + irq].offset_1 = ((uint32_t)&pic1_int + (irq * 5)) & 0xFFFF;
 						IDT[0x20 + irq].offset_2 = ((uint32_t)&pic1_int + (irq * 5)) >> 16;
 
-						KERN_FDS[a->s].type = BOGFD_PIC1;
-						KERN_FDS[a->s].status[0] = irq;
-						KERN_FDS[a->s].status[1] = 0;
+						FDS[a->s].type = BOGFD_PIC1;
+						FDS[a->s].status[0] = irq;
+						FDS[a->s].status[1] = 0;
 						UNCLAIMED_PIC_INT = 0;
 						SYSCALL_SUCCESS(0);
 					}
@@ -845,18 +924,18 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					int fd = ((const struct sockaddr *)a->name)->sa_data[9] - '0';
 					if (fd >= 0 && fd <= 2) {
 						ERROR_PRINTF("fd %d requested by %d\n", fd, a->s);
-						if (KERN_FDS[fd].type == BOGFD_TERMIN || KERN_FDS[fd].type == BOGFD_TERMOUT) {
-							KERN_FDS[a->s].type = BOGFD_PIPE;
-							KERN_FDS[a->s].pipe = &KERN_FDS[fd];
-							if (!kern_mmap((uintptr_t*)&KERN_FDS[a->s].pb, NULL, PAGE_SIZE, PROT_READ | PROT_WRITE | PROT_KERNEL, 0)) {
+						if (FDS[fd].type == BOGFD_TERMIN || FDS[fd].type == BOGFD_TERMOUT) {
+							FDS[a->s].type = BOGFD_PIPE;
+							FDS[a->s].pipe = &FDS[fd];
+							if (!kern_mmap((uintptr_t*)&FDS[a->s].pb, NULL, PAGE_SIZE, PROT_READ | PROT_WRITE | PROT_KERNEL, 0)) {
 								halt ("couldn't allocate buffer for /kern/fd/");
 							}
-							KERN_FDS[a->s].pb->length = 0;
+							FDS[a->s].pb->length = 0;
 							
-							KERN_FDS[fd].type = BOGFD_PIPE;
-							KERN_FDS[fd].pipe = &KERN_FDS[a->s];
-							KERN_FDS[fd].pb = (struct pipe_buffer *)((uintptr_t)KERN_FDS[a->s].pb + (PAGE_SIZE >> 1));
-							KERN_FDS[a->s].pb->length = 0;
+							FDS[fd].type = BOGFD_PIPE;
+							FDS[fd].pipe = &FDS[a->s];
+							FDS[fd].pb = (struct pipe_buffer *)((uintptr_t)FDS[a->s].pb + (PAGE_SIZE >> 1));
+							FDS[a->s].pb->length = 0;
 
 							SYSCALL_SUCCESS(0);
 						}
@@ -906,8 +985,8 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					a->rlp->rlim_max = USER_STACK_SIZE;
 					break;
 				case RLIMIT_NOFILE:
-					a->rlp->rlim_cur = BOGFD_MAX_USER;
-					a->rlp->rlim_max = BOGFD_MAX_USER;
+					a->rlp->rlim_cur = BOGFD_MAX;
+					a->rlp->rlim_max = BOGFD_MAX;
 					break;
 				default:
 					a->rlp->rlim_cur = RLIM_INFINITY;
@@ -1057,26 +1136,18 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 		case SYS_mmap: {
 			struct mmap_args *a = argp;
 			uintptr_t ret_addr;
-			if (unlikely(a->fd == -2)) {
-				ret_addr = transfer_files_to_userland();
-				//FS_TRANSFERRED = 1;
-				SYSCALL_SUCCESS(ret_addr);
-			} else if (kern_mmap(&ret_addr, a->addr, a->len, a->prot, a->flags)) {
-				if (a->fd != -1 && a->fd < BOGFD_MAX && KERN_FDS[a->fd].type == BOGFD_FILE) {
-					if (FS_TRANSFERRED) {
-						ERROR_PRINTF("mmap on fd %d after FS transferred\n", a->fd);
-						break;
-					}
+			if (kern_mmap(&ret_addr, a->addr, a->len, a->prot, a->flags)) {
+				if (a->fd != -1 && a->fd < BOGFD_MAX && FDS[a->fd].type == BOGFD_FILE) {
 					if (a->pos == 0 && a->addr != NULL) { // && a->len > PAGE_SIZE) {
-						ERROR_PRINTF("add-symbol-file %s -o 0x%08x\n", KERN_FDS[a->fd].file->name, a->addr);
+						ERROR_PRINTF("add-symbol-file %s -o 0x%08x\n", FDS[a->fd].file->name, a->addr);
 					}
 
-					if (a->pos + a->len > KERN_FDS[a->fd].file->size) {
-						size_t avail = KERN_FDS[a->fd].file->size - a->pos;
-						memcpy((void *)ret_addr, KERN_FDS[a->fd].file->start + a->pos, avail);
+					if (a->pos + a->len > FDS[a->fd].file->size) {
+						size_t avail = FDS[a->fd].file->size - a->pos;
+						memcpy((void *)ret_addr, FDS[a->fd].file->start + a->pos, avail);
 						explicit_bzero((void*)(ret_addr + avail), a->len - avail);
 					} else {
-						memcpy((void *)ret_addr, KERN_FDS[a->fd].file->start + a->pos, a->len);
+						memcpy((void *)ret_addr, FDS[a->fd].file->start + a->pos, a->len);
 					}
 				} else if (a->prot != PROT_NONE && (a->prot & PROT_FORCE) == 0) {
 					explicit_bzero((void*)ret_addr, a->len);
@@ -1085,6 +1156,47 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			} else {
 				SYSCALL_FAILURE(ret_addr);
 			}
+		}
+		case SYS_pipe2: {
+			struct pipe2_args *a = argp;
+			int pipe1, pipe2;
+			while (next_fd < BOGFD_MAX && FDS[next_fd].type != BOGFD_CLOSED) {
+				++next_fd;
+			}
+			if (next_fd >= BOGFD_MAX) {
+				ERROR_PRINTF("pipe2 (...) = EMFILE (1)\n");
+				SYSCALL_FAILURE(EMFILE);
+			}
+			pipe1 = next_fd;
+			++next_fd;
+			while (next_fd < BOGFD_MAX && FDS[next_fd].type != BOGFD_CLOSED) {
+				++next_fd;
+			}
+			if (next_fd >= BOGFD_MAX) {
+				next_fd = pipe1;
+				ERROR_PRINTF("pipe2 (...) = EMFILE (2)\n");
+				SYSCALL_FAILURE(EMFILE);
+			}
+			pipe2 = next_fd;
+			++next_fd;
+
+			DEBUG_PRINTF("pipe2 (%p, %08x)\n", a->fildes, a->flags);
+			if (!kern_mmap((uintptr_t*)&FDS[pipe1].pb, NULL, PAGE_SIZE, PROT_READ | PROT_WRITE | PROT_KERNEL, 0)) {
+				next_fd = pipe1;
+				ERROR_PRINTF("pipe2 (...) = ENOMEM\n");
+				SYSCALL_FAILURE(ENOMEM);
+			}
+			FDS[pipe1].type = BOGFD_PIPE;
+			FDS[pipe2].type = BOGFD_PIPE;
+			FDS[pipe1].pipe = &(FDS[next_fd + 1]);
+			FDS[pipe2].pipe = &(FDS[next_fd]);
+			FDS[pipe1].pb->length = 0;
+			FDS[pipe2].pb = (struct pipe_buffer *)((uintptr_t)FDS[pipe1].pb + (PAGE_SIZE >> 1));
+			FDS[pipe2].pb->length = 0;
+			a->fildes[0] = pipe1;
+			a->fildes[1] = pipe2;
+			ERROR_PRINTF("pipe2 -> %d <-> %d\n", pipe1, pipe2);
+			SYSCALL_SUCCESS(0);
 		}
 		case SYS_ppoll: {
 			struct ppoll_args *a = argp;
@@ -1095,8 +1207,13 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			do {
 				for (int i = 0; i < a->nfds; ++i) {
 					if (a->fds[i].fd < 0 || a->fds[i].fd >= BOGFD_MAX) { continue; } // no EBADF?
-					struct BogusFD *fd = &KERN_FDS[a->fds[i].fd];
+					struct BogusFD *fd = &FDS[a->fds[i].fd];
 					a->fds[i].revents = 0;
+					if (a->fds[i].events && fd->type == BOGFD_PIPE && fd->pipe == NULL) {
+						a->fds[i].revents = a->fds[i].events;
+						++changedfds;
+						continue;
+					}
 					if ((a->fds[i].events & POLLIN && fd->type == BOGFD_TERMIN && fd->status[0] != fd->status[1]) ||
 					    (a->fds[i].events & POLLIN && fd->type == BOGFD_PIC1 && fd->status[1] != 0) ||
 					    (a->fds[i].events & POLLIN && fd->type == BOGFD_PIPE && fd->pb->length != 0)
@@ -1129,17 +1246,17 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 		}
 		case SYS_fstat: {
 			struct fstat_args *a = argp;
-			if (FS_TRANSFERRED) {
-				ERROR_PRINTF("fstat on fd %d after FS transferred\n", a->fd);
-				break;
+			if (a->fd < 0 || a->fd >= BOGFD_MAX) {
+				ERROR_PRINTF("fstat () = EBADF\n");
+				SYSCALL_FAILURE(EBADF);
 			}
-			if (a->fd < BOGFD_MAX && (KERN_FDS[a->fd].type == BOGFD_TERMIN || KERN_FDS[a->fd].type == BOGFD_TERMOUT)) {
+			if (FDS[a->fd].type == BOGFD_TERMIN || FDS[a->fd].type == BOGFD_TERMOUT) {
 				explicit_bzero(a->sb, sizeof(*a->sb));
 				a->sb->st_mode = S_IWUSR | S_IRUSR | S_IFCHR;
 				SYSCALL_SUCCESS(0);
-			} else if (a->fd < BOGFD_MAX && KERN_FDS[a->fd].type == BOGFD_FILE) {
+			} else if (FDS[a->fd].type == BOGFD_FILE) {
 				explicit_bzero(a->sb, sizeof(*a->sb));
-				struct BogusFD * fd = &KERN_FDS[a->fd];
+				struct BogusFD * fd = &FDS[a->fd];
 				a->sb->st_dev = BOGFD_FILE;
 				a->sb->st_ino = (ino_t) fd->file;
 				a->sb->st_nlink = 1;
@@ -1152,17 +1269,87 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 		}
 		case SYS_fstatfs: {
 			struct fstatfs_args *a = argp;
-			if (FS_TRANSFERRED) {
-				ERROR_PRINTF("fstatfs on fd %d after FS transferred\n", a->fd);
-				break;
+			if (a->fd < 0 || a->fd >= BOGFD_MAX) {
+				ERROR_PRINTF("fstatfs () = EBADF\n");
+				SYSCALL_FAILURE(EBADF);
 			}
-			if (a->fd < BOGFD_MAX && (KERN_FDS[a->fd].type == BOGFD_DIR || KERN_FDS[a->fd].type == BOGFD_FILE)) {
+			if ((FDS[a->fd].type == BOGFD_DIR || FDS[a->fd].type == BOGFD_FILE)) {
 				bzero(a->buf, sizeof(struct statfs));
 				a->buf->f_version = STATFS_VERSION;
 				strlcpy(a->buf->f_fstypename, "BogusFS", sizeof(a->buf->f_fstypename));
 				SYSCALL_SUCCESS(0);
 			}
 			ERROR_PRINTF("fstatfs (%d)\n", a->fd);
+			SYSCALL_FAILURE(EBADF);
+		}
+		case SYS_fstatat: {
+			struct fstatat_args *a = argp;
+			struct hardcoded_file * file;
+			file = find_file(a->path);
+			if (file != NULL) {
+				explicit_bzero(a->buf, sizeof(*a->buf));
+				a->buf->st_dev = BOGFD_FILE;
+				a->buf->st_ino = (ino_t) file;
+				a->buf->st_nlink = 1;
+				a->buf->st_size = file->size;
+				a->buf->st_mode = S_IRUSR | S_IFREG;
+				SYSCALL_SUCCESS(0);
+			}
+			file = find_dir(a->path, strlen(a->path), NULL);
+			if (file != NULL) {
+				explicit_bzero(a->buf, sizeof(*a->buf));
+				a->buf->st_dev = BOGFD_DIR;
+				a->buf->st_ino = (ino_t) file;
+				a->buf->st_nlink = 1;
+				a->buf->st_size = file->size;
+				a->buf->st_mode = S_IRUSR | S_IFDIR;
+				SYSCALL_SUCCESS(0);
+			}
+			DEBUG_PRINTF("stat (%s, %p) = ENOENT \n", a->path, a->buf);
+			SYSCALL_FAILURE(ENOENT);
+		}
+		case SYS_getdirentries: {
+			struct getdirentries_args *a = argp;
+			if (a->fd < 0 || a->fd >= BOGFD_MAX) {
+				ERROR_PRINTF("getdirentries () = EBADF\n");
+				SYSCALL_FAILURE(EBADF);
+			}
+			if (FDS[a->fd].type == BOGFD_DIR) {
+				struct dirent *b = (struct dirent*) a->buf;
+				if (a->basep != NULL) {
+					*a->basep = (off_t) FDS[a->fd].file;
+				}
+				if (FDS[a->fd].file == NULL) {
+					SYSCALL_SUCCESS(0);
+				}
+				bzero(b, sizeof(*b));
+				b->d_fileno = (ino_t) FDS[a->fd].file;
+				b->d_reclen = sizeof(*b);
+				char * start = FDS[a->fd].file->name + FDS[a->fd].namelen + 1;
+				char * nextslash = strchr(start, '/');
+
+				if (nextslash != NULL) {
+					b->d_type = DT_DIR;
+					b->d_namlen = nextslash - start;
+					strlcpy(b->d_name, start, b->d_namlen + 1);
+					struct hardcoded_file * file = FDS[a->fd].file;
+					while (FDS[a->fd].file != NULL && strncmp(
+							FDS[a->fd].file->name + FDS[a->fd].namelen + 1,
+							file->name + FDS[a->fd].namelen + 1,
+							b->d_namlen + 1) == 0) {
+						file = FDS[a->fd].file;
+						FDS[a->fd].file = find_dir(file->name, FDS[a->fd].namelen, file + 1);
+					}
+				} else {
+					b->d_type = DT_REG;
+					strlcpy(b->d_name, start, sizeof(b->d_name));
+					b->d_namlen = strlen(b->d_name);
+					FDS[a->fd].file = find_dir(FDS[a->fd].file->name, FDS[a->fd].namelen, FDS[a->fd].file + 1);
+				}
+				b->d_off = (off_t) FDS[a->fd].file;
+				SYSCALL_SUCCESS(b->d_reclen);
+			}
+			ERROR_PRINTF("getdirentries (%d)\n", a->fd);
 			SYSCALL_FAILURE(EBADF);
 		}
 	}
@@ -1381,18 +1568,18 @@ void enable_sse() {
 
 void setup_fds() 
 {
-	KERN_FDS[0].type = BOGFD_TERMIN;
-	KERN_FDS[0].buffer = INPUTBUFFER;
-	KERN_FDS[0].status[0] = 0;
-	KERN_FDS[0].status[1] = 0;
-	KERN_FDS[0].status[2] = sizeof(INPUTBUFFER) -1; // hope this is a power of two
+	FDS[0].type = BOGFD_TERMIN;
+	FDS[0].buffer = INPUTBUFFER;
+	FDS[0].status[0] = 0;
+	FDS[0].status[1] = 0;
+	FDS[0].status[2] = sizeof(INPUTBUFFER) -1; // hope this is a power of two
 	
 	INPUT_FD = 0;
-	KERN_FDS[1].type = BOGFD_TERMOUT;
-	KERN_FDS[2].type = BOGFD_TERMOUT;
+	FDS[1].type = BOGFD_TERMOUT;
+	FDS[2].type = BOGFD_TERMOUT;
 	next_fd = 3;
 	for (int i = next_fd; i < BOGFD_MAX; ++i) {
-		KERN_FDS[i].type = BOGFD_CLOSED;
+		FDS[i].type = BOGFD_CLOSED;
 	}
 }
 
@@ -1402,9 +1589,9 @@ void setup_entrypoint()
 	if (!file) {
 		ERROR_PRINTF("couldn't find /beam\n");
 	}
-	KERN_FDS[next_fd].type = BOGFD_FILE;
-	KERN_FDS[next_fd].file = file;
-	KERN_FDS[next_fd].pos = file->start;
+	FDS[next_fd].type = BOGFD_FILE;
+	FDS[next_fd].file = file;
+	FDS[next_fd].pos = file->start;
 	++next_fd;
 	if (!kern_mmap(&user_stack, NULL, USER_STACK_SIZE, PROT_WRITE | PROT_READ, MAP_STACK | MAP_ANON)) {
 		halt("couldn't get map for user stack\n");

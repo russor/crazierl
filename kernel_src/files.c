@@ -17,26 +17,6 @@ uint32_t unpack_network(uintptr_t start) {
 		| (*(uint8_t*)(start + 1) << 16) | (*(uint8_t*)(start) << 24);
 }
 
-#ifdef CRAZIERL_USER
-void init_files_from_userland() {
-	hardcoded_files = mmap(0, 0, PROT_READ, 0, -2, 0);
-}
-#endif
-
-#ifdef CRAZIERL_KERNEL
-uintptr_t transfer_files_to_userland() {
-	for (int i = 0; i < hardcoded_files->count; ++i) {
-		//kern_munmap(PROT_KERNEL, (uintptr_t)hardcoded_files->files[i].start, hardcoded_files->files[i].size);
-		uintptr_t scratch;
-		kern_mmap(&scratch, hardcoded_files->files[i].start, hardcoded_files->files[i].size, PROT_READ, 0);
-	}
-	uintptr_t ret;
-	kern_mmap(&ret, hardcoded_files, hardcoded_files->size, PROT_READ, 0);
-	//kern_munmap(PROT_KERNEL, (uintptr_t)hardcoded_files, hardcoded_files->size);
-	//hardcoded_files = NULL;
-	return ret;
-}
-
 void init_files(multiboot_module_t *mod) {
 	uintptr_t scratch;
 	kern_mmap(&scratch, mod, sizeof (*mod), PROT_READ | PROT_KERNEL | PROT_FORCE, 0);
@@ -121,7 +101,6 @@ void init_files(multiboot_module_t *mod) {
 	}
 	kern_munmap(PROT_KERNEL, mod->mod_start, mod->mod_end - mod->mod_start);
 }
-#endif
 
 struct hardcoded_file * find_file(const char * name) {
 	if (hardcoded_files == NULL) {
