@@ -13,8 +13,10 @@ extern const char *syscallnames[];
 extern void * handle_int_80;
 extern void * unknown_int;
 extern void * pic1_int;
-extern void start_entrypoint(); 
-
+extern void * stack_top;
+extern void start_entrypoint();
+extern uintptr_t setup_new_stack(uintptr_t stack_pointer);
+extern void switch_thread_impl(void * oldsave, void * newsave, uintptr_t* oldstack, uintptr_t* newstack);
 extern void __executable_start, __etext, __data_start, __edata;
 
 char **environ = {NULL};
@@ -65,6 +67,8 @@ typedef uint32_t u_int32_t;
 #include <rtld_printf.h>
 #include <x86intrin.h>
 #include <sys/socket.h>
+#include <sys/thr.h>
+#include "threads.h"
 
 // include this last; use _KERNEL to avoid conflicting but unused definition
 // of int sysarch between sysproto.h and sysarch.h
@@ -78,6 +82,12 @@ size_t next_fd;
 
 uint8_t WANT_NMI = 0;
  
+#define MAX_THREADS 8
+#define THREAD_ID_OFFSET 100002
+struct crazierl_thread threads[MAX_THREADS];
+size_t current_thread = 0;
+size_t next_thread = 1;
+
 // This is the x86's VGA textmode buffer. To display text, we write data to this memory location
 #define VGA_BUFFER_SIZE 0x20000
 #define VGA_BUFFER_ELEMENTS (VGA_BUFFER_SIZE / sizeof(vga_buffer[0]))
@@ -415,6 +425,35 @@ void print_time(uint8_t time[9]) {
 		time[7], time[6], time[5], time[4], time[3], time[2], time[1], unix_time());
 }
 
+void switch_thread() {
+	size_t i = current_thread + 1;
+	size_t target = current_thread;
+	while (i != current_thread) {
+		if (threads[i].state == THREAD_RUNNABLE) {
+			target = i;
+			break;
+		}
+		++i;
+		if (i == MAX_THREADS) { i = 0; }
+	}
+	if (target == current_thread) { return; }
+	ERROR_PRINTF("switching from %d to %d\n", current_thread, target);
+	size_t old_thread = current_thread;
+	current_thread = target;
+
+	threads[old_thread].state = THREAD_RUNNABLE;
+	threads[current_thread].state = THREAD_RUNNING;
+	uintptr_t base = threads[current_thread].tls_base;
+
+	ugs_base.base_1 = base & 0xFFFF;
+	base >>= 16;
+	ugs_base.base_2 = base & 0xFF;
+	base >>= 8;
+	ugs_base.base_3 = base & 0xFF;
+	switch_thread_impl(&threads[old_thread].savearea, &threads[current_thread].savearea,
+		      &threads[old_thread].kern_stack_cur, &threads[current_thread].kern_stack_cur);
+}
+
 struct interrupt_frame
 {
     uint32_t ip;
@@ -469,11 +508,8 @@ void handle_timer(struct interrupt_frame *frame)
 	//outb(0x70, 0x0C);	// select register C
 	//inb(0x71);		// just throw away contents
 	++TIMER_COUNT;
+	switch_thread();
 }
-
-#define CARRY 1
-#define SYSCALL_SUCCESS(ret) { iframe->flags &= ~CARRY; return ret; }
-#define SYSCALL_FAILURE(ret) { iframe->flags |= CARRY; return ret; }
 
 ssize_t write(int fd, const void * buf, size_t nbyte) {
 	if (fd < 0 || fd >= BOGFD_MAX) {
@@ -497,6 +533,10 @@ ssize_t write(int fd, const void * buf, size_t nbyte) {
 		return -EBADF;
 	}
 }
+
+#define CARRY 1
+#define SYSCALL_SUCCESS(ret) { iframe->flags &= ~CARRY; return ret; }
+#define SYSCALL_FAILURE(ret) { iframe->flags |= CARRY; return ret; }
 
 int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 {	
@@ -870,14 +910,12 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			switch (a->op) {
 				case I386_SET_GSBASE: {
 					uint32_t base = *((uint32_t *) a->parms);
+					threads[current_thread].tls_base = base;
 					ugs_base.base_1 = base & 0xFFFF;
 					base >>= 16;
 					ugs_base.base_2 = base & 0xFF;
 					base >>= 8;
 					ugs_base.base_3 = base & 0xFF;
-					base = (uintptr_t)&ugs_base - (uintptr_t)&null_gdt;
-					//DEBUG_PRINTF("Setting GS base to %08x, %d\n", a->parms, base);
-					//asm volatile ( "movw %0, %%gs" :: "rm" (base));
 					SYSCALL_SUCCESS(0);
 				}
 			}
@@ -1014,7 +1052,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 		case SYS_thr_self: {
 			struct thr_self_args *a = argp;
 			DEBUG_PRINTF("thr_self()\n");
-			*a->id = 100002;
+			*a->id = THREAD_ID_OFFSET + current_thread;
 			SYSCALL_SUCCESS(0);
 		}
 		case SYS__umtx_op: {
@@ -1255,6 +1293,52 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			}
 			ERROR_PRINTF("getdirentries (%d)\n", a->fd);
 			SYSCALL_FAILURE(EBADF);
+		}
+		case SYS_thr_new: {
+			struct thr_new_args *a = argp;
+			uintptr_t stack_page;
+			while (threads[next_thread].state != THREAD_EMPTY && next_thread < MAX_THREADS) {
+				++next_thread;
+			}
+			if (next_thread >= MAX_THREADS) {
+				ERROR_PRINTF("thr_new (...) = EPROCLIM\n");
+				SYSCALL_FAILURE(EPROCLIM);
+			}
+			if (!kern_mmap(&stack_page, NULL, PAGE_SIZE, PROT_READ | PROT_WRITE | PROT_KERNEL, MAP_STACK)) {
+				explicit_bzero((void *)stack_page, PAGE_SIZE);
+				ERROR_PRINTF("thr_new (...) = ENOMEM\n");
+				SYSCALL_FAILURE(ENOMEM);
+			}
+			size_t new_thread = next_thread;
+			++next_thread;
+			threads[new_thread].state = THREAD_INITING;
+			threads[new_thread].kern_stack_top = stack_page + PAGE_SIZE;
+			threads[new_thread].tls_base = (uintptr_t)a->param->tls_base;
+			bzero(&threads[new_thread].savearea, sizeof(threads[new_thread].savearea));
+			uintptr_t stack;
+			asm volatile ( "mov %%esp, %0" : "=a"(stack) :);
+			size_t stack_size = threads[current_thread].kern_stack_top - stack;
+			memcpy((void *)(threads[new_thread].kern_stack_top - stack_size), (void *)stack, stack_size);
+
+			//setup_new_stack returns on the current thread, and the new thread
+			uintptr_t new_stack_cur = setup_new_stack(threads[new_thread].kern_stack_top - stack_size);
+			if (new_stack_cur) { // thr_new returns on existing thread
+				ERROR_PRINTF("thr_new return on old thread (%d)\n", current_thread);
+				threads[new_thread].kern_stack_cur = new_stack_cur;
+				*a->param->child_tid = *a->param->parent_tid = THREAD_ID_OFFSET + new_thread;
+				struct interrupt_frame * new_frame = (struct interrupt_frame *) (threads[new_thread].kern_stack_top - sizeof(struct interrupt_frame));
+				new_frame->ip = (uint32_t) a->param->start_func;
+				new_frame->sp = (uint32_t) a->param->stack_base + a->param->stack_size - sizeof(a->param->arg);
+				*(void **)new_frame->sp = a->param->arg;
+				new_frame->sp -= sizeof(a->param->arg); //skip a spot for the return address from the initial function
+				new_frame->flags &= ~CARRY;
+				threads[new_thread].state = THREAD_RUNNABLE;
+			} else { // thr_new returns on new thread
+				ERROR_PRINTF("thr_new return on new thread (%d)\n", current_thread);
+				asm volatile ( "finit" :: ); // clear fpu/sse state
+				return 0; // break convention on purpose
+			}
+			SYSCALL_SUCCESS(0);
 		}
 	}
 				
@@ -1579,6 +1663,9 @@ void setup_entrypoint()
 	*(int *)new_top = (sizeof(argv) / sizeof (char*)) - 1;
 
 	DEBUG_PRINTF ("jumping to %08x\n", entrypoint);
+	threads[0].state = THREAD_RUNNING;
+
+	threads[0].kern_stack_top = (uintptr_t) &stack_top;
 	start_entrypoint(new_top, entrypoint);
 }
 

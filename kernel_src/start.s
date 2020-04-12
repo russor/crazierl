@@ -11,7 +11,10 @@
 .global start_entrypoint
 .global unknown_int
 .global pic1_int
+.global setup_new_stack
+.global switch_thread_impl
 .global ugs_base
+.global stack_top
  
 // Our bootloader, GRUB, needs to know some basic information about our kernel before it can boot it.
 // We give GRUB this information using a standard known as 'Multiboot'.
@@ -521,3 +524,59 @@
 		pop %ecx
 		pop %eax
 		iret
+
+	setup_new_stack:
+		push %ebp
+		mov %esp, %ebp
+		mov %esp, %ecx // current thread stack pointer
+		mov 0x8(%ebp), %eax // new thread stack pointer
+		mov %eax, %esp // temporarily use new stack
+
+		push 0x4(%ebp) // push return to thr_new
+		push %ebp
+		mov %esp, %ebp
+		push $setup_new_stack_done // return address for switch_thread_impl
+		push %ebp
+		mov %esp, %ebp // will need ebp to save it
+		push $0 // return 0 for child
+		push %ebx
+		push %ecx
+		push %edx
+		push %esi
+		push %edi
+		push %ebp
+		mov %esp, %eax
+		mov %ecx, %esp // return to current thread stack
+	setup_new_stack_done:
+		pop %ebp
+		ret
+
+
+	switch_thread_impl:
+		push %ebp
+		mov %esp, %ebp
+
+		//fxsave  0x08(%ebp) // save to old_thread fxsave area
+		//fxrstor 0x0c(%ebp) // restore from new_thread fxsave area
+		push %eax // maybe not strictly required
+		push %ebx
+		push %ecx // maybe not strictly required
+		push %edx // maybe not strictly required
+		push %esi
+		push %edi
+		push %ebp
+		mov 0x10(%ebp), %eax
+		mov %esp, (%eax) // copy stack to old_thread stack pointer
+		mov 0x14(%ebp), %eax
+		mov (%eax), %esp // copy new_thread stack pointer to stack
+	switch_thread_done:
+		pop %ebp
+		pop %edi
+		pop %esi
+		pop %edx
+		pop %ecx
+		pop %ebx
+		pop %eax
+
+		pop %ebp
+		ret
