@@ -37,6 +37,10 @@ uint32_t * pagetable_entry (uint32_t direntry, uintptr_t logical)
 	return (uint32_t *) lookup;
 }
 
+uintptr_t kern_mmap_physical(uintptr_t addr) {
+	return addr; // FIXME: broken if mappings aren't 1:1
+}
+
 void kern_mmap_debug(uintptr_t addr) {
 	uint32_t *direntry = pagetable_direntry(addr);
 	uint32_t *table_entry = pagetable_entry(*direntry, addr);
@@ -261,9 +265,10 @@ int kern_mmap (uintptr_t *ret, void * addr, size_t len, int prot, int flags)
 					}
 					found = 1;
 					break;
-				} else if (*ret == MAX_ADDR - len && mem_available(MAX_ADDR - PAGE_SIZE, PAGE_SIZE)) {
+				} else if (*ret == MAX_ADDR - len && !mem_available(MAX_ADDR - PAGE_SIZE, PAGE_SIZE)) {
 					MAX_ADDR -= PAGE_SIZE;
 				}
+				*ret -= PAGE_SIZE;
 			}
 		} else {
 			*ret = LEAST_ADDR;

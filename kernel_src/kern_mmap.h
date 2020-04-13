@@ -12,5 +12,6 @@ void kern_munmap(uint16_t, uintptr_t, uintptr_t);
 int kern_mmap(uintptr_t *, void *, size_t, int, int);
 void kern_mmap_enable_paging();
 void kern_mmap_debug (uintptr_t);
+uintptr_t kern_mmap_physical(uintptr_t);
 
 #endif

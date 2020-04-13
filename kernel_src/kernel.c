@@ -83,7 +83,7 @@ size_t next_fd;
 
 uint8_t WANT_NMI = 0;
  
-#define MAX_THREADS 8
+#define MAX_THREADS 16
 #define THREAD_ID_OFFSET 100002
 struct crazierl_thread threads[MAX_THREADS];
 size_t current_thread = 0;
@@ -429,6 +429,7 @@ void print_time(uint8_t time[9]) {
 void switch_thread(unsigned int new_state) {
 	size_t i = current_thread + 1;
 	size_t target = current_thread;
+	if (i == MAX_THREADS) { i = 0; }
 	while (i != current_thread) {
 		if (threads[i].state == THREAD_RUNNABLE) {
 			target = i;
@@ -528,6 +529,15 @@ ssize_t write(int fd, const void * buf, size_t nbyte) {
 			//ERROR_PRINTF("write (%d, \"%s\", %d) = %d\n", fd, buf, nbyte, written);
 			memcpy(&FDS[fd].pipe->pb->data[FDS[fd].pipe->pb->length], buf, written);
 			FDS[fd].pipe->pb->length += written;
+			if (FDS[fd].flags & BOGFD_BLOCKED_READ) {
+				//TODO avoid thundering herd, maybe
+				for (int thread = 0; thread < MAX_THREADS; ++thread) {
+					if (threads[thread].state == THREAD_IO_READ && threads[thread].wait_target == fd) {
+						threads[thread].state = THREAD_RUNNABLE;
+					}
+				}
+				FDS[fd].flags &= ~BOGFD_BLOCKED_READ;
+			}
 			return written;
 		} 
 	} else {
@@ -550,34 +560,40 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				ERROR_PRINTF("read (%d, %08x, %d) = EBADF\n", a->fd, a->buf, a->nbyte);
 				SYSCALL_FAILURE(EBADF);
 			}
-			size_t read = 0;
-			struct BogusFD *fd = &FDS[a->fd];
-			if (fd->type == BOGFD_PIPE) {
-				if (fd->pb->length) {
-					read = min(a->nbyte, fd->pb->length);
-					memcpy(a->buf, fd->pb->data, read);
-					fd->pb->length -= read;
+			while (1) {
+				size_t read = 0;
+				struct BogusFD *fd = &FDS[a->fd];
+				if (fd->type == BOGFD_PIPE) {
 					if (fd->pb->length) {
-						memmove(&fd->pb->data, &fd->pb->data[read], fd->pb->length);
+						read = min(a->nbyte, fd->pb->length);
+						memcpy(a->buf, fd->pb->data, read);
+						fd->pb->length -= read;
+						if (fd->pb->length) {
+							memmove(&fd->pb->data, &fd->pb->data[read], fd->pb->length);
+						}
+					} else if (fd->pipe == NULL) {
+						SYSCALL_SUCCESS(0);
 					}
-				} else if (fd->pipe == NULL) {
-					SYSCALL_SUCCESS(0);
+				} else if (fd->type == BOGFD_FILE) {
+					DEBUG_PRINTF("read (%d, %p, %d)\n", a->fd, a->buf, a->nbyte);
+					read = min(a->nbyte, fd->file->end - fd->pos);
+					memcpy(a->buf, fd->pos, read);
+					fd->pos += read;
+					SYSCALL_SUCCESS(read);
+				} else {
+					SYSCALL_FAILURE(EBADF);
 				}
-			} else if (fd->type == BOGFD_FILE) {
-				DEBUG_PRINTF("read (%d, %p, %d)\n", a->fd, a->buf, a->nbyte);
-				read = min(a->nbyte, fd->file->end - fd->pos);
-				memcpy(a->buf, fd->pos, read);
-				fd->pos += read;
-				SYSCALL_SUCCESS(read);
-			} else if (fd->type == BOGFD_TERMIN) {
-				SYSCALL_FAILURE(EAGAIN);
-			} else {
-				SYSCALL_FAILURE(EBADF);
-			}
-			if (read) {
-				SYSCALL_SUCCESS(read);
-			} else {
-				SYSCALL_FAILURE(EAGAIN);
+				if (read) {
+					SYSCALL_SUCCESS(read);
+				} else {
+					if (FDS[a->fd].flags & O_NONBLOCK) {
+						SYSCALL_FAILURE(EAGAIN);
+					} else {
+						FDS[a->fd].flags |= BOGFD_BLOCKED_READ;
+						threads[current_thread].wait_target = a->fd;
+						switch_thread(THREAD_IO_READ);
+					}
+				}
 			}
 		}
 		case SYS_pread: {
@@ -601,51 +617,75 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 		}
 		case SYS_sendto: {
 			struct sendto_args *a = argp;
-			ssize_t ret = write(a->s, a->buf, a->len);
-			if (ret > 0) {
-				SYSCALL_SUCCESS(ret);
-			} else if (ret == 0) {
-				SYSCALL_FAILURE(EAGAIN);
-			} else {
-				SYSCALL_FAILURE(-ret);
+			while (1) {
+				ssize_t ret = write(a->s, a->buf, a->len);
+				if (ret > 0) {
+					SYSCALL_SUCCESS(ret);
+				} else if (ret == 0) {
+					if (FDS[a->s].flags & O_NONBLOCK) {
+						SYSCALL_FAILURE(EAGAIN);
+					} else {
+						FDS[a->s].flags |= BOGFD_BLOCKED_WRITE;
+						threads[current_thread].wait_target = a->s;
+						switch_thread(THREAD_IO_WRITE);
+					}
+				} else {
+					SYSCALL_FAILURE(-ret);
+				}
 			}
 		}
 		case SYS_write: {
 			struct write_args *a = argp;
-			ssize_t ret = write(a->fd, a->buf, a->nbyte);
-			if (ret > 0) {
-				SYSCALL_SUCCESS(ret);
-			} else if (ret == 0) {
-				SYSCALL_FAILURE(EAGAIN);
-			} else {
-				SYSCALL_FAILURE(-ret);
+			while (1) { 
+				ssize_t ret = write(a->fd, a->buf, a->nbyte);
+				if (ret > 0) {
+					SYSCALL_SUCCESS(ret);
+				} else if (ret == 0) {
+					if (FDS[a->fd].flags & O_NONBLOCK) {
+						SYSCALL_FAILURE(EAGAIN);
+					} else {
+						FDS[a->fd].flags |= BOGFD_BLOCKED_WRITE;
+						threads[current_thread].wait_target = a->fd;
+						switch_thread(THREAD_IO_WRITE);
+					}
+				} else {
+					SYSCALL_FAILURE(-ret);
+				}
 			}
 		}
 		case SYS_writev: {
 			struct writev_args *a = argp;
 			struct iovec *iov = a->iovp;
 			unsigned int iovcnt = a->iovcnt;
-			int ret = 0;
-			while (iovcnt) {
-				uint8_t *buffer = (uint8_t *) iov->iov_base;
-				size_t nbyte = write(a->fd, iov->iov_base, iov->iov_len);
-				if (nbyte < 0) {
+			while (1) {
+				int ret = 0;
+				while (iovcnt) {
+					uint8_t *buffer = (uint8_t *) iov->iov_base;
+					size_t nbyte = write(a->fd, iov->iov_base, iov->iov_len);
+					if (nbyte < 0) {
+						SYSCALL_FAILURE(-ret);
+					}
+					ret += nbyte;
+					if (nbyte != iov->iov_len) {
+						break;
+					}
+					++iov;
+					--iovcnt;
+				}
+				if (ret > 0) {
+					SYSCALL_SUCCESS(ret);
+				} else if (ret == 0) {
+					if (FDS[a->fd].flags & O_NONBLOCK) {
+						SYSCALL_FAILURE(EAGAIN);
+					} else {
+						FDS[a->fd].flags |= BOGFD_BLOCKED_WRITE;
+						threads[current_thread].wait_target = a->fd;
+						switch_thread(THREAD_IO_WRITE);
+					}
+				} else {
+					ERROR_PRINTF("writev (%d, %08x, %d)\n", a->fd, a->iovp, a->iovcnt);
 					SYSCALL_FAILURE(-ret);
 				}
-				ret += nbyte;
-				if (nbyte != iov->iov_len) {
-					break;
-				}
-				++iov;
-				--iovcnt;
-			}
-			if (ret > 0) {
-				SYSCALL_SUCCESS(ret);
-			} else if (ret == 0) {
-				SYSCALL_FAILURE(EAGAIN);
-			} else {
-				ERROR_PRINTF("writev (%d, %08x, %d)\n", a->fd, a->iovp, a->iovcnt);
-				SYSCALL_FAILURE(-ret);
 			}
 		}
 		case SYS_openat:
@@ -737,6 +777,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			if (FDS[a->fd].type != BOGFD_CLOSED) {
 				DEBUG_PRINTF("close (%d)\n", a->fd);
 				FDS[a->fd].type = BOGFD_CLOSED;
+				FDS[next_fd].flags = 0;
 				FDS[a->fd].file = NULL;
 				FDS[a->fd].buffer = NULL;
 				if (a->fd < next_fd) {
@@ -895,6 +936,29 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 
 		case SYS_mprotect: SYSCALL_SUCCESS(0); //ignore
 		case SYS_madvise: SYSCALL_SUCCESS(0); //ignore
+		case SYS_fcntl: {
+			struct fcntl_args *a = argp;
+			if (a->fd < 0 || a->fd > BOGFD_MAX) {
+				ERROR_PRINTF("fcntl (%d, ...) = EBADF\n", a->fd);
+				SYSCALL_FAILURE(EBADF);
+			}
+			if (FDS[a->fd].type == BOGFD_CLOSED) {
+				ERROR_PRINTF("fcntl (%d, ...) = EBADF\n", a->fd);
+				SYSCALL_FAILURE(EBADF);
+			}
+			switch (a->cmd) {
+				case F_GETFL:
+					SYSCALL_SUCCESS(FDS[a->fd].flags &
+						(O_NONBLOCK | O_APPEND | O_DIRECT | O_ASYNC));
+				case F_SETFL: {
+					if ((a->arg & (O_NONBLOCK | O_APPEND | O_DIRECT | O_ASYNC)) != a->arg) {
+						halt("bad args to fcntl F_SETFL");
+					}
+					FDS[a->fd].flags = (FDS[a->fd].flags & (O_NONBLOCK | O_APPEND | O_DIRECT | O_ASYNC)) | a->arg;
+					SYSCALL_SUCCESS(0);
+				}
+			}
+		}
 		case SYS_gettimeofday: {
 			struct gettimeofday_args *a = argp;
 			if (a->tp != NULL) {
@@ -1061,7 +1125,37 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 		case SYS__umtx_op: {
 			struct _umtx_op_args *a = argp;
 			switch (a->op) {
-				case UMTX_OP_WAKE: SYSCALL_SUCCESS(0); // ignore OP_WAKE until we have OP_WAIT
+				case UMTX_OP_WAKE: {
+					uintptr_t phys = kern_mmap_physical((uintptr_t) a->obj);
+					u_long count = a->val;
+					for (int thread = 0; count > 0 &&  thread < MAX_THREADS; ++thread) {
+						if (threads[thread].state == THREAD_UMTX_WAIT && threads[thread].wait_target == phys) {
+							threads[thread].state = THREAD_RUNNABLE;
+							--count;
+						}
+					}
+					SYSCALL_SUCCESS(0);
+				}
+				case UMTX_OP_NWAKE_PRIVATE: {
+					for (int i = 0; i < a->val; ++i) {
+						uintptr_t phys = kern_mmap_physical(((uintptr_t *)a->obj)[i]);
+						for (int thread = 0; thread < MAX_THREADS; ++thread) {
+							if (threads[thread].state == THREAD_UMTX_WAIT && threads[thread].wait_target == phys) {
+								threads[thread].state = THREAD_RUNNABLE;
+							}
+						}
+					}
+					SYSCALL_SUCCESS(0);
+				}
+				case UMTX_OP_WAIT_UINT:
+				case UMTX_OP_WAIT_UINT_PRIVATE: {
+					if (*(u_int *)a->obj == a->val) {
+						//TODO timeout
+						threads[current_thread].wait_target = kern_mmap_physical((uintptr_t) a->obj);
+						switch_thread(THREAD_UMTX_WAIT);
+					}
+					SYSCALL_SUCCESS(0);
+				}
 				case UMTX_OP_MUTEX_WAIT: {
 					struct umutex *mutex = a->obj;
 					while (1) {
@@ -1070,7 +1164,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 							break;
 						}
 						mutex->m_owner |= UMUTEX_CONTESTED;
-						threads[current_thread].wait_target = a->obj;
+						threads[current_thread].wait_target = (uintptr_t) a->obj;
 						switch_thread(THREAD_UMTX_MUTEX_WAIT);
 						// TODO timeout check
 					}
@@ -1082,11 +1176,11 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					if ((mutex->m_owner & ~UMUTEX_CONTESTED) != UMUTEX_UNOWNED) {
 						found = 1;
 					}
-					for (int i = 0; i < MAX_THREADS; ++i) {
-						if (threads[i].state == THREAD_UMTX_MUTEX_WAIT &&
-							threads[i].wait_target == a->obj) {
+					for (int thread = 0; thread < MAX_THREADS; ++thread) {
+						if (threads[thread].state == THREAD_UMTX_MUTEX_WAIT &&
+							threads[thread].wait_target == (uintptr_t) a->obj) {
 							if (found == 0) {
-								threads[i].state = THREAD_RUNNABLE;
+								threads[thread].state = THREAD_RUNNABLE;
 								found = 1;
 							} else {
 								mutex->m_owner |= UMUTEX_CONTESTED;

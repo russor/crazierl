@@ -34,12 +34,6 @@ int rtprio_thread(int function, lwpid_t lwpid, struct rtprio *rtp)
 	exit(EINVAL);
 }
 
-int fcntl (int fd, int cmd, ...)
-{
-	ERROR_PRINTF("fcntl (%d, %08x, ...)\n", fd, cmd);
-	return 0;
-}
-
 int access (const char *path, int mode)
 {
 	DEBUG_PRINTF("access (%s, %d)\n", path, mode);
