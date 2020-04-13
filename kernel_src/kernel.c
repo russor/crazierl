@@ -18,6 +18,7 @@ extern void start_entrypoint();
 extern uintptr_t setup_new_stack(uintptr_t stack_pointer);
 extern void switch_thread_impl(void * oldsave, void * newsave, uintptr_t* oldstack, uintptr_t* newstack);
 extern void __executable_start, __etext, __data_start, __edata;
+extern uintptr_t tss_esp0;
 
 char **environ = {NULL};
 char *__progname = "crazierlkernel";
@@ -425,7 +426,7 @@ void print_time(uint8_t time[9]) {
 		time[7], time[6], time[5], time[4], time[3], time[2], time[1], unix_time());
 }
 
-void switch_thread() {
+void switch_thread(unsigned int new_state) {
 	size_t i = current_thread + 1;
 	size_t target = current_thread;
 	while (i != current_thread) {
@@ -437,11 +438,11 @@ void switch_thread() {
 		if (i == MAX_THREADS) { i = 0; }
 	}
 	if (target == current_thread) { return; }
-	ERROR_PRINTF("switching from %d to %d\n", current_thread, target);
+	ERROR_PRINTF("switching from %d (%d) to %d\n", current_thread, new_state, target);
 	size_t old_thread = current_thread;
 	current_thread = target;
 
-	threads[old_thread].state = THREAD_RUNNABLE;
+	threads[old_thread].state = new_state;
 	threads[current_thread].state = THREAD_RUNNING;
 	uintptr_t base = threads[current_thread].tls_base;
 
@@ -450,6 +451,7 @@ void switch_thread() {
 	ugs_base.base_2 = base & 0xFF;
 	base >>= 8;
 	ugs_base.base_3 = base & 0xFF;
+	tss_esp0 = threads[current_thread].kern_stack_top;
 	switch_thread_impl(&threads[old_thread].savearea, &threads[current_thread].savearea,
 		      &threads[old_thread].kern_stack_cur, &threads[current_thread].kern_stack_cur);
 }
@@ -508,7 +510,7 @@ void handle_timer(struct interrupt_frame *frame)
 	//outb(0x70, 0x0C);	// select register C
 	//inb(0x71);		// just throw away contents
 	++TIMER_COUNT;
-	switch_thread();
+	switch_thread(THREAD_RUNNABLE);
 }
 
 ssize_t write(int fd, const void * buf, size_t nbyte) {
@@ -919,6 +921,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					SYSCALL_SUCCESS(0);
 				}
 			}
+			break;
 		}
 		case SYS_getrlimit: {
 			struct __getrlimit_args *a = argp;
@@ -1057,10 +1060,46 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 		}
 		case SYS__umtx_op: {
 			struct _umtx_op_args *a = argp;
-			if (a->op == UMTX_OP_WAKE) {
-				SYSCALL_SUCCESS(0);
+			switch (a->op) {
+				case UMTX_OP_WAKE: SYSCALL_SUCCESS(0); // ignore OP_WAKE until we have OP_WAIT
+				case UMTX_OP_MUTEX_WAIT: {
+					struct umutex *mutex = a->obj;
+					while (1) {
+						// TODO locking/atomics
+						if ((mutex->m_owner & ~UMUTEX_CONTESTED) == UMUTEX_UNOWNED) {
+							break;
+						}
+						mutex->m_owner |= UMUTEX_CONTESTED;
+						threads[current_thread].wait_target = a->obj;
+						switch_thread(THREAD_UMTX_MUTEX_WAIT);
+						// TODO timeout check
+					}
+					SYSCALL_SUCCESS(0);
+				}
+				case UMTX_OP_MUTEX_WAKE2: {
+					struct umutex *mutex = a->obj;
+					int found = 0;
+					if ((mutex->m_owner & ~UMUTEX_CONTESTED) != UMUTEX_UNOWNED) {
+						found = 1;
+					}
+					for (int i = 0; i < MAX_THREADS; ++i) {
+						if (threads[i].state == THREAD_UMTX_MUTEX_WAIT &&
+							threads[i].wait_target == a->obj) {
+							if (found == 0) {
+								threads[i].state = THREAD_RUNNABLE;
+								found = 1;
+							} else {
+								mutex->m_owner |= UMUTEX_CONTESTED;
+								break;
+							}
+						}
+					}
+					SYSCALL_SUCCESS(0);
+				}
 			}
+
 			ERROR_PRINTF("_umtx_op(%08x, %d, %d, %08x, %08x)\n", a->obj, a->op, a->val, a->uaddr1, a->uaddr2);
+			break;
 		}
 		case SYS_cpuset_getaffinity: {
 			struct cpuset_getaffinity_args *a = argp;

@@ -15,6 +15,7 @@
 .global switch_thread_impl
 .global ugs_base
 .global stack_top
+.global tss_esp0
  
 // Our bootloader, GRUB, needs to know some basic information about our kernel before it can boot it.
 // We give GRUB this information using a standard known as 'Multiboot'.
@@ -77,7 +78,7 @@
 	gdtr:     .short (gdtr - null_gdt - 1) // size (minus one)
 	          .long null_gdt // offset
 	tss:	  .long	0       // back link
-		  .long stack_top // ESP0
+	tss_esp0: .long stack_top // ESP0
 		  .long 0x10    // SS0
 
  
@@ -545,6 +546,7 @@
 		push %esi
 		push %edi
 		push %ebp
+		push %gs
 		mov %esp, %eax
 		mov %ecx, %esp // return to current thread stack
 	setup_new_stack_done:
@@ -565,11 +567,13 @@
 		push %esi
 		push %edi
 		push %ebp
+		push %gs // needed in case of timer interrupt
 		mov 0x10(%ebp), %eax
 		mov %esp, (%eax) // copy stack to old_thread stack pointer
 		mov 0x14(%ebp), %eax
 		mov (%eax), %esp // copy new_thread stack pointer to stack
 	switch_thread_done:
+		pop %gs
 		pop %ebp
 		pop %edi
 		pop %esi
