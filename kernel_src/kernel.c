@@ -1655,7 +1655,7 @@ void load_file(void *start, char *name, size_t size)
 			}
 			lastoffset = phead->p_offset + phead->p_filesz;
 			uint32_t scratch;
-			if (!kern_mmap(&scratch, (void *)(load_addr + phead->p_vaddr), phead->p_memsz, PROT_READ|PROT_WRITE, 0)) {
+			if (!kern_mmap(&scratch, (void *)(load_addr + phead->p_vaddr), phead->p_memsz, PROT_READ|PROT_WRITE|PROT_FORCE, 0)) {
 				ERROR_PRINTF("couldn't map ELF load section %08x\n", load_addr + phead->p_vaddr);
 			}
 		}
