@@ -6,8 +6,8 @@
 
 
 #ifdef CRAZIERL_KERNEL
-#define DEBUG_PRINTF(...) term_printf(__VA_ARGS__); move_cursor()
-//#define DEBUG_PRINTF(...)
+//#define DEBUG_PRINTF(...) term_printf(__VA_ARGS__); move_cursor()
+#define DEBUG_PRINTF(...)
 #define ERROR_PRINTF(...) term_printf(__VA_ARGS__); move_cursor()
 #endif
 

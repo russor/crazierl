@@ -16,7 +16,7 @@ extern void * pic1_int;
 extern void * stack_top;
 extern void start_entrypoint();
 extern uintptr_t setup_new_stack(uintptr_t stack_pointer);
-extern void switch_thread_impl(void * oldsave, void * newsave, uintptr_t* oldstack, uintptr_t* newstack);
+extern void switch_thread_impl(uintptr_t* oldstack, uintptr_t newstack);
 extern void __executable_start, __etext, __data_start, __edata;
 extern uintptr_t tss_esp0;
 
@@ -83,10 +83,10 @@ size_t next_fd;
 
 uint8_t WANT_NMI = 0;
  
-#define MAX_THREADS 16
+#define MAX_THREADS 32
 #define THREAD_ID_OFFSET 100002
 struct crazierl_thread threads[MAX_THREADS];
-size_t current_thread = 0;
+volatile size_t current_thread = 0;
 size_t next_thread = 1;
 
 // This is the x86's VGA textmode buffer. To display text, we write data to this memory location
@@ -427,10 +427,11 @@ void print_time(uint8_t time[9]) {
 }
 
 void switch_thread(unsigned int new_state) {
-	size_t i = current_thread + 1;
-	size_t target = current_thread;
+	size_t old_thread = current_thread;
+	size_t i = old_thread + 1;
+	size_t target = old_thread;
 	if (i == MAX_THREADS) { i = 0; }
-	while (i != current_thread) {
+	while (i != old_thread) {
 		if (threads[i].state == THREAD_RUNNABLE) {
 			target = i;
 			break;
@@ -438,23 +439,25 @@ void switch_thread(unsigned int new_state) {
 		++i;
 		if (i == MAX_THREADS) { i = 0; }
 	}
-	if (target == current_thread) { return; }
-	ERROR_PRINTF("switching from %d (%d) to %d\n", current_thread, new_state, target);
-	size_t old_thread = current_thread;
+	if (target == old_thread) { return; }
+	ERROR_PRINTF("switching from %d (%d) to %d\n", old_thread, new_state, target);
+	ERROR_PRINTF("new stack %p of %p\n",
+		threads[target].kern_stack_cur, threads[target].kern_stack_top);
 	current_thread = target;
 
 	threads[old_thread].state = new_state;
-	threads[current_thread].state = THREAD_RUNNING;
-	uintptr_t base = threads[current_thread].tls_base;
+	asm volatile ( "fxsave (%0)" :: "a"(&threads[old_thread].savearea) :);
+	threads[target].state = THREAD_RUNNING;
+	uintptr_t base = threads[target].tls_base;
 
 	ugs_base.base_1 = base & 0xFFFF;
 	base >>= 16;
 	ugs_base.base_2 = base & 0xFF;
 	base >>= 8;
 	ugs_base.base_3 = base & 0xFF;
-	tss_esp0 = threads[current_thread].kern_stack_top;
-	switch_thread_impl(&threads[old_thread].savearea, &threads[current_thread].savearea,
-		      &threads[old_thread].kern_stack_cur, &threads[current_thread].kern_stack_cur);
+	tss_esp0 = threads[target].kern_stack_top;
+	switch_thread_impl(&threads[old_thread].kern_stack_cur, threads[target].kern_stack_cur);
+	asm volatile ( "fxrstor (%0)" :: "a"(&threads[current_thread].savearea) :);
 }
 
 struct interrupt_frame
@@ -1100,9 +1103,14 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			a->tp->tv_nsec = 0;
 			SYSCALL_SUCCESS(0);
 		}
-		case SYS_issetugid:
+		case SYS_issetugid: {
 			DEBUG_PRINTF("issetugid()\n");
 			SYSCALL_SUCCESS(0);
+		}
+		case SYS_sched_yield: {
+			switch_thread(THREAD_RUNNABLE);
+			SYSCALL_SUCCESS(0);
+		}
 		case SYS_sigprocmask: {
 			struct sigprocmask_args *a = argp;
 			DEBUG_PRINTF("sigprocmask (%d, %08x, %08x)\n", a->how, a->set, a->oset);
@@ -1276,7 +1284,10 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 		}
 		case SYS_ppoll: {
 			struct ppoll_args *a = argp;
-			int waitleft = a->ts->tv_sec;
+			int waitleft = INT_MAX; // FIXME INT_MAX is a lot of seconds, but it's not forever
+			if (a->ts != NULL) {
+				waitleft = a->ts->tv_sec;
+			}
 			int lastsecond = last_time[1];
 			int printed = 0;
 			int changedfds = 0;
@@ -1456,7 +1467,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			//setup_new_stack returns on the current thread, and the new thread
 			uintptr_t new_stack_cur = setup_new_stack(threads[new_thread].kern_stack_top - stack_size);
 			if (new_stack_cur) { // thr_new returns on existing thread
-				ERROR_PRINTF("thr_new return on old thread (%d)\n", current_thread);
+				ERROR_PRINTF("thr_new return (%d) on old thread (%d)\n", new_thread, current_thread);
 				threads[new_thread].kern_stack_cur = new_stack_cur;
 				*a->param->child_tid = *a->param->parent_tid = THREAD_ID_OFFSET + new_thread;
 				struct interrupt_frame * new_frame = (struct interrupt_frame *) (threads[new_thread].kern_stack_top - sizeof(struct interrupt_frame));
@@ -1473,6 +1484,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			}
 			SYSCALL_SUCCESS(0);
 		}
+		case SYS_clock_getres: SYSCALL_FAILURE(EINVAL); // TODO clock stuff
 	}
 				
 	if (call < SYS_MAXSYSCALL) {

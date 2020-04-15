@@ -84,11 +84,10 @@
  
 // This section contains data initialised to zeroes when the kernel is loaded
 .section .bss
-	// Our C code will need a stack to run. Here, we allocate 4096 bytes (or 4 Kilobytes) for our stack.
-	// We can expand this later if we want a larger stack. For now, it will be perfectly adequate.
+	// Our C code will need a stack to run.
 	.align 16
 	stack_bottom:
-		.skip 4096 // Reserve a 4096-byte (4K) stack
+		.skip 4096 // Reserve a stack
 	stack_top:
 	mb_header: .long
  
@@ -558,8 +557,6 @@
 		push %ebp
 		mov %esp, %ebp
 
-		//fxsave  0x08(%ebp) // save to old_thread fxsave area
-		//fxrstor 0x0c(%ebp) // restore from new_thread fxsave area
 		push %eax // maybe not strictly required
 		push %ebx
 		push %ecx // maybe not strictly required
@@ -568,10 +565,10 @@
 		push %edi
 		push %ebp
 		push %gs // needed in case of timer interrupt
-		mov 0x10(%ebp), %eax
+		mov 0x8(%ebp), %eax
 		mov %esp, (%eax) // copy stack to old_thread stack pointer
-		mov 0x14(%ebp), %eax
-		mov (%eax), %esp // copy new_thread stack pointer to stack
+		mov 0xC(%ebp), %eax
+		mov %eax, %esp // copy new_thread stack pointer to stack
 	switch_thread_done:
 		pop %gs
 		pop %ebp
