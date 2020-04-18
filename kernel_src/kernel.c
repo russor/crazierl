@@ -1272,8 +1272,8 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			}
 			FDS[pipe1].type = BOGFD_PIPE;
 			FDS[pipe2].type = BOGFD_PIPE;
-			FDS[pipe1].pipe = &(FDS[next_fd + 1]);
-			FDS[pipe2].pipe = &(FDS[next_fd]);
+			FDS[pipe1].pipe = &(FDS[pipe2]);
+			FDS[pipe2].pipe = &(FDS[pipe1]);
 			FDS[pipe1].pb->length = 0;
 			FDS[pipe2].pb = (struct pipe_buffer *)((uintptr_t)FDS[pipe1].pb + (PAGE_SIZE >> 1));
 			FDS[pipe2].pb->length = 0;
