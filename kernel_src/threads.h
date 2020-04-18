@@ -7,7 +7,8 @@
 #define THREAD_UMTX_MUTEX_WAIT 4
 #define THREAD_UMTX_WAIT 5
 #define THREAD_IO_READ 6
-#define THREAD_IO_WRITE 6
+#define THREAD_IO_WRITE 7
+#define THREAD_WAIT_FOREVER 8
 
 struct crazierl_thread {
     unsigned int state;
