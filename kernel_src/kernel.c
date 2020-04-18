@@ -440,8 +440,8 @@ void switch_thread(unsigned int new_state) {
 		if (i == MAX_THREADS) { i = 0; }
 	}
 	if (target == old_thread) { return; }
-	ERROR_PRINTF("switching from %d (%d) to %d\n", old_thread, new_state, target);
-	ERROR_PRINTF("new stack %p of %p\n",
+	DEBUG_PRINTF("switching from %d (%d) to %d\n", old_thread, new_state, target);
+	DEBUG_PRINTF("new stack %p of %p\n",
 		threads[target].kern_stack_cur, threads[target].kern_stack_top);
 	current_thread = target;
 
@@ -481,10 +481,13 @@ void handle_pic1_irq(struct interrupt_frame *frame, uint32_t irq)
 {
 	outb(PORT_PIC1, PIC_INTERRUPT_ACK);
 	int found = 0;
-	for (int i = 0; i < BOGFD_MAX; ++i) {
-		if (FDS[i].type == BOGFD_PIC1 && FDS[i].status[0] == irq) {
+	for (int fd = 0; fd < BOGFD_MAX; ++fd) {
+		if (FDS[fd].type == BOGFD_PIC1 && FDS[fd].status[0] == irq) {
 			++found;
-			FDS[i].status[1] = 1;
+			FDS[fd].status[1] = 1;
+			if (FDS[fd].flags & BOGFD_BLOCKED_READ) {
+				halt("need to handle blocking read on interrupts");
+			}
 		}
 	}
 	if (!found && !UNCLAIMED_PIC_INT) {
@@ -532,20 +535,58 @@ ssize_t write(int fd, const void * buf, size_t nbyte) {
 			//ERROR_PRINTF("write (%d, \"%s\", %d) = %d\n", fd, buf, nbyte, written);
 			memcpy(&FDS[fd].pipe->pb->data[FDS[fd].pipe->pb->length], buf, written);
 			FDS[fd].pipe->pb->length += written;
-			if (FDS[fd].flags & BOGFD_BLOCKED_READ) {
+			if (FDS[fd].pipe->flags & BOGFD_BLOCKED_READ) {
 				//TODO avoid thundering herd, maybe
 				for (int thread = 0; thread < MAX_THREADS; ++thread) {
-					if (threads[thread].state == THREAD_IO_READ && threads[thread].wait_target == fd) {
+					if (threads[thread].state == THREAD_IO_READ && threads[thread].wait_target == FDS[fd].pipe) {
 						threads[thread].state = THREAD_RUNNABLE;
 					}
 				}
 				FDS[fd].flags &= ~BOGFD_BLOCKED_READ;
 			}
 			return written;
-		} 
+		}
 	} else {
 		ERROR_PRINTF("write (%d, %08x, %d) = EBADF\n", fd, buf, nbyte);
 		return -EBADF;
+	}
+}
+
+size_t kern_read(int fd, void * buf, size_t nbyte, int async) {
+	if (fd < 0 || fd >= BOGFD_MAX) {
+		return -EBADF;
+	}
+	while (1) {
+		size_t read = 0;
+		if (FDS[fd].type == BOGFD_PIPE) {
+			if (FDS[fd].pb->length) {
+				read = min(nbyte, FDS[fd].pb->length);
+				memcpy(buf, FDS[fd].pb->data, read);
+				FDS[fd].pb->length -= read;
+				if (FDS[fd].pb->length) {
+					memmove(&FDS[fd].pb->data, &FDS[fd].pb->data[read], FDS[fd].pb->length);
+				}
+			} else if (FDS[fd].pipe == NULL) {
+				return 0;
+			}
+		} else if (FDS[fd].type == BOGFD_FILE) {
+			DEBUG_PRINTF("read (%d, %p, %d)\n", a->fd, buf, nbyte);
+			read = min(nbyte, FDS[fd].file->end - FDS[fd].pos);
+			memcpy(buf, FDS[fd].pos, read);
+			FDS[fd].pos += read;
+			return read;
+		} else {
+			return -EBADF;
+		}
+		if (read) {
+			return read;
+		} else if (async) {
+			return -EAGAIN;
+		} else {
+			FDS[fd].flags |= BOGFD_BLOCKED_READ;
+			threads[current_thread].wait_target = &FDS[fd];
+			switch_thread(THREAD_IO_READ);
+		}
 	}
 }
 
@@ -559,45 +600,33 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 	switch(call) {
 		case SYS_read: {
 			struct read_args *a = argp;
-			if (a->fd < 0 || a->fd >= BOGFD_MAX) {
-				ERROR_PRINTF("read (%d, %08x, %d) = EBADF\n", a->fd, a->buf, a->nbyte);
-				SYSCALL_FAILURE(EBADF);
+			ssize_t read = kern_read(a->fd, a->buf, a->nbyte, FDS[a->fd].flags & O_NONBLOCK);
+			if (read < 0) {
+				SYSCALL_FAILURE(-read);
 			}
-			while (1) {
-				size_t read = 0;
-				struct BogusFD *fd = &FDS[a->fd];
-				if (fd->type == BOGFD_PIPE) {
-					if (fd->pb->length) {
-						read = min(a->nbyte, fd->pb->length);
-						memcpy(a->buf, fd->pb->data, read);
-						fd->pb->length -= read;
-						if (fd->pb->length) {
-							memmove(&fd->pb->data, &fd->pb->data[read], fd->pb->length);
-						}
-					} else if (fd->pipe == NULL) {
-						SYSCALL_SUCCESS(0);
-					}
-				} else if (fd->type == BOGFD_FILE) {
-					DEBUG_PRINTF("read (%d, %p, %d)\n", a->fd, a->buf, a->nbyte);
-					read = min(a->nbyte, fd->file->end - fd->pos);
-					memcpy(a->buf, fd->pos, read);
-					fd->pos += read;
-					SYSCALL_SUCCESS(read);
-				} else {
-					SYSCALL_FAILURE(EBADF);
+			SYSCALL_SUCCESS(read);
+		}
+		case SYS_readv: {
+			struct readv_args *a = argp;
+			struct iovec *iov = a->iovp;
+			unsigned int iovcnt = a->iovcnt;
+			ssize_t ret = 0;
+			while (iovcnt) {
+				ssize_t nbyte = kern_read(a->fd, iov->iov_base, iov->iov_len, iovcnt != a->iovcnt || FDS[a->fd].flags & O_NONBLOCK);
+				if (nbyte > 0) {
+					ret += nbyte;
 				}
-				if (read) {
-					SYSCALL_SUCCESS(read);
-				} else {
-					if (FDS[a->fd].flags & O_NONBLOCK) {
-						SYSCALL_FAILURE(EAGAIN);
+				if (nbyte != a->iovcnt) {
+					if (nbyte >= 0) {
+						SYSCALL_SUCCESS(ret);
+					} else if (ret >= 0) {
+						SYSCALL_SUCCESS(ret);
 					} else {
-						FDS[a->fd].flags |= BOGFD_BLOCKED_READ;
-						threads[current_thread].wait_target = a->fd;
-						switch_thread(THREAD_IO_READ);
+						SYSCALL_FAILURE(-nbyte);
 					}
 				}
 			}
+			SYSCALL_SUCCESS(ret);
 		}
 		case SYS_pread: {
 			struct pread_args *a = argp;
@@ -629,7 +658,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 						SYSCALL_FAILURE(EAGAIN);
 					} else {
 						FDS[a->s].flags |= BOGFD_BLOCKED_WRITE;
-						threads[current_thread].wait_target = a->s;
+						threads[current_thread].wait_target = &FDS[a->s];
 						switch_thread(THREAD_IO_WRITE);
 					}
 				} else {
@@ -648,7 +677,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 						SYSCALL_FAILURE(EAGAIN);
 					} else {
 						FDS[a->fd].flags |= BOGFD_BLOCKED_WRITE;
-						threads[current_thread].wait_target = a->fd;
+						threads[current_thread].wait_target = &FDS[a->fd];
 						switch_thread(THREAD_IO_WRITE);
 					}
 				} else {
@@ -661,10 +690,9 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			struct iovec *iov = a->iovp;
 			unsigned int iovcnt = a->iovcnt;
 			while (1) {
-				int ret = 0;
+				ssize_t ret = 0;
 				while (iovcnt) {
-					uint8_t *buffer = (uint8_t *) iov->iov_base;
-					size_t nbyte = write(a->fd, iov->iov_base, iov->iov_len);
+					ssize_t nbyte = write(a->fd, iov->iov_base, iov->iov_len);
 					if (nbyte < 0) {
 						SYSCALL_FAILURE(-ret);
 					}
@@ -682,7 +710,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 						SYSCALL_FAILURE(EAGAIN);
 					} else {
 						FDS[a->fd].flags |= BOGFD_BLOCKED_WRITE;
-						threads[current_thread].wait_target = a->fd;
+						threads[current_thread].wait_target = &FDS[a->fd];
 						switch_thread(THREAD_IO_WRITE);
 					}
 				} else {
@@ -828,7 +856,11 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				}
 				SYSCALL_SUCCESS(read);
 			} else {
-				SYSCALL_FAILURE(EAGAIN);
+				if (fd->flags & O_NONBLOCK) {
+					SYSCALL_FAILURE(EAGAIN);
+				} else {
+					halt("blocking recvfrom");
+				}
 			}
 		}
 		case SYS_ioctl: {
@@ -961,6 +993,14 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					SYSCALL_SUCCESS(0);
 				}
 			}
+		}
+		case SYS_select: {
+			struct select_args *a = argp;
+			if (a->nd == 0 && a->tv == NULL) {
+				switch_thread(THREAD_WAIT_FOREVER);
+			}
+			ERROR_PRINTF("select(%d, %p, %p, %p, %p)\n", a->nd, a->in, a->ou, a->ex, a->tv);
+			break;
 		}
 		case SYS_gettimeofday: {
 			struct gettimeofday_args *a = argp;
@@ -1312,19 +1352,23 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 						++changedfds;
 					}
 				}
-				if (changedfds || waitleft == 0) { SYSCALL_SUCCESS(changedfds); }
+				if (changedfds || waitleft == 0) {
+					SYSCALL_SUCCESS(changedfds);
+				}
 				/*if (!printed) { // && a->ts->tv_sec > 60) {
 					printed = 1;
-					ERROR_PRINTF("ppoll for %d fds, timeout %d\n", a->nfds, a->ts->tv_sec);
+					ERROR_PRINTF("ppoll for %d fds, timeout %d\n", a->nfds, waitleft);
 					for (int i = 0; i < a->nfds; ++i) {
 						ERROR_PRINTF("  FD %d: events %08x -> %08x\n", a->fds[i].fd, a->fds[i].events, a->fds[i].revents);
 					}
 				}*/
 				// enable interrupts, and wait for one; time keeping interrupts will move us forward
-				asm volatile ( "sti; hlt; cli" :: );
+				switch_thread(THREAD_RUNNABLE);
 				if (last_time[1] != lastsecond) {
 					lastsecond = last_time[1];
 					waitleft -= 1;
+				} else {
+					asm volatile ( "sti; hlt; cli" :: );
 				}
 			} while (waitleft > 0);
 			SYSCALL_SUCCESS(0);
@@ -1738,7 +1782,11 @@ void setup_entrypoint()
 		//"LD_32_DEBUG=1",
 		NULL};
 	// set up arguments
-	char *argv[] = {"/beam", "--", "-root", "",
+	char *argv[] = {"/beam",
+			"-S", "1:1", // one scheduler
+			"-SDcpu", "1:1", //one dirty cpu scheduler
+			"-SDio", "1", // one dirty i/o scheduler
+			"--", "-root", "",
 			"-progname", "erl", "--", "-home", "/",
 			"-pz", "/obj/",
 			"-s", "crazierl",
