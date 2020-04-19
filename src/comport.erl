@@ -34,20 +34,21 @@ loop(State = #s{buffer = B, irq = Irq}) ->
 
 port_loop(State = #s{io_port = Port, buffer = B}) ->
 	Status = crazierl:inb(Port + 5),
-	case Status band 1 of
-		1 ->
-			State#s.owner ! {self(), [crazierl:inb(Port)]},
-			port_loop(State); % prioritize reading over writing!
+	case Status band 2 of
+		1 -> error_logger:error_msg("com port ~.16B overrun");
 		0 -> ok
 	end,
-	case Status band 32 of
-		32 when B /= <<>> ->
+	case {Status band 1, Status band 32} of
+		{1, _} ->
+			State#s.owner ! {self(), [crazierl:inb(Port)]},
+			port_loop(State); % prioritize reading over writing!
+		{0, 32} when B /= <<>> ->
 			<<C:8, NewB/binary>> = B,
 			crazierl:outb(Port, C),
 			port_loop(State#s{buffer = NewB});
-		32 ->
+		{0, 32} ->
 			% clear possible transmit OK interrupt
-			_InterruptId = crazierl:inb(State#s.io_port + 2),
+			_InterruptId = crazierl:inb(Port + 2),
 			State;
 		_ -> State
 	end.
