@@ -9,8 +9,10 @@
 #define THREAD_IO_READ 6
 #define THREAD_IO_WRITE 7
 #define THREAD_WAIT_FOREVER 8
+#define THREAD_POLL 9
 
 struct crazierl_thread {
+    uint64_t timeout;
     unsigned int state;
     uintptr_t kern_stack_top;
     uintptr_t kern_stack_cur;

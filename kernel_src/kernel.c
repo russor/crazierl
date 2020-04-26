@@ -16,7 +16,7 @@ extern void * pic1_int;
 extern void * stack_top;
 extern void start_entrypoint();
 extern uintptr_t setup_new_stack(uintptr_t stack_pointer);
-extern void switch_thread_impl(uintptr_t* oldstack, uintptr_t newstack);
+extern int switch_thread_impl(uintptr_t* oldstack, uintptr_t newstack);
 extern void __executable_start, __etext, __data_start, __edata;
 extern uintptr_t tss_esp0;
 
@@ -133,7 +133,11 @@ struct IDTRecord IDTR;
 
 volatile uint32_t TIMER_COUNT = 0;
 
-uint8_t last_time[9];
+uint64_t fixed_point_time;
+#define FIXED_POINT_TIME_NANOSECOND(seconds, nanoseconds) (((uint64_t) seconds << 24) + (((uint64_t) nanoseconds << 24) / 1000000000))
+#define FIXED_POINT_SECONDS(fpt)(fpt >> 24)
+#define FIXED_POINT_MILLISECONDS(fpt) (((fpt & ((1 << 24) -1)) * 1000) >> 24)
+#define FIXED_POINT_NANOSECONDS(fpt) (((fpt & ((1 << 24) -1)) * 1000000000) >> 24)
 
 uintptr_t user_stack;
 
@@ -367,9 +371,32 @@ uint8_t read_cmos(uint8_t reg)
 	return inb(0x71);
 }
 
-void get_time(uint8_t timeA[])
+uint64_t unix_time(uint8_t time[]) {
+	int years = (time[7] * 100 + time[6]) - 1970;
+	int days = years * 365 + (years >> 2) + time[4];
+	if (time[5] == 1 || (time[5] == 2 && time[4] <= 29)) {
+		--days;
+	}
+	switch (time[5]) {
+		case 12: days += 30;
+		case 11: days += 31;
+		case 10: days += 30;
+		case  9: days += 31;
+		case  8: days += 31;
+		case  7: days += 30;
+		case  6: days += 31;
+		case  5: days += 30;
+		case  4: days += 31;
+		case  3: days += 28;
+		case  2: days += 31;
+	}
+	return days * 86400 + time[3] * 3600 + time[2] * 60 + time[1];
+}
+
+void get_time()
 {
-	uint8_t timeB[9];
+	uint8_t timeA[9], timeB[9];
+	bzero(timeA, sizeof(timeA));
 	do {
 		memcpy(timeB, timeA, sizeof(timeB));
 		while (((timeA[0] = read_cmos(0x0A)) & 0x80) != 0) { } // Status Register A
@@ -397,55 +424,59 @@ void get_time(uint8_t timeA[])
 			timeA[3] = 0;
 		}
 	}
+	fixed_point_time = FIXED_POINT_TIME_NANOSECOND(unix_time(timeA), 0);
 }
 
-uint32_t unix_time() {
-	int years = (last_time[7] * 100 + last_time[6]) - 1970;
-	int days = years * 365 + (years >> 2) + last_time[4];
-	if (last_time[5] == 1 || (last_time[5] == 2 && last_time[4] <= 29)) {
-		--days;
-	}
-	switch (last_time[5]) {
-		case 12: days += 30;
-		case 11: days += 31;
-		case 10: days += 30;
-		case  9: days += 31;
-		case  8: days += 31;
-		case  7: days += 30;
-		case  6: days += 31;
-		case  5: days += 30;
-		case  4: days += 31;
-		case  3: days += 28;
-		case  2: days += 31;
-	}
-	return days * 86400 + last_time[3] * 3600 + last_time[2] * 60 + last_time[1];
-}
 	
-void print_time(uint8_t time[9]) {
-	ERROR_PRINTF("%02d%02d-%02d-%02d %02d:%02d:%02d (%d)\n",
-		time[7], time[6], time[5], time[4], time[3], time[2], time[1], unix_time());
-}
-
-void switch_thread(unsigned int new_state) {
+int switch_thread(unsigned int new_state, uint64_t timeout) {
 	size_t old_thread = current_thread;
 	size_t i = old_thread + 1;
 	size_t target = old_thread;
+	int timed_out = 0;
 	if (i == MAX_THREADS) { i = 0; }
-	while (i != old_thread) {
-		if (threads[i].state == THREAD_RUNNABLE) {
-			target = i;
+	while (1) {
+		if (threads[current_thread].state == THREAD_RUNNABLE) {
+			threads[current_thread].state = THREAD_RUNNING;
+			return 0;
+		}
+		if (timeout && timeout <= fixed_point_time) {
+			threads[current_thread].state = THREAD_RUNNING;
+			return 1; // don't switch if it's already past the time
+		}
+		while (i != old_thread) {
+			if (threads[i].state == THREAD_RUNNABLE) {
+				target = i;
+				break;
+			} else if (threads[i].timeout && threads[i].timeout <= fixed_point_time) {
+				target = i;
+				timed_out = 1;
+				break;
+			}
+			++i;
+			if (i == MAX_THREADS) { i = 0; }
+		}
+		if (target == old_thread) {
+			if (new_state == THREAD_RUNNABLE) {
+				return 0;
+			} else {
+				threads[target].state = new_state;
+				asm volatile ( "sti; hlt; cli" :: ); // wait for interrupt and check again
+			}
+		} else {
 			break;
 		}
-		++i;
-		if (i == MAX_THREADS) { i = 0; }
 	}
-	if (target == old_thread) { return; }
 	DEBUG_PRINTF("switching from %d (%d) to %d\n", old_thread, new_state, target);
 	DEBUG_PRINTF("new stack %p of %p\n",
 		threads[target].kern_stack_cur, threads[target].kern_stack_top);
+	DEBUG_PRINTF("old stack %p of %p\n",
+		threads[old_thread].kern_stack_cur, threads[old_thread].kern_stack_top);
 	current_thread = target;
 
 	threads[old_thread].state = new_state;
+	if (timeout) {
+		threads[old_thread].timeout = timeout;
+	}
 	asm volatile ( "fxsave (%0)" :: "a"(&threads[old_thread].savearea) :);
 	threads[target].state = THREAD_RUNNING;
 	uintptr_t base = threads[target].tls_base;
@@ -456,8 +487,16 @@ void switch_thread(unsigned int new_state) {
 	base >>= 8;
 	ugs_base.base_3 = base & 0xFF;
 	tss_esp0 = threads[target].kern_stack_top;
-	switch_thread_impl(&threads[old_thread].kern_stack_cur, threads[target].kern_stack_cur);
+	if (timed_out) {
+		*(int *)threads[target].kern_stack_cur = 1;
+	}
+	int we_timed_out = switch_thread_impl(&threads[old_thread].kern_stack_cur, threads[target].kern_stack_cur);
 	asm volatile ( "fxrstor (%0)" :: "a"(&threads[current_thread].savearea) :);
+	threads[current_thread].timeout = 0;
+	if (we_timed_out) {
+		ERROR_PRINTF("thread %d timed out in state %d\n", current_thread, new_state);
+	}
+	return we_timed_out;
 }
 
 struct interrupt_frame
@@ -472,7 +511,6 @@ struct interrupt_frame
 void handle_unknown_irq(struct interrupt_frame *frame, uint32_t irq)
 {
 	ERROR_PRINTF("Got unexpected interrupt 0x%02x IP: %08x at ", irq, frame->ip);
-	print_time(last_time);
 	halt(NULL);
 }
 
@@ -484,10 +522,7 @@ void handle_pic1_irq(struct interrupt_frame *frame, uint32_t irq)
 	for (int fd = 0; fd < BOGFD_MAX; ++fd) {
 		if (FDS[fd].type == BOGFD_PIC1 && FDS[fd].status[0] == irq) {
 			++found;
-			FDS[fd].status[1] = 1;
-			if (FDS[fd].flags & BOGFD_BLOCKED_READ) {
-				halt("need to handle blocking read on interrupts");
-			}
+			write(fd, "!", 1);
 		}
 	}
 	if (!found && !UNCLAIMED_PIC_INT) {
@@ -499,57 +534,66 @@ void handle_pic1_irq(struct interrupt_frame *frame, uint32_t irq)
 void handle_unknown_error(struct interrupt_frame *frame, uint32_t irq, uint32_t error_code)
 {
 	ERROR_PRINTF("Got unexpected error %d (%d) IP: %08x at ", irq, error_code, frame->ip);
-	print_time(last_time);
 	halt(NULL);
 }
 
 __attribute__ ((interrupt))
 void handle_timer(struct interrupt_frame *frame)
 {
-	uint8_t new_time[9];
-	get_time(new_time);
-	//if (1) { 
-	if (memcmp(last_time, new_time, sizeof(last_time)) != 0) {
-		memcpy(last_time, new_time, sizeof(new_time));
-	}
 	outb(PORT_PIC1, PIC_INTERRUPT_ACK);
 	// clear RTC flag
 	//outb(0x70, 0x0C);	// select register C
 	//inb(0x71);		// just throw away contents
 	++TIMER_COUNT;
-	switch_thread(THREAD_RUNNABLE);
+	fixed_point_time += FIXED_POINT_TIME_NANOSECOND(0, 54925438); // PIT timer is 54.92... ms
+	switch_thread(THREAD_RUNNABLE, 0);
 }
 
 ssize_t write(int fd, const void * buf, size_t nbyte) {
+	struct BogusFD *wait_target = NULL;
+	int written;
 	if (fd < 0 || fd >= BOGFD_MAX) {
 		return -EBADF;
 	}
 	if (FDS[fd].type == BOGFD_TERMOUT || FDS[fd].type == BOGFD_TERMIN) {
 		term_printn(buf, nbyte);
-		return nbyte;
+		written = nbyte;
 	} else if (FDS[fd].type == BOGFD_PIPE) {
 		if (FDS[fd].pipe == NULL) {
 			return -EPIPE;
 		} else {
-			int written = min(nbyte, BOGFD_PB_LEN - FDS[fd].pipe->pb->length);
+			written = min(nbyte, BOGFD_PB_LEN - FDS[fd].pipe->pb->length);
 			//ERROR_PRINTF("write (%d, \"%s\", %d) = %d\n", fd, buf, nbyte, written);
 			memcpy(&FDS[fd].pipe->pb->data[FDS[fd].pipe->pb->length], buf, written);
 			FDS[fd].pipe->pb->length += written;
-			if (FDS[fd].pipe->flags & BOGFD_BLOCKED_READ) {
-				//TODO avoid thundering herd, maybe
-				for (int thread = 0; thread < MAX_THREADS; ++thread) {
-					if (threads[thread].state == THREAD_IO_READ && threads[thread].wait_target == FDS[fd].pipe) {
-						threads[thread].state = THREAD_RUNNABLE;
-					}
-				}
-				FDS[fd].flags &= ~BOGFD_BLOCKED_READ;
-			}
-			return written;
+			wait_target = FDS[fd].pipe;
 		}
+	} else if (FDS[fd].type == BOGFD_PIC1) {
+		FDS[fd].status[1] = 1;
+		written = 1;
+		wait_target = &FDS[fd];
 	} else {
 		ERROR_PRINTF("write (%d, %08x, %d) = EBADF\n", fd, buf, nbyte);
 		return -EBADF;
 	}
+	if (wait_target != NULL && wait_target->flags & BOGFD_BLOCKED_READ) {
+		//TODO avoid thundering herd, maybe
+		for (int thread = 0; thread < MAX_THREADS; ++thread) {
+			if (threads[thread].state == THREAD_IO_READ && (struct BogusFD *) threads[thread].wait_target == wait_target) {
+				threads[thread].state = THREAD_RUNNABLE;
+			} else if (threads[thread].state == THREAD_POLL) {
+				threads[thread].state = THREAD_RUNNABLE;
+			}
+		}
+		FDS[fd].flags &= ~BOGFD_BLOCKED_READ;
+	} else {
+		for (int thread = 0; thread < MAX_THREADS; ++thread) {
+			if (threads[thread].state == THREAD_POLL) {
+				threads[thread].state = THREAD_RUNNABLE;
+			}
+		}
+	}
+	return written;
 }
 
 size_t kern_read(int fd, void * buf, size_t nbyte, int async) {
@@ -570,7 +614,7 @@ size_t kern_read(int fd, void * buf, size_t nbyte, int async) {
 				return 0;
 			}
 		} else if (FDS[fd].type == BOGFD_FILE) {
-			DEBUG_PRINTF("read (%d, %p, %d)\n", a->fd, buf, nbyte);
+			DEBUG_PRINTF("read (%d, %p, %d)\n", fd, buf, nbyte);
 			read = min(nbyte, FDS[fd].file->end - FDS[fd].pos);
 			memcpy(buf, FDS[fd].pos, read);
 			FDS[fd].pos += read;
@@ -584,11 +628,144 @@ size_t kern_read(int fd, void * buf, size_t nbyte, int async) {
 			return -EAGAIN;
 		} else {
 			FDS[fd].flags |= BOGFD_BLOCKED_READ;
-			threads[current_thread].wait_target = &FDS[fd];
-			switch_thread(THREAD_IO_READ);
+			threads[current_thread].wait_target = (uintptr_t) &FDS[fd];
+			switch_thread(THREAD_IO_READ, 0);
 		}
 	}
 }
+
+// separate function, because uint64_t breaks stack setup for thr_new otherwise
+int kern_umtx_op(struct _umtx_op_args *a) {
+	switch (a->op) {
+		case UMTX_OP_WAKE: {
+			uintptr_t phys = kern_mmap_physical((uintptr_t) a->obj);
+			u_long count = a->val;
+			for (int thread = 0; count > 0 &&  thread < MAX_THREADS; ++thread) {
+				if (threads[thread].state == THREAD_UMTX_WAIT && threads[thread].wait_target == phys) {
+					threads[thread].state = THREAD_RUNNABLE;
+					--count;
+				}
+			}
+			return 0;
+		}
+		case UMTX_OP_NWAKE_PRIVATE: {
+			for (int i = 0; i < a->val; ++i) {
+				uintptr_t phys = kern_mmap_physical(((uintptr_t *)a->obj)[i]);
+				for (int thread = 0; thread < MAX_THREADS; ++thread) {
+					if (threads[thread].state == THREAD_UMTX_WAIT && threads[thread].wait_target == phys) {
+						threads[thread].state = THREAD_RUNNABLE;
+					}
+				}
+			}
+			return 0;
+		}
+		case UMTX_OP_WAIT_UINT:
+		case UMTX_OP_WAIT_UINT_PRIVATE: {
+			if (*(u_int *)a->obj == a->val) {
+				uint64_t timeout = 0;
+				if ((size_t) a->uaddr1 == sizeof(struct _umtx_time)) {
+					struct _umtx_time *utime = (struct _umtx_time *)a->uaddr2;
+					timeout = FIXED_POINT_TIME_NANOSECOND(utime->_timeout.tv_sec, utime->_timeout.tv_nsec);
+					if (!(utime->_flags & UMTX_ABSTIME)) {
+						timeout += fixed_point_time;
+					}
+				} else if ((ssize_t) a->uaddr1 == sizeof(struct timespec)) {
+					halt("umtx wait_uint with timespec timeout\n");
+				}
+				threads[current_thread].wait_target = kern_mmap_physical((uintptr_t) a->obj);
+				if (switch_thread(THREAD_UMTX_WAIT, timeout)) {
+					return -ETIMEDOUT;
+				}
+			}
+			return 0;
+		}
+		case UMTX_OP_MUTEX_WAIT: {
+			struct umutex *mutex = a->obj;
+			while (1) {
+				// TODO locking/atomics
+				if ((mutex->m_owner & ~UMUTEX_CONTESTED) == UMUTEX_UNOWNED) {
+					break;
+				}
+				if (a->uaddr1 != NULL || a->uaddr2 != NULL) {
+					halt("umtx mutex_wait with timeout\n");
+				}
+				mutex->m_owner |= UMUTEX_CONTESTED;
+				threads[current_thread].wait_target = (uintptr_t) a->obj;
+				switch_thread(THREAD_UMTX_MUTEX_WAIT, 0);
+			}
+			return 0;
+		}
+		case UMTX_OP_MUTEX_WAKE2: {
+			struct umutex *mutex = a->obj;
+			int found = 0;
+			if ((mutex->m_owner & ~UMUTEX_CONTESTED) != UMUTEX_UNOWNED) {
+				found = 1;
+			}
+			for (int thread = 0; thread < MAX_THREADS; ++thread) {
+				if (threads[thread].state == THREAD_UMTX_MUTEX_WAIT &&
+					threads[thread].wait_target == (uintptr_t) a->obj) {
+					if (found == 0) {
+						threads[thread].state = THREAD_RUNNABLE;
+						found = 1;
+					} else {
+						mutex->m_owner |= UMUTEX_CONTESTED;
+						break;
+					}
+				}
+			}
+			return 0;
+		}
+	}
+
+	ERROR_PRINTF("_umtx_op(%08x, %d, %d, %08x, %08x)\n", a->obj, a->op, a->val, a->uaddr1, a->uaddr2);
+	halt("unknown umtx op");
+}
+
+// separate function, because uint64_t breaks stack setup for thr_new otherwise
+int kern_ppoll(struct ppoll_args *a) {
+	uint64_t timeout = 0;
+	if (a->ts != NULL) {
+		timeout = fixed_point_time + FIXED_POINT_TIME_NANOSECOND(a->ts->tv_sec, a->ts->tv_nsec);
+	}
+	int printed = 0;
+	int changedfds = 0;
+	while (1) {
+		/*if (!printed) { // && a->ts->tv_sec > 60) {
+			printed = 1;
+			ERROR_PRINTF("ppoll for %d fds, timeout %d.%d\n", a->nfds, FIXED_POINT_SECONDS(timeout), FIXED_POINT_MILLISECONDS(timeout));
+			for (int i = 0; i < a->nfds; ++i) {
+				ERROR_PRINTF("  FD %d: events %08x -> %08x\n", a->fds[i].fd, a->fds[i].events, a->fds[i].revents);
+			}
+		}*/
+		for (int i = 0; i < a->nfds; ++i) {
+			if (a->fds[i].fd < 0 || a->fds[i].fd >= BOGFD_MAX) { continue; } // no EBADF?
+			struct BogusFD *fd = &FDS[a->fds[i].fd];
+			a->fds[i].revents = 0;
+			if (a->fds[i].events && fd->type == BOGFD_PIPE && fd->pipe == NULL) {
+				a->fds[i].revents = a->fds[i].events;
+				++changedfds;
+				continue;
+			}
+			if ((a->fds[i].events & POLLIN && fd->type == BOGFD_PIC1 && fd->status[1] != 0) ||
+			    (a->fds[i].events & POLLIN && fd->type == BOGFD_PIPE && fd->pb->length != 0)
+			   ) {
+				a->fds[i].revents |= POLLIN;
+				++changedfds;
+			}
+			if (a->fds[i].events & POLLOUT && fd->type == BOGFD_PIPE && fd->pipe->pb->length < BOGFD_PB_LEN) {
+				a->fds[i].revents |= POLLOUT;
+				++changedfds;
+			}
+		}
+		if (changedfds) {
+			return changedfds;
+		}
+		if (switch_thread(THREAD_POLL, timeout)) {
+			return 0;
+		};
+	}
+}
+
 
 #define CARRY 1
 #define SYSCALL_SUCCESS(ret) { iframe->flags &= ~CARRY; return ret; }
@@ -658,8 +835,8 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 						SYSCALL_FAILURE(EAGAIN);
 					} else {
 						FDS[a->s].flags |= BOGFD_BLOCKED_WRITE;
-						threads[current_thread].wait_target = &FDS[a->s];
-						switch_thread(THREAD_IO_WRITE);
+						threads[current_thread].wait_target = (uintptr_t) &FDS[a->s];
+						switch_thread(THREAD_IO_WRITE, 0);
 					}
 				} else {
 					SYSCALL_FAILURE(-ret);
@@ -677,8 +854,8 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 						SYSCALL_FAILURE(EAGAIN);
 					} else {
 						FDS[a->fd].flags |= BOGFD_BLOCKED_WRITE;
-						threads[current_thread].wait_target = &FDS[a->fd];
-						switch_thread(THREAD_IO_WRITE);
+						threads[current_thread].wait_target = (uintptr_t) &FDS[a->fd];
+						switch_thread(THREAD_IO_WRITE, 0);
 					}
 				} else {
 					SYSCALL_FAILURE(-ret);
@@ -710,8 +887,8 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 						SYSCALL_FAILURE(EAGAIN);
 					} else {
 						FDS[a->fd].flags |= BOGFD_BLOCKED_WRITE;
-						threads[current_thread].wait_target = &FDS[a->fd];
-						switch_thread(THREAD_IO_WRITE);
+						threads[current_thread].wait_target = (uintptr_t) &FDS[a->fd];
+						switch_thread(THREAD_IO_WRITE, 0);
 					}
 				} else {
 					ERROR_PRINTF("writev (%d, %08x, %d)\n", a->fd, a->iovp, a->iovcnt);
@@ -997,7 +1174,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 		case SYS_select: {
 			struct select_args *a = argp;
 			if (a->nd == 0 && a->tv == NULL) {
-				switch_thread(THREAD_WAIT_FOREVER);
+				switch_thread(THREAD_WAIT_FOREVER, 0);
 			}
 			ERROR_PRINTF("select(%d, %p, %p, %p, %p)\n", a->nd, a->in, a->ou, a->ex, a->tv);
 			break;
@@ -1005,8 +1182,8 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 		case SYS_gettimeofday: {
 			struct gettimeofday_args *a = argp;
 			if (a->tp != NULL) {
-				a->tp->tv_sec = unix_time();
-				a->tp->tv_usec = 0;
+				a->tp->tv_sec = FIXED_POINT_SECONDS(fixed_point_time);
+				a->tp->tv_usec = 0; // FIXED_POINT_MILLISECONDS(fixed_point_time);
 			}
 			if (a->tzp != NULL) {
 				a->tzp->tz_minuteswest = 0;
@@ -1139,8 +1316,8 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 		}
 		case SYS_clock_gettime: {
 			struct clock_gettime_args *a = argp;
-			a->tp->tv_sec = unix_time();
-			a->tp->tv_nsec = 0;
+			a->tp->tv_sec = FIXED_POINT_SECONDS(fixed_point_time);
+			a->tp->tv_nsec = 0; // FIXED_POINT_NANOSECONDS(fixed_point_time);
 			SYSCALL_SUCCESS(0);
 		}
 		case SYS_issetugid: {
@@ -1148,7 +1325,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			SYSCALL_SUCCESS(0);
 		}
 		case SYS_sched_yield: {
-			switch_thread(THREAD_RUNNABLE);
+			switch_thread(THREAD_RUNNABLE, 0);
 			SYSCALL_SUCCESS(0);
 		}
 		case SYS_sigprocmask: {
@@ -1171,77 +1348,12 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			SYSCALL_SUCCESS(0);
 		}
 		case SYS__umtx_op: {
-			struct _umtx_op_args *a = argp;
-			switch (a->op) {
-				case UMTX_OP_WAKE: {
-					uintptr_t phys = kern_mmap_physical((uintptr_t) a->obj);
-					u_long count = a->val;
-					for (int thread = 0; count > 0 &&  thread < MAX_THREADS; ++thread) {
-						if (threads[thread].state == THREAD_UMTX_WAIT && threads[thread].wait_target == phys) {
-							threads[thread].state = THREAD_RUNNABLE;
-							--count;
-						}
-					}
-					SYSCALL_SUCCESS(0);
-				}
-				case UMTX_OP_NWAKE_PRIVATE: {
-					for (int i = 0; i < a->val; ++i) {
-						uintptr_t phys = kern_mmap_physical(((uintptr_t *)a->obj)[i]);
-						for (int thread = 0; thread < MAX_THREADS; ++thread) {
-							if (threads[thread].state == THREAD_UMTX_WAIT && threads[thread].wait_target == phys) {
-								threads[thread].state = THREAD_RUNNABLE;
-							}
-						}
-					}
-					SYSCALL_SUCCESS(0);
-				}
-				case UMTX_OP_WAIT_UINT:
-				case UMTX_OP_WAIT_UINT_PRIVATE: {
-					if (*(u_int *)a->obj == a->val) {
-						//TODO timeout
-						threads[current_thread].wait_target = kern_mmap_physical((uintptr_t) a->obj);
-						switch_thread(THREAD_UMTX_WAIT);
-					}
-					SYSCALL_SUCCESS(0);
-				}
-				case UMTX_OP_MUTEX_WAIT: {
-					struct umutex *mutex = a->obj;
-					while (1) {
-						// TODO locking/atomics
-						if ((mutex->m_owner & ~UMUTEX_CONTESTED) == UMUTEX_UNOWNED) {
-							break;
-						}
-						mutex->m_owner |= UMUTEX_CONTESTED;
-						threads[current_thread].wait_target = (uintptr_t) a->obj;
-						switch_thread(THREAD_UMTX_MUTEX_WAIT);
-						// TODO timeout check
-					}
-					SYSCALL_SUCCESS(0);
-				}
-				case UMTX_OP_MUTEX_WAKE2: {
-					struct umutex *mutex = a->obj;
-					int found = 0;
-					if ((mutex->m_owner & ~UMUTEX_CONTESTED) != UMUTEX_UNOWNED) {
-						found = 1;
-					}
-					for (int thread = 0; thread < MAX_THREADS; ++thread) {
-						if (threads[thread].state == THREAD_UMTX_MUTEX_WAIT &&
-							threads[thread].wait_target == (uintptr_t) a->obj) {
-							if (found == 0) {
-								threads[thread].state = THREAD_RUNNABLE;
-								found = 1;
-							} else {
-								mutex->m_owner |= UMUTEX_CONTESTED;
-								break;
-							}
-						}
-					}
-					SYSCALL_SUCCESS(0);
-				}
+			int ret = kern_umtx_op((struct _umtx_op_args *) argp);
+			if (ret >= 0) {
+				SYSCALL_SUCCESS(0);
+			} else {
+				SYSCALL_FAILURE(-ret);
 			}
-
-			ERROR_PRINTF("_umtx_op(%08x, %d, %d, %08x, %08x)\n", a->obj, a->op, a->val, a->uaddr1, a->uaddr2);
-			break;
 		}
 		case SYS_cpuset_getaffinity: {
 			struct cpuset_getaffinity_args *a = argp;
@@ -1323,56 +1435,12 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			SYSCALL_SUCCESS(0);
 		}
 		case SYS_ppoll: {
-			struct ppoll_args *a = argp;
-			int waitleft = INT_MAX; // FIXME INT_MAX is a lot of seconds, but it's not forever
-			if (a->ts != NULL) {
-				waitleft = a->ts->tv_sec;
-			}
-			int lastsecond = last_time[1];
-			int printed = 0;
-			int changedfds = 0;
-			do {
-				for (int i = 0; i < a->nfds; ++i) {
-					if (a->fds[i].fd < 0 || a->fds[i].fd >= BOGFD_MAX) { continue; } // no EBADF?
-					struct BogusFD *fd = &FDS[a->fds[i].fd];
-					a->fds[i].revents = 0;
-					if (a->fds[i].events && fd->type == BOGFD_PIPE && fd->pipe == NULL) {
-						a->fds[i].revents = a->fds[i].events;
-						++changedfds;
-						continue;
-					}
-					if ((a->fds[i].events & POLLIN && fd->type == BOGFD_PIC1 && fd->status[1] != 0) ||
-					    (a->fds[i].events & POLLIN && fd->type == BOGFD_PIPE && fd->pb->length != 0)
-					   ) {
-						a->fds[i].revents |= POLLIN;
-						++changedfds;
-					}
-					if (a->fds[i].events & POLLOUT && fd->type == BOGFD_PIPE && fd->pipe->pb->length < BOGFD_PB_LEN) {
-						a->fds[i].revents |= POLLOUT;
-						++changedfds;
-					}
-				}
-				if (changedfds || waitleft == 0) {
-					SYSCALL_SUCCESS(changedfds);
-				}
-				/*if (!printed) { // && a->ts->tv_sec > 60) {
-					printed = 1;
-					ERROR_PRINTF("ppoll for %d fds, timeout %d\n", a->nfds, waitleft);
-					for (int i = 0; i < a->nfds; ++i) {
-						ERROR_PRINTF("  FD %d: events %08x -> %08x\n", a->fds[i].fd, a->fds[i].events, a->fds[i].revents);
-					}
-				}*/
-				// enable interrupts, and wait for one; time keeping interrupts will move us forward
-				switch_thread(THREAD_RUNNABLE);
-				if (last_time[1] != lastsecond) {
-					lastsecond = last_time[1];
-					waitleft -= 1;
-				} else {
-					asm volatile ( "sti; hlt; cli" :: );
-				}
-			} while (waitleft > 0);
-			SYSCALL_SUCCESS(0);
-		
+			int ret = kern_ppoll((struct ppoll_args *) argp);
+			if (ret >= 0) {
+				SYSCALL_SUCCESS(ret);
+			} else {
+				SYSCALL_FAILURE(ret);
+			};
 		}
 		case SYS_fstat: {
 			struct fstat_args *a = argp;
@@ -1537,7 +1605,6 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 	} else {
 		ERROR_PRINTF("got unknown syscall %d\n", call);
 	}
-	//print_time(last_time);
 	halt ("halting\n");
 }
 
@@ -1549,7 +1616,6 @@ void handle_gp(struct interrupt_frame *frame, uint32_t error_code)
 	} else {
 		ERROR_PRINTF("Got #GP, no stack frame\n");
 	}
-	print_time(last_time);
 	halt(NULL);
 }
 
@@ -1565,7 +1631,6 @@ void handle_pf(struct interrupt_frame *frame, uint32_t error_code)
 	} else {
 		ERROR_PRINTF("Got #PF, no stack frame\n");
 	}
-	print_time(last_time);
 	halt("page fault");
 }
 
@@ -1573,7 +1638,6 @@ __attribute__ ((interrupt))
 void handle_ud(struct interrupt_frame *frame)
 {
 	ERROR_PRINTF("Got #UD IP: %08x at ", frame->ip);
-	print_time(last_time);
 	halt(NULL);
 }
 void interrupt_setup()
@@ -1877,8 +1941,7 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 
 	setup_fds();
 
-	get_time(last_time);
-	print_time(last_time);
+	get_time();
 	
 	kern_mmap_init(mb->mmap_length, mb->mmap_addr);
 	

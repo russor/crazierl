@@ -150,6 +150,7 @@
 		pushl %ecx
 		pushl %eax // push syscall number
 		call handle_syscall // call into C now
+	handle_int_80_leave:
 		addl $8, %esp // skip pushed syscall and frame pointer
 		popl %gs
 		popl %edx
@@ -538,7 +539,6 @@
 		push $setup_new_stack_done // return address for switch_thread_impl
 		push %ebp
 		mov %esp, %ebp // will need ebp to save it
-		push $0 // return 0 for child
 		push %ebx
 		push %ecx
 		push %edx
@@ -546,6 +546,7 @@
 		push %edi
 		push %ebp
 		push %gs
+		push $0 // return 0 for child
 		mov %esp, %eax
 		mov %ecx, %esp // return to current thread stack
 	setup_new_stack_done:
@@ -557,7 +558,6 @@
 		push %ebp
 		mov %esp, %ebp
 
-		push %eax // maybe not strictly required
 		push %ebx
 		push %ecx // maybe not strictly required
 		push %edx // maybe not strictly required
@@ -565,11 +565,13 @@
 		push %edi
 		push %ebp
 		push %gs // needed in case of timer interrupt
+		push $0 // return from switch_thread_impl, can be modified
 		mov 0x8(%ebp), %eax
 		mov %esp, (%eax) // copy stack to old_thread stack pointer
 		mov 0xC(%ebp), %eax
 		mov %eax, %esp // copy new_thread stack pointer to stack
 	switch_thread_done:
+		pop %eax
 		pop %gs
 		pop %ebp
 		pop %edi
@@ -577,7 +579,6 @@
 		pop %edx
 		pop %ecx
 		pop %ebx
-		pop %eax
 
 		pop %ebp
 		ret
