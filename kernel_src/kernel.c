@@ -84,6 +84,7 @@ size_t next_fd;
 uint8_t WANT_NMI = 0;
  
 #define MAX_THREADS 32
+#define IDLE_THREAD (MAX_THREADS - 1)
 #define THREAD_ID_OFFSET 100002
 struct crazierl_thread threads[MAX_THREADS];
 volatile size_t current_thread = 0;
@@ -434,36 +435,27 @@ int switch_thread(unsigned int new_state, uint64_t timeout) {
 	size_t target = old_thread;
 	int timed_out = 0;
 	if (i == MAX_THREADS) { i = 0; }
-	while (1) {
-		if (threads[current_thread].state == THREAD_RUNNABLE) {
-			threads[current_thread].state = THREAD_RUNNING;
-			return 0;
-		}
-		if (timeout && timeout <= fixed_point_time) {
-			threads[current_thread].state = THREAD_RUNNING;
-			return 1; // don't switch if it's already past the time
-		}
-		while (i != old_thread) {
-			if (threads[i].state == THREAD_RUNNABLE) {
-				target = i;
-				break;
-			} else if (threads[i].timeout && threads[i].timeout <= fixed_point_time) {
-				target = i;
-				timed_out = 1;
-				break;
-			}
-			++i;
-			if (i == MAX_THREADS) { i = 0; }
-		}
-		if (target == old_thread) {
-			if (new_state == THREAD_RUNNABLE) {
-				return 0;
-			} else {
-				threads[target].state = new_state;
-				asm volatile ( "sti; hlt; cli" :: ); // wait for interrupt and check again
-			}
-		} else {
+	if (timeout && timeout <= fixed_point_time) {
+		threads[current_thread].state = THREAD_RUNNING;
+		return 1; // don't switch if it's already past the time
+	}
+	while (i != old_thread) {
+		if (threads[i].state == THREAD_RUNNABLE) {
+			target = i;
 			break;
+		} else if (threads[i].timeout && threads[i].timeout <= fixed_point_time) {
+			target = i;
+			timed_out = 1;
+			break;
+		}
+		++i;
+		if (i == MAX_THREADS) { i = 0; }
+	}
+	if (target == old_thread) {
+		if (new_state == THREAD_RUNNABLE) {
+			return 0;
+		} else {
+			target = IDLE_THREAD;
 		}
 	}
 	DEBUG_PRINTF("switching from %d (%d) to %d\n", old_thread, new_state, target);
@@ -473,29 +465,30 @@ int switch_thread(unsigned int new_state, uint64_t timeout) {
 		threads[old_thread].kern_stack_cur, threads[old_thread].kern_stack_top);
 	current_thread = target;
 
-	threads[old_thread].state = new_state;
+	if (threads[old_thread].state != THREAD_IDLE) {
+		threads[old_thread].state = new_state;
+	}
 	if (timeout) {
 		threads[old_thread].timeout = timeout;
 	}
 	asm volatile ( "fxsave (%0)" :: "a"(&threads[old_thread].savearea) :);
-	threads[target].state = THREAD_RUNNING;
-	uintptr_t base = threads[target].tls_base;
+	if (threads[target].state != THREAD_IDLE) {
+		threads[target].state = THREAD_RUNNING;
+		uintptr_t base = threads[target].tls_base;
 
-	ugs_base.base_1 = base & 0xFFFF;
-	base >>= 16;
-	ugs_base.base_2 = base & 0xFF;
-	base >>= 8;
-	ugs_base.base_3 = base & 0xFF;
-	tss_esp0 = threads[target].kern_stack_top;
-	if (timed_out) {
-		*(int *)threads[target].kern_stack_cur = 1;
+		ugs_base.base_1 = base & 0xFFFF;
+		base >>= 16;
+		ugs_base.base_2 = base & 0xFF;
+		base >>= 8;
+		ugs_base.base_3 = base & 0xFF;
+		tss_esp0 = threads[target].kern_stack_top;
+		if (timed_out) {
+			*(int *)threads[target].kern_stack_cur = 1;
+		}
 	}
 	int we_timed_out = switch_thread_impl(&threads[old_thread].kern_stack_cur, threads[target].kern_stack_cur);
 	asm volatile ( "fxrstor (%0)" :: "a"(&threads[current_thread].savearea) :);
 	threads[current_thread].timeout = 0;
-	if (we_timed_out) {
-		ERROR_PRINTF("thread %d timed out in state %d\n", current_thread, new_state);
-	}
 	return we_timed_out;
 }
 
@@ -1561,10 +1554,10 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				SYSCALL_FAILURE(EPROCLIM);
 			}
 			if (!kern_mmap(&stack_page, NULL, PAGE_SIZE, PROT_READ | PROT_WRITE | PROT_KERNEL, MAP_STACK)) {
-				explicit_bzero((void *)stack_page, PAGE_SIZE);
 				ERROR_PRINTF("thr_new (...) = ENOMEM\n");
 				SYSCALL_FAILURE(ENOMEM);
 			}
+			explicit_bzero((void *)stack_page, PAGE_SIZE);
 			size_t new_thread = next_thread;
 			++next_thread;
 			threads[new_thread].state = THREAD_INITING;
@@ -1923,6 +1916,31 @@ void setup_entrypoint()
 	threads[0].state = THREAD_RUNNING;
 
 	threads[0].kern_stack_top = (uintptr_t) &stack_top;
+
+	uintptr_t stack_page;
+	if (!kern_mmap(&stack_page, NULL, PAGE_SIZE, PROT_READ | PROT_WRITE | PROT_KERNEL, MAP_STACK)) {
+		halt("no stack page for idle thread");
+	}
+	explicit_bzero((void *)stack_page, PAGE_SIZE);
+	threads[IDLE_THREAD].state = THREAD_IDLE;
+	threads[IDLE_THREAD].kern_stack_top = stack_page + PAGE_SIZE;
+	bzero(&threads[IDLE_THREAD].savearea, sizeof(threads[IDLE_THREAD].savearea));
+	uintptr_t stack;
+	asm volatile ( "mov %%esp, %0" : "=a"(stack) :);
+	size_t stack_size = threads[current_thread].kern_stack_top - stack;
+	memcpy((void *)(threads[IDLE_THREAD].kern_stack_top - stack_size), (void *)stack, stack_size);
+
+	//setup_new_stack returns on the current thread, and the new thread
+	uintptr_t new_stack_cur = setup_new_stack(threads[IDLE_THREAD].kern_stack_top - stack_size);
+	if (new_stack_cur) { // thr_new returns on existing thread
+		threads[IDLE_THREAD].kern_stack_cur = new_stack_cur;
+	} else {
+		asm volatile ( "finit" :: ); // clear fpu/sse state
+		while (1) {
+			asm volatile( "sti; hlt; cli" :: );
+		}
+	}
+
 	start_entrypoint(new_top, entrypoint);
 }
 
