@@ -6,7 +6,7 @@ USER_COMPILER=clang -m32 -fpic -g -gdwarf-2 -c -DCRAZIERL_USER
 NIF_COMPILER=clang -m32 -fpic -g -gdwarf-2 -shared -I../installed/lib/erlang/usr/include/
 
 run: obj/mykernel.elf obj/initrd
-	qemu-system-i386 -s -m 256 -serial mon:stdio -kernel obj/mykernel.elf -append $(RTLD) -initrd obj/initrd
+	qemu-system-i386 -smp 2 -s -m 256 -serial mon:stdio -kernel obj/mykernel.elf -append $(RTLD) -initrd obj/initrd
 
 debug: obj/mykernel.elf obj/initrd
 	qemu-system-i386 -d cpu_reset,guest_errors -S -s  -m 256 -serial mon:stdio -kernel obj/mykernel.elf -append $(RTLD) -initrd obj/initrd
@@ -20,11 +20,11 @@ debugger:
 clean:
 	rm -f obj/initrd obj/mykernel.elf obj/*.o obj/*.beam
 
-obj/mykernel.elf: obj/start.o obj/kernel.o obj/syscalls.o obj/files.o obj/kern_mmap.o \
+obj/mykernel.elf: obj/start.o obj/kernel.o obj/syscalls.o obj/files.o obj/kern_mmap.o obj/acpi.o \
 		obj/rtld_printf.o obj/bzero.o obj/memcpy.o obj/memcmp.o obj/memmove.o obj/memset.o \
 		obj/strchr.o obj/strchrnul.o obj/strcmp.o obj/strcpy.o obj/strlcpy.o \
 		obj/strlen.o obj/strncmp.o obj/strncpy.o obj/strnlen.o \
-		obj/qdivrem.o obj/umoddi3.o obj/udivdi3.o \
+		obj/qdivrem.o obj/umoddi3.o obj/udivdi3.o obj/llabs.o \
 		obj/explicit_bzero.o
 	clang -m32 -fuse-ld=bfd -g -static -ffreestanding -nostdlib -T linker.ld $^ -o obj/mykernel.elf -gdwarf-2
 
@@ -49,6 +49,9 @@ obj/files.o: files.c files.h
 
 obj/kern_mmap.o: kern_mmap.c kern_mmap.h
 	$(KERNEL_COMPILER) $< -o $@
+
+obj/acpi.o: acpi.c
+	$(KERNEL_COMPILER) -I /usr/src/sys/ $< -o $@
 
 obj/rtld_printf.o: /usr/src/libexec/rtld-elf/rtld_printf.c
 	$(KERNEL_COMPILER) $^ -o $@
@@ -88,6 +91,8 @@ obj/umoddi3.o: /usr/src/lib/libc/quad/umoddi3.c
 	$(KERNEL_COMPILER) $^ -o $@
 obj/udivdi3.o: /usr/src/lib/libc/quad/udivdi3.c
 	$(KERNEL_COMPILER) $^ -o $@
+obj/llabs.o: /usr/src/lib/libc/stdlib/llabs.c
+	$(KERNEL_COMPILER) $^ -o $@
 
 obj/explicit_bzero.o: /usr/src/sys/libkern/explicit_bzero.c
 	$(KERNEL_COMPILER) $^ -o $@
@@ -118,3 +123,7 @@ obj/console.beam: console.erl
 obj/vgakb.beam: vgakb.erl
 	../installed/bin/erlc $^
 	mv vgakb.beam obj/
+
+obj/acpi.beam: acpi.erl
+	../installed/bin/erlc $^
+	mv acpi.beam obj/
