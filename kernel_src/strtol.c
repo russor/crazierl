@@ -34,12 +34,7 @@
  * From: @(#)strtol.c	8.1 (Berkeley) 6/4/93
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD: releng/12.1/sys/libkern/strtol.c 326023 2017-11-20 19:43:44Z pfg $");
-
-#include <sys/param.h>
-#include <sys/systm.h>
-#include <sys/ctype.h>
+#include <stddef.h>
 #include <sys/limits.h>
 
 /*
@@ -57,14 +52,7 @@ strtol(const char *nptr, char **endptr, int base)
 	unsigned long cutoff;
 	int neg = 0, any, cutlim;
 
-	/*
-	 * Skip white space and pick up leading +/- sign if any.
-	 * If base is 0, allow 0x for hex and 0 for octal, else
-	 * assume decimal; if base is already 16, allow 0x.
-	 */
-	do {
-		c = *s++;
-	} while (isspace(c));
+	c = *s++;
 	if (c == '-') {
 		neg = 1;
 		c = *s++;
@@ -100,12 +88,12 @@ strtol(const char *nptr, char **endptr, int base)
 	cutlim = cutoff % (unsigned long)base;
 	cutoff /= (unsigned long)base;
 	for (acc = 0, any = 0;; c = *s++) {
-		if (!isascii(c))
-			break;
-		if (isdigit(c))
+		if ('c' >= 0 && c <= '9')
 			c -= '0';
-		else if (isalpha(c))
-			c -= isupper(c) ? 'A' - 10 : 'a' - 10;
+		else if ('c' >= 'A' && c <= 'Z')
+			c -= 'A' - 10;
+		else if ('c' >= 'a' && c <= 'z')
+			c -= 'a' - 10;
 		else
 			break;
 		if (c >= base)
