@@ -12,8 +12,8 @@ find_rsdp(<<"RSD PTR ", Rest/binary>>) ->
 	<<Checksum, OEMID:6/binary, Version, RsdtAddress:32/little, _/binary>> = Rest,
 	0 = checksum(<<"RSD PTR ", Checksum, OEMID:6/binary, Version, RsdtAddress:32/little>>),
 	
-	io:format("found checksum=~B, OEMID=~s, Version=~B, Address = ~.16B~n",
-		[Checksum, OEMID, Version, RsdtAddress]),
+	io:format("found checksum=~B, OEMID=~s, Version=~B, Address = ~.16B, togo = ~B~n",
+		[Checksum, OEMID, Version, RsdtAddress, size(Rest)]),
 	
 	Base = RsdtAddress band (bnot 4095),
 	{ok, Map} = crazierl:map(Base, 4096),

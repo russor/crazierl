@@ -227,6 +227,10 @@ void kern_mmap_init (unsigned int length, unsigned int addr)
 				MAX_ADDR = addr + len;
 			}
 			add_page_mappings(0, addr, len);
+		} else {
+			uintptr_t addr = mmm->addr;
+			uintptr_t len = mmm->len;
+			DEBUG_PRINTF("unavailable memory (%d) at 0x%08x; 0x%08x (%u) bytes\n", mmm->type, addr, len, len);
 		}
 	}
 	PAGE_SETUP_FINISHED = 1;

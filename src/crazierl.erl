@@ -16,6 +16,6 @@ bcopy_from(_MapResource, _Offset, _Length) -> exit(nif_library_not_loaded).
 % setup console
 start() ->
 	console:start([
-		{comport, start, [16#3f8, "/kern/pic1/4"]},
-		{vgakb, start, [16#60, "/kern/pic1/1"]}
+		{comport, start, [16#3f8, "/kern/ioapic/4/0"]},
+		{vgakb, start, [16#60, "/kern/ioapic/1/0"]}
 	]).

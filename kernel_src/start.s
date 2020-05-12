@@ -10,7 +10,7 @@
 .global handle_int_80
 .global start_entrypoint
 .global unknown_int
-.global pic1_int
+.global ioapic_int
 .global setup_new_stack
 .global switch_thread_impl
 .global ugs_base
@@ -494,24 +494,24 @@
 		pop %eax
 		iret
 
-	pic1_int:
+	ioapic_int:
 		// repeat 8 times
-		call pic1_call_handler
-		call pic1_call_handler
-		call pic1_call_handler
-		call pic1_call_handler
+		call ioapic_call_handler
+		call ioapic_call_handler
+		call ioapic_call_handler
+		call ioapic_call_handler
 
-		call pic1_call_handler
-		call pic1_call_handler
-		call pic1_call_handler
-		call pic1_call_handler
+		call ioapic_call_handler
+		call ioapic_call_handler
+		call ioapic_call_handler
+		call ioapic_call_handler
 
-	pic1_call_handler:
+	ioapic_call_handler:
 		xchg %eax, (%esp)
 		push %ecx
 		push %edx
 
-		sub $(pic1_int + 5), %eax
+		sub $(ioapic_int + 5), %eax
 		xor %edx, %edx
 		mov $5, %ecx
 		idivw %cx
@@ -519,7 +519,7 @@
 		mov %esp, %eax
 		addl $16, %eax
 		push %eax
-		call handle_pic1_irq
+		call handle_ioapic_irq
 		addl $8, %esp
 		pop %edx
 		pop %ecx

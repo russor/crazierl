@@ -4,6 +4,7 @@
 #include "files.h"
 #include "kern_mmap.h"
 #include "bogfd.h"
+#include "acpi.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -12,7 +13,10 @@
 extern const char *syscallnames[];
 extern void * handle_int_80;
 extern void * unknown_int;
-extern void * pic1_int;
+#define UNKNOWN_INT_STRIDE 5
+#define FIRST_IOAPIC_VECTOR 0x20
+
+extern void * ioapic_int;
 extern void * stack_top;
 extern void start_entrypoint();
 extern uintptr_t setup_new_stack(uintptr_t stack_pointer);
@@ -24,6 +28,7 @@ char **environ = {NULL};
 char *__progname = "crazierlkernel";
 
 #define PORT_PIC1 0x20
+#define PORT_PIC2 0xA0
 #define PORT_COM1 0x3f8   /* COM1 */
 
 #define PIC_INTERRUPT_ACK 0x20
@@ -67,6 +72,7 @@ typedef uint32_t u_int32_t;
 #include <sys/cpuset.h>
 #include <rtld_printf.h>
 #include <x86intrin.h>
+#include <cpuid.h>
 #include <sys/socket.h>
 #include <sys/thr.h>
 #include "threads.h"
@@ -80,6 +86,7 @@ typedef uint32_t u_int32_t;
 
 struct BogusFD FDS[BOGFD_MAX];
 size_t next_fd;
+uint8_t next_ioapic_vector = 1;
 
 uint8_t WANT_NMI = 0;
  
@@ -141,6 +148,8 @@ uint64_t fixed_point_time;
 #define FIXED_POINT_NANOSECONDS(fpt) (((fpt & ((1 << 24) -1)) * 1000000000) >> 24)
 
 uintptr_t user_stack;
+
+#define IOAPIC_PATH "/kern/ioapic/"
 
 static inline void outb(uint16_t port, uint8_t val)
 {
@@ -409,7 +418,7 @@ void get_time()
 		timeA[6] = read_cmos(0x09); // Year
 		timeA[7] = read_cmos(0x32); // Century (maybe)
 		timeA[8] = read_cmos(0x0B); // Status Register B
-	} while (memcmp(timeA, timeB, sizeof(timeB)) != 0);
+	} while (bcmp(timeA, timeB, sizeof(timeB)) != 0);
 
 	uint8_t tens, ones;
 	if ((timeA[8] & 0x04) == 0) { // BCD mode
@@ -501,26 +510,27 @@ struct interrupt_frame
     uint32_t ss;
 };
 
+
 void handle_unknown_irq(struct interrupt_frame *frame, uint32_t irq)
 {
 	ERROR_PRINTF("Got unexpected interrupt 0x%02x IP: %08x at ", irq, frame->ip);
 	halt(NULL);
 }
 
-int UNCLAIMED_PIC_INT = 0;
-void handle_pic1_irq(struct interrupt_frame *frame, uint32_t irq)
+int UNCLAIMED_IOAPIC_INT = 0;
+void handle_ioapic_irq(struct interrupt_frame *frame, unsigned int vector)
 {
-	outb(PORT_PIC1, PIC_INTERRUPT_ACK);
+	*(uint32_t *)(local_apic + 0xB0) = 0; // EOI
 	int found = 0;
 	for (int fd = 0; fd < BOGFD_MAX; ++fd) {
-		if (FDS[fd].type == BOGFD_PIC1 && FDS[fd].status[0] == irq) {
+		if (FDS[fd].type == BOGFD_IOAPIC && FDS[fd].status[0] == vector) {
 			++found;
 			write(fd, "!", 1);
 		}
 	}
-	if (!found && !UNCLAIMED_PIC_INT) {
-		UNCLAIMED_PIC_INT = 1;
-		ERROR_PRINTF("didn't find FD for pic interrupt %d\n", irq);
+	if (!found && !UNCLAIMED_IOAPIC_INT) {
+		UNCLAIMED_IOAPIC_INT = 1;
+		ERROR_PRINTF("didn't find FD for ioapic vector %d\n", vector);
 	}
 }
 
@@ -533,13 +543,41 @@ void handle_unknown_error(struct interrupt_frame *frame, uint32_t irq, uint32_t 
 __attribute__ ((interrupt))
 void handle_timer(struct interrupt_frame *frame)
 {
-	outb(PORT_PIC1, PIC_INTERRUPT_ACK);
-	// clear RTC flag
-	//outb(0x70, 0x0C);	// select register C
-	//inb(0x71);		// just throw away contents
 	++TIMER_COUNT;
+	*(uint32_t *)(local_apic + 0xB0) = 0; // EOI
 	fixed_point_time += FIXED_POINT_TIME_NANOSECOND(0, 54925438); // PIT timer is 54.92... ms
 	switch_thread(THREAD_RUNNABLE, 0);
+}
+
+void ioapic_set_gsi_vector(unsigned int irq, uint8_t flags, uint8_t vector, uint8_t physcpu) {
+	int ioapic = 0;
+	unsigned int origirq = irq;
+	while (ioapic < io_apic_count) {
+		if (irq < io_apics[ioapic].numintr) {
+			uint8_t index = (irq * 2) + 0x10;
+			uint32_t lo, hi;
+
+			lo = vector;
+			if (flags & 8) { // level triggered
+				lo |= 0x8000;
+			}
+			if (flags & 2) { // active low
+				lo |= 0x2000;
+			}
+			hi = physcpu << 24;
+			
+			io_apics[ioapic].address[0] = index;
+			io_apics[ioapic].address[4] = lo;
+			io_apics[ioapic].address[0] = index + 1;
+			io_apics[ioapic].address[4] = hi;
+			return;
+		} else {
+			irq -= io_apics[ioapic].numintr;
+		}
+		++ioapic;
+	}
+	ERROR_PRINTF("couldn't find IO-APIC for irq %d\n", origirq);
+	halt(NULL);
 }
 
 ssize_t write(int fd, const void * buf, size_t nbyte) {
@@ -561,7 +599,7 @@ ssize_t write(int fd, const void * buf, size_t nbyte) {
 			FDS[fd].pipe->pb->length += written;
 			wait_target = FDS[fd].pipe;
 		}
-	} else if (FDS[fd].type == BOGFD_PIC1) {
+	} else if (FDS[fd].type == BOGFD_IOAPIC) {
 		FDS[fd].status[1] = 1;
 		written = 1;
 		wait_target = &FDS[fd];
@@ -739,7 +777,7 @@ int kern_ppoll(struct ppoll_args *a) {
 				++changedfds;
 				continue;
 			}
-			if ((a->fds[i].events & POLLIN && fd->type == BOGFD_PIC1 && fd->status[1] != 0) ||
+			if ((a->fds[i].events & POLLIN && fd->type == BOGFD_IOAPIC && fd->status[1] != 0) ||
 			    (a->fds[i].events & POLLIN && fd->type == BOGFD_PIPE && fd->pb->length != 0)
 			   ) {
 				a->fds[i].revents |= POLLIN;
@@ -999,7 +1037,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			}
 			int read = 0;
 			struct BogusFD *fd = &FDS[a->s];
-			if (fd->type == BOGFD_PIC1) {
+			if (fd->type == BOGFD_IOAPIC) {
 				if (fd->status[1]) {
 					a->buf[0] = '!';
 					read = 1;
@@ -1099,22 +1137,44 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				SYSCALL_FAILURE(EBADF);
 			}
 			if (FDS[a->s].type == BOGFD_UNIX) {
-				if (strncmp("/kern/pic1/", ((const struct sockaddr *)a->name)->sa_data, 11) == 0) {
-					int irq = ((const struct sockaddr *)a->name)->sa_data[11] - '0';
-					if (irq >= 0 && irq < 8) {
-						DEBUG_PRINTF("pic1 irq %d requested\n", irq);
-
-						IDT[0x20 + irq].offset_1 = ((uint32_t)&pic1_int + (irq * 5)) & 0xFFFF;
-						IDT[0x20 + irq].offset_2 = ((uint32_t)&pic1_int + (irq * 5)) >> 16;
-
-						FDS[a->s].type = BOGFD_PIC1;
-						FDS[a->s].status[0] = irq;
-						FDS[a->s].status[1] = 0;
-						UNCLAIMED_PIC_INT = 0;
-						SYSCALL_SUCCESS(0);
+				char const* name = ((const struct sockaddr *)a->name)->sa_data;
+				if (strncmp(IOAPIC_PATH, name, strlen(IOAPIC_PATH)) == 0) {
+					char * endptr;
+					long global_irq = strtol(name + strlen(IOAPIC_PATH), &endptr, 10);
+					if (*endptr != '/') {
+						halt("bad path for interrupt\n");
 					}
-				} else if (strncmp("/kern/fd/", ((const struct sockaddr *)a->name)->sa_data, 9) == 0) {
-					int fd = ((const struct sockaddr *)a->name)->sa_data[9] - '0';
+					long flags = strtol(endptr, NULL, 10);
+					uint32_t handler = (uint32_t)(&unknown_int) + ((FIRST_IOAPIC_VECTOR + next_ioapic_vector) * UNKNOWN_INT_STRIDE);
+
+					while (next_ioapic_vector < 8) {
+						if (IDT[FIRST_IOAPIC_VECTOR + next_ioapic_vector].offset_1 == ((uint32_t)(handler) & 0xFFFF) &&
+						    IDT[FIRST_IOAPIC_VECTOR + next_ioapic_vector].offset_2 == ((uint32_t)(handler) >> 16)) {
+						    break;
+						}
+						++next_ioapic_vector;
+						handler += UNKNOWN_INT_STRIDE;
+					}
+					if (next_ioapic_vector >= 8) {
+						halt("more than 8 ioapic vectors were requested\n");
+					}
+					uint8_t my_vector = next_ioapic_vector;
+					++next_ioapic_vector;
+
+					FDS[a->s].type = BOGFD_IOAPIC;
+					FDS[a->s].status[0] = my_vector;
+					FDS[a->s].status[1] = 0;
+					FDS[a->s].status[2] = global_irq;
+
+					IDT[FIRST_IOAPIC_VECTOR + my_vector].offset_1 = ((uint32_t)&ioapic_int + (my_vector * UNKNOWN_INT_STRIDE)) & 0xFFFF;
+					IDT[FIRST_IOAPIC_VECTOR + my_vector].offset_2 = ((uint32_t)&ioapic_int + (my_vector * UNKNOWN_INT_STRIDE)) >> 16;
+					
+					ioapic_set_gsi_vector(global_irq, flags, FIRST_IOAPIC_VECTOR + my_vector, 0); // TODO pick cpu
+
+					UNCLAIMED_IOAPIC_INT = 0;
+					SYSCALL_SUCCESS(0);
+				} else if (strncmp("/kern/fd/", name, 9) == 0) {
+					int fd = name[9] - '0';
 					if (fd >= 0 && fd <= 2) {
 						ERROR_PRINTF("fd %d requested by %d\n", fd, a->s);
 						if (FDS[fd].type == BOGFD_TERMIN || FDS[fd].type == BOGFD_TERMOUT) {
@@ -1280,7 +1340,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 							SYSCALL_SUCCESS(0);
 						case HW_NCPU:
 							DEBUG_PRINTF("hw.ncpu\n");
-							*(u_int *)a->old = 1;
+							*(u_int *)a->old = numcpu;
 							*a->oldlenp = sizeof(u_int);
 							SYSCALL_SUCCESS(0);
 						case HW_PAGESIZE:
@@ -1633,29 +1693,77 @@ void handle_ud(struct interrupt_frame *frame)
 	ERROR_PRINTF("Got #UD IP: %08x at ", frame->ip);
 	halt(NULL);
 }
+
+uint64_t readmsr (uint32_t msr)
+{
+	uint32_t hi, lo;
+	uint64_t ret;
+	asm volatile("rdmsr" : "=a"(lo), "=d"(hi) : "c"(msr));
+	ret = hi;
+	ret<<=32;
+	ret |= lo;
+	return ret;
+}
+
+
+uint16_t pit_counter()
+{
+	outb(0x43, 0x0b); // latch channel 0 in PIT
+	uint16_t counter = inb(0x40);
+	counter |= (inb(0x40) << 8);
+	return counter;
+}
+
+
 void interrupt_setup()
 {
-	// remap primary PIC so that the interrupts don't conflict with Intel exceptions
-	
-	uint8_t mask = inb(PORT_PIC1 + 1); // read current mask from PIC
-	mask &= (~0x01); // enable irq 0 -> PIT timer
-	mask &= (~0x10); // enable irq 4 -> COM1
-
+	// setup PIC before disabling, so spurious interrupts hit vector 0xF7
 	outb(PORT_PIC1, 0x11); // request initialization
-	outb(0x80, 0); // wait cycle
-	outb(PORT_PIC1 + 1, 0x20); // offset interrupts by 0x20
-	outb(0x80, 0); // wait
+	outb(PORT_PIC2, 0x11);
+	outb(PORT_PIC1 + 1, 0xF0); // offset interrupts by 0xF0
+	outb(PORT_PIC2 + 1, 0xF0); // offset interrupts by 0xF0
 	outb(PORT_PIC1 + 1, 0x4); // indicate slave PIC on IRQ 2
-	outb(0x80, 0); //wait
+	outb(PORT_PIC2 + 1, 0x2); // indicate slave PIC is slave
 	outb(PORT_PIC1 + 1, 0x01); // set to 8086 mode
-	outb(0x80, 0); //wait
-	outb(PORT_PIC1 + 1, mask); // reset interrupt mask
+	outb(PORT_PIC2 + 1, 0x01); // set to 8086 mode
+	outb(PORT_PIC1 + 1, 0xFF); // mask all interrupts
+	outb(PORT_PIC2 + 1, 0xFF); // mask all interrupts
 
-	// ensure IDT entries are not present
+
+	char * rsdt = acpi_find_rsdt(NULL);
+	if (rsdt == NULL) {
+		halt("ACPI is required, but could not find RSDP");
+	}
+	ERROR_PRINTF("RSDT is at %p\n", rsdt);
+	if (! acpi_check_table(rsdt)) {
+		halt("Invalid ACPI RSDT table\n");
+	}
+	
+	if (! acpi_process_madt(rsdt)) {
+		halt("processing ACPI MADT (APIC) failed\n");
+	}
+	
+	uint64_t base_msr = readmsr(0x1b);
+	
+	if (!(base_msr & 0x800)) {
+		halt("an enabled local APIC is required\n");
+	}
+	if (local_apic != (base_msr & (~((1 << 12) - 1)))) {
+		ERROR_PRINTF("local_apic from APIC %08x does not match value from MSR %08x\n", local_apic, base_msr & (~((1 << 12) - 1)));
+		halt(NULL);
+	}
+	
+
+	// vector spurious intererrupts to 0xFF and enable APIC
+	*(uint32_t *)(local_apic + 0xF0) = 0x1FF;
+	
+	ioapic_set_gsi_vector(timer_gsirq, timer_flags, FIRST_IOAPIC_VECTOR, 0);
+
+	// default to unknown_interrupt handler
 	for (int i = 0; i < (sizeof(IDT) / sizeof(IDT[0])); ++i) {
 		IDT[i].type_attr = 0;
 		uint32_t handler = (uint32_t)(&unknown_int);
-		handler +=(i * 5);
+		handler +=(i * UNKNOWN_INT_STRIDE);
 		IDT[i].offset_1 = handler & 0xFFFF;
 		IDT[i].selector = 0x08;
 		IDT[i].zero = 0;
@@ -1672,8 +1780,8 @@ void interrupt_setup()
 	IDT[0x0E].offset_1 = ((uint32_t) &handle_pf) & 0xFFFF;
 	IDT[0x0E].offset_2 = ((uint32_t) &handle_pf) >> 16;
 
-	IDT[0x20].offset_1 = ((uint32_t) &handle_timer) & 0xFFFF;
-	IDT[0x20].offset_2 = ((uint32_t) &handle_timer) >> 16;
+	IDT[FIRST_IOAPIC_VECTOR].offset_1 = ((uint32_t) &handle_timer) & 0xFFFF;
+	IDT[FIRST_IOAPIC_VECTOR].offset_2 = ((uint32_t) &handle_timer) >> 16;
 
 	IDT[0x80].offset_1 = ((uint32_t) &handle_int_80) & 0xFFFF;
 	IDT[0x80].offset_2 = ((uint32_t) &handle_int_80) >> 16;
@@ -1783,10 +1891,7 @@ void load_file(void *start, char *name, size_t size)
 }
 
 void enable_sse() {
-	uint32_t a,b,c,d;
-	uint32_t code = 1;
-	asm volatile("cpuid":"=a"(a),"=b"(b),"=c"(c),"=d"(d):"a"(code));
-	//ERROR_PRINTF("cpuid eax %08x, ebx %08x, ecx %08x, edx %08x\n", a, b, c, d);
+	uint32_t a;
 	// https://wiki.osdev.org/SSE#Adding_support
 	asm volatile("mov %%cr0, %0" : "=a" (a));
 	a&= 0xFFFFFFFB;
@@ -1950,20 +2055,28 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 	// We're here! Let's initiate the terminal and display a message to show we got here.
 	// Initiate terminal
 	term_init();
+	setup_fds();
  
 	// Display some messages
-	term_print("Hello, World!\n");
-	term_print("Welcome to the kernel at ");
+	ERROR_PRINTF("Hello, World!\n");
 	enable_sse();
 	interrupt_setup();
 
-	setup_fds();
 
 	get_time();
+
+	uintptr_t scratch;
 	
 	kern_mmap_init(mb->mmap_length, mb->mmap_addr);
+	if (!kern_mmap(&scratch, (void *)local_apic, PAGE_SIZE, PROT_KERNEL | PROT_READ | PROT_WRITE | PROT_FORCE, 0)) {
+		halt("couldn't map space for Local APIC\n");
+	}
+	for (size_t i = 0; i < io_apic_count; ++i) {
+		if (!kern_mmap(&scratch, (void *)io_apics[i].address, PAGE_SIZE, PROT_KERNEL | PROT_READ | PROT_WRITE | PROT_FORCE, 0)) {
+			halt("couldn't map space for IO-APIC\n");
+		}
+	}
 	
-	uintptr_t scratch;
 	ERROR_PRINTF("kernel read-only %08x - %08x\n", &__executable_start, &__etext);
 
 	if (!kern_mmap(&scratch, &__executable_start, &__etext - &__executable_start, PROT_KERNEL | PROT_READ, 0)) {
@@ -1997,8 +2110,8 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 	multiboot_module_t *mods = (void *)mb->mods_addr;
 
 	kern_mmap_enable_paging();
-	kern_mmap(&scratch, (void *) mods, mods_count * sizeof(mods), PROT_KERNEL | PROT_READ | PROT_FORCE, 0);
 
+	kern_mmap(&scratch, (void *) mods, mods_count * sizeof(mods), PROT_KERNEL | PROT_READ | PROT_FORCE, 0);
 	for (int mod = 0; mod < mods_count; ++mod) {
 		DEBUG_PRINTF("Module %d (%s):\n 0x%08x-0x%08x\n", mod, mods[mod].cmdline, mods[mod].mod_start, mods[mod].mod_end);
 		init_files(&mods[mod]);

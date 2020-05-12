@@ -21,9 +21,9 @@ clean:
 	rm -f obj/initrd obj/mykernel.elf obj/*.o obj/*.beam
 
 obj/mykernel.elf: obj/start.o obj/kernel.o obj/syscalls.o obj/files.o obj/kern_mmap.o obj/acpi.o \
-		obj/rtld_printf.o obj/bzero.o obj/memcpy.o obj/memcmp.o obj/memmove.o obj/memset.o \
-		obj/strchr.o obj/strchrnul.o obj/strcmp.o obj/strcpy.o obj/strlcpy.o \
-		obj/strlen.o obj/strncmp.o obj/strncpy.o obj/strnlen.o \
+		obj/rtld_printf.o obj/bcmp.o obj/bzero.o obj/memcpy.o obj/memmove.o \
+		obj/memset.o obj/strchr.o obj/strchrnul.o obj/strcmp.o obj/strcpy.o obj/strlcpy.o \
+		obj/strlen.o obj/strncmp.o obj/strncpy.o obj/strnlen.o obj/strtol.o \
 		obj/qdivrem.o obj/umoddi3.o obj/udivdi3.o obj/llabs.o \
 		obj/explicit_bzero.o
 	clang -m32 -fuse-ld=bfd -g -static -ffreestanding -nostdlib -T linker.ld $^ -o obj/mykernel.elf -gdwarf-2
@@ -31,7 +31,7 @@ obj/mykernel.elf: obj/start.o obj/kernel.o obj/syscalls.o obj/files.o obj/kern_m
 obj/start.o: start.s
 	clang -m32 -g -gdwarf-2 -c $^ -o $@
 
-obj/kernel.o: kernel.c files.h
+obj/kernel.o: kernel.c common.h files.h kern_mmap.h bogfd.h threads.h acpi.h
 	$(KERNEL_COMPILER) $< -o $@ -I /usr/src/libexec/rtld-elf/
 
 obj/syscalls.o: /usr/src/sys/kern/syscalls.c
@@ -50,17 +50,17 @@ obj/files.o: files.c files.h
 obj/kern_mmap.o: kern_mmap.c kern_mmap.h
 	$(KERNEL_COMPILER) $< -o $@
 
-obj/acpi.o: acpi.c
+obj/acpi.o: acpi.c acpi.h
 	$(KERNEL_COMPILER) -I /usr/src/sys/ $< -o $@
 
 obj/rtld_printf.o: /usr/src/libexec/rtld-elf/rtld_printf.c
 	$(KERNEL_COMPILER) $^ -o $@
 
+obj/bcmp.o: /usr/src/lib/libc/string/bcmp.c
+	$(KERNEL_COMPILER) $^ -o $@
 obj/bzero.o: /usr/src/lib/libc/string/bzero.c
 	$(KERNEL_COMPILER) $^ -o $@
 obj/memcpy.o: /usr/src/lib/libc/string/memcpy.c
-	$(KERNEL_COMPILER) $^ -o $@
-obj/memcmp.o: /usr/src/lib/libc/string/memcmp.c
 	$(KERNEL_COMPILER) $^ -o $@
 obj/memmove.o: /usr/src/lib/libc/string/memmove.c
 	$(KERNEL_COMPILER) $^ -o $@
@@ -83,6 +83,8 @@ obj/strncmp.o: /usr/src/lib/libc/string/strncmp.c
 obj/strncpy.o: /usr/src/lib/libc/string/strncpy.c
 	$(KERNEL_COMPILER) $^ -o $@
 obj/strnlen.o: /usr/src/lib/libc/string/strnlen.c
+	$(KERNEL_COMPILER) $^ -o $@
+obj/strtol.o: strtol.c
 	$(KERNEL_COMPILER) $^ -o $@
 
 obj/qdivrem.o: /usr/src/lib/libc/quad/qdivrem.c
