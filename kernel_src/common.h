@@ -9,6 +9,15 @@
 //#define DEBUG_PRINTF(...) term_printf(__VA_ARGS__); move_cursor()
 #define DEBUG_PRINTF(...)
 #define ERROR_PRINTF(...) term_printf(__VA_ARGS__); move_cursor()
+
+
+#define DECLARE_LOCK(name) volatile int name ## Locked
+#define LOCK(name) \
+	while (!__sync_bool_compare_and_swap(& name ## Locked, 0, 1)); \
+	__sync_synchronize();
+#define UNLOCK(name) \
+	__sync_synchronize(); \
+	name ## Locked = 0;
 #endif
 
 #ifdef CRAZIERL_USER

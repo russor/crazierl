@@ -14,6 +14,7 @@
 
 struct crazierl_thread {
     uint64_t timeout;
+    cpuset_t cpus;
     unsigned int state;
     uintptr_t kern_stack_top;
     uintptr_t kern_stack_cur;

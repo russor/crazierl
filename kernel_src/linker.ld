@@ -39,11 +39,15 @@ SECTIONS
 	.data BLOCK(4K) : ALIGN(4K)
 	{
 		*(.data)
+		PROVIDE (__tdata_start = .);
+		*(.tdata)
+		*(.tbss)
 	}
 
 	/* Read-write data (uninitialized) and stack */
 	.bss BLOCK(4K) : ALIGN(4K)
 	{
+		PROVIDE (__tdata_end = .);
 		*(COMMON)
 		*(.bss)
 	}

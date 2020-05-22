@@ -14,6 +14,7 @@
 .global setup_new_stack
 .global switch_thread_impl
 .global ugs_base
+.global kgs_base
 .global stack_top
 .global tss_esp0
  
@@ -39,41 +40,47 @@
 	.align 1 // byte backed data here
 	null_gdt: .long 0
 	          .long 0 // required
-	kcod_gdt: .short 0xFFFF // limit 0:15
+	kcod_gdt: .short 0xFFFF // limit 0:15 (0x8)
 	          .short 0      // base 0:15
 	          .byte 0       // base 16:23
 	          .byte 0x9A    // Present, Ring 0, Normal, Executable, Non Conforming, Readable, Not accessed
 	          .byte 0xCF    // 4K blocks, 32-bit selector, 2x reserved; limit 16:19
 	          .byte 0       // base 24:31
-	kdat_gdt: .short 0xFFFF // limit 0:15
+	kdat_gdt: .short 0xFFFF // limit 0:15 (0x10)
 	          .short 0      // base 0:15
 	          .byte 0       // base 16:23
 	          .byte 0x92    // Present, Ring 0, Normal, Data, Grows up, Writable, Not accessed
 	          .byte 0xCF    // 4K blocks, 32-bit selector, 2x reserved; limit 16:19
 	          .byte 0       // base 24:31
-	ucod_gdt: .short 0xFFFF // limit 0:15
+	ucod_gdt: .short 0xFFFF // limit 0:15 (0x18)
 	          .short 0      // base 0:15
 	          .byte 0       // base 16:23
 	          .byte 0xFA    // Present, Ring 3, Normal, Executable, Non Conforming, Readable, Not accessed
 	          .byte 0xCF    // 4K blocks, 32-bit selector, 2x reserved; limit 16:19
 	          .byte 0       // base 24:31
-	udat_gdt: .short 0xFFFF // limit 0:15
+	udat_gdt: .short 0xFFFF // limit 0:15 (0x20)
 	          .short 0      // base 0:15
 	          .byte 0       // base 16:23
 	          .byte 0xF2    // Present, Ring 3, Normal, Data, Grows up, Writable, Not accessed
 	          .byte 0xCF    // 4K blocks, 32-bit selector, 2x reserved; limit 16:19
 	          .byte 0       // base 24:31
-	ugs_base: .short 0xFFFF // limit 0:15
-	          .short 0      // base 0:15
-	          .byte 0       // base 16:23
-	          .byte 0xF2    // Present, Ring 3, Normal, Data, Grows up, Writable, Not accessed
-	          .byte 0xCF    // 4K blocks, 32-bit selector, 2x reserved; limit 16:19
-	          .byte 0       // base 24:31
-	tss_dt:   .short 0x000C // limit 0:15 (12 bytes)
+	tss_dt:   .short 0x000C // limit 0:15 (12 bytes) (0x28)
 	          .short 0      // base 0:15
 	          .byte 0       // base 16:23
 	          .byte 0x89    // 
 	          .byte 0x40    // 
+	          .byte 0       // base 24:31
+	ugs_base: .short 0xFFFF // limit 0:15 (0x30)
+	          .short 0      // base 0:15
+	          .byte 0       // base 16:23
+	          .byte 0xF2    // Present, Ring 0, Normal, Data, Grows up, Writable, Not accessed
+	          .byte 0xCF    // 4K blocks, 32-bit selector, 2x reserved; limit 16:19
+	          .byte 0       // base 24:31
+	kgs_base: .short 0xFFFF // limit 0:15 (0x38)
+	          .short 0      // base 0:15
+	          .byte 0       // base 16:23
+	          .byte 0x92    // Present, Ring 3, Normal, Data, Grows up, Writable, Not accessed
+	          .byte 0xCF    // 4K blocks, 32-bit selector, 2x reserved; limit 16:19
 	          .byte 0       // base 24:31
 	gdtr:     .short (gdtr - null_gdt - 1) // size (minus one)
 	          .long null_gdt // offset
@@ -143,7 +150,9 @@
 		pushl %ecx // save
 		pushl %edx
 		pushl %gs
-		mov $0, %edx
+		mov %gs, %dx
+		addl $0x8, %edx
+		andl $-8, %edx
 		mov %dx, %gs
 		mov %esp, %ecx
 		addl $16, %ecx

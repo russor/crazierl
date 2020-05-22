@@ -21,7 +21,7 @@ extern void * stack_top;
 extern void start_entrypoint();
 extern uintptr_t setup_new_stack(uintptr_t stack_pointer);
 extern int switch_thread_impl(uintptr_t* oldstack, uintptr_t newstack);
-extern void __executable_start, __etext, __data_start, __edata;
+extern void __executable_start, __etext, __data_start, __edata, __tdata_start, __tdata_end;
 extern uintptr_t tss_esp0;
 
 char **environ = {NULL};
@@ -91,11 +91,11 @@ uint8_t next_ioapic_vector = 1;
 uint8_t WANT_NMI = 0;
  
 #define MAX_THREADS 32
-#define IDLE_THREAD (MAX_THREADS - 1)
 #define THREAD_ID_OFFSET 100002
 struct crazierl_thread threads[MAX_THREADS];
-volatile size_t current_thread = 0;
-size_t next_thread = 1;
+size_t current_thread = 0;
+size_t current_cpu = 0;
+size_t next_thread = 0;
 
 // This is the x86's VGA textmode buffer. To display text, we write data to this memory location
 #define VGA_BUFFER_SIZE 0x20000
@@ -122,6 +122,7 @@ struct GDTDescr {
 
 extern struct GDTDescr null_gdt;
 extern struct GDTDescr ugs_base;
+extern struct GDTDescr kgs_base;
 
 struct IDTDescr {
    uint16_t offset_1; // offset bits 0..15
@@ -437,8 +438,10 @@ void get_time()
 	fixed_point_time = FIXED_POINT_TIME_NANOSECOND(unix_time(timeA), 0);
 }
 
-	
+DECLARE_LOCK(thread_state);
+
 int switch_thread(unsigned int new_state, uint64_t timeout) {
+	LOCK(thread_state);
 	size_t old_thread = current_thread;
 	size_t i = old_thread + 1;
 	size_t target = old_thread;
@@ -446,8 +449,10 @@ int switch_thread(unsigned int new_state, uint64_t timeout) {
 	if (i == MAX_THREADS) { i = 0; }
 	if (timeout && timeout <= fixed_point_time) {
 		threads[current_thread].state = THREAD_RUNNING;
+		UNLOCK(thread_state);
 		return 1; // don't switch if it's already past the time
 	}
+	size_t idle_thread = old_thread;
 	while (i != old_thread) {
 		if (threads[i].state == THREAD_RUNNABLE) {
 			target = i;
@@ -456,15 +461,18 @@ int switch_thread(unsigned int new_state, uint64_t timeout) {
 			target = i;
 			timed_out = 1;
 			break;
+		} else if (threads[i].state == THREAD_IDLE) {
+			idle_thread = i;
 		}
 		++i;
 		if (i == MAX_THREADS) { i = 0; }
 	}
 	if (target == old_thread) {
 		if (new_state == THREAD_RUNNABLE) {
+			UNLOCK(thread_state);
 			return 0;
 		} else {
-			target = IDLE_THREAD;
+			target = idle_thread;
 		}
 	}
 	DEBUG_PRINTF("switching from %d (%d) to %d\n", old_thread, new_state, target);
@@ -495,6 +503,7 @@ int switch_thread(unsigned int new_state, uint64_t timeout) {
 			*(int *)threads[target].kern_stack_cur = 1;
 		}
 	}
+	UNLOCK(thread_state);
 	int we_timed_out = switch_thread_impl(&threads[old_thread].kern_stack_cur, threads[target].kern_stack_cur);
 	asm volatile ( "fxrstor (%0)" :: "a"(&threads[current_thread].savearea) :);
 	threads[current_thread].timeout = 0;
@@ -607,6 +616,7 @@ ssize_t write(int fd, const void * buf, size_t nbyte) {
 		ERROR_PRINTF("write (%d, %08x, %d) = EBADF\n", fd, buf, nbyte);
 		return -EBADF;
 	}
+	LOCK(thread_state);
 	if (wait_target != NULL && wait_target->flags & BOGFD_BLOCKED_READ) {
 		//TODO avoid thundering herd, maybe
 		for (int thread = 0; thread < MAX_THREADS; ++thread) {
@@ -624,6 +634,7 @@ ssize_t write(int fd, const void * buf, size_t nbyte) {
 			}
 		}
 	}
+	UNLOCK(thread_state);
 	return written;
 }
 
@@ -671,22 +682,26 @@ int kern_umtx_op(struct _umtx_op_args *a) {
 		case UMTX_OP_WAKE: {
 			uintptr_t phys = kern_mmap_physical((uintptr_t) a->obj);
 			u_long count = a->val;
-			for (int thread = 0; count > 0 &&  thread < MAX_THREADS; ++thread) {
+			LOCK(thread_state);
+			for (int thread = 0; count > 0 && thread < MAX_THREADS; ++thread) {
 				if (threads[thread].state == THREAD_UMTX_WAIT && threads[thread].wait_target == phys) {
 					threads[thread].state = THREAD_RUNNABLE;
 					--count;
 				}
 			}
+			UNLOCK(thread_state);
 			return 0;
 		}
 		case UMTX_OP_NWAKE_PRIVATE: {
 			for (int i = 0; i < a->val; ++i) {
 				uintptr_t phys = kern_mmap_physical(((uintptr_t *)a->obj)[i]);
+				LOCK(thread_state);
 				for (int thread = 0; thread < MAX_THREADS; ++thread) {
 					if (threads[thread].state == THREAD_UMTX_WAIT && threads[thread].wait_target == phys) {
 						threads[thread].state = THREAD_RUNNABLE;
 					}
 				}
+				UNLOCK(thread_state);
 			}
 			return 0;
 		}
@@ -732,6 +747,7 @@ int kern_umtx_op(struct _umtx_op_args *a) {
 			if ((mutex->m_owner & ~UMUTEX_CONTESTED) != UMUTEX_UNOWNED) {
 				found = 1;
 			}
+			LOCK(thread_state);
 			for (int thread = 0; thread < MAX_THREADS; ++thread) {
 				if (threads[thread].state == THREAD_UMTX_MUTEX_WAIT &&
 					threads[thread].wait_target == (uintptr_t) a->obj) {
@@ -744,6 +760,7 @@ int kern_umtx_op(struct _umtx_op_args *a) {
 					}
 				}
 			}
+			UNLOCK(thread_state);
 			return 0;
 		}
 	}
@@ -1416,7 +1433,9 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			}
 			if (a->level == CPU_LEVEL_WHICH && a->which == CPU_WHICH_PID) {
 				CPU_ZERO(a->mask);
-				CPU_SET(0, a->mask);
+				for (int i = 0; i < numcpu; ++i) {
+					CPU_SET(i, a->mask);
+				}
 				SYSCALL_SUCCESS(0);
 			}
 			ERROR_PRINTF("cpuset_getaffinity(%d, %d, %llx, %d, %08x)\n", a->level, a->which, a->id, a->cpusetsize, a->mask);
@@ -1606,6 +1625,8 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 		case SYS_thr_new: {
 			struct thr_new_args *a = argp;
 			uintptr_t stack_page;
+			LOCK(thread_state);
+
 			while (threads[next_thread].state != THREAD_EMPTY && next_thread < MAX_THREADS) {
 				++next_thread;
 			}
@@ -1621,6 +1642,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			size_t new_thread = next_thread;
 			++next_thread;
 			threads[new_thread].state = THREAD_INITING;
+			UNLOCK(thread_state);
 			threads[new_thread].kern_stack_top = stack_page + PAGE_SIZE;
 			threads[new_thread].tls_base = (uintptr_t)a->param->tls_base;
 			bzero(&threads[new_thread].savearea, sizeof(threads[new_thread].savearea));
@@ -1679,8 +1701,8 @@ void handle_pf(struct interrupt_frame *frame, uint32_t error_code)
 	asm volatile("mov %%cr2, %0" : "=a" (addr));
 
 	if (frame) {
-		kern_mmap_debug(addr);
 		ERROR_PRINTF("Got #PF (%u) address %08x, IP: %08x at ", error_code, addr, frame->ip);
+		kern_mmap_debug(addr);
 	} else {
 		ERROR_PRINTF("Got #PF, no stack frame\n");
 	}
@@ -2017,35 +2039,44 @@ void setup_entrypoint()
 	new_top -= sizeof(char *);
 	*(int *)new_top = (sizeof(argv) / sizeof (char*)) - 1;
 
-	DEBUG_PRINTF ("jumping to %08x\n", entrypoint);
-	threads[0].state = THREAD_RUNNING;
+	if (numcpu >= MAX_THREADS) {
+		ERROR_PRINTF("MAX_THREADS set too low, minimum is numcpu (%d) + 1; 2 * numcpu would be better\n", numcpu);
+		halt("too many CPUs");
+	}
 
+	threads[0].state = THREAD_RUNNING;
+	CPU_ZERO(&threads[0].cpus);
 	threads[0].kern_stack_top = (uintptr_t) &stack_top;
 
-	uintptr_t stack_page;
-	if (!kern_mmap(&stack_page, NULL, PAGE_SIZE, PROT_READ | PROT_WRITE | PROT_KERNEL, MAP_STACK)) {
-		halt("no stack page for idle thread");
-	}
-	explicit_bzero((void *)stack_page, PAGE_SIZE);
-	threads[IDLE_THREAD].state = THREAD_IDLE;
-	threads[IDLE_THREAD].kern_stack_top = stack_page + PAGE_SIZE;
-	bzero(&threads[IDLE_THREAD].savearea, sizeof(threads[IDLE_THREAD].savearea));
-	uintptr_t stack;
-	asm volatile ( "mov %%esp, %0" : "=a"(stack) :);
-	size_t stack_size = threads[current_thread].kern_stack_top - stack;
-	memcpy((void *)(threads[IDLE_THREAD].kern_stack_top - stack_size), (void *)stack, stack_size);
+	for (int i = 0; i < numcpu; ++i) {
+		uintptr_t stack_page;
+		if (!kern_mmap(&stack_page, NULL, PAGE_SIZE, PROT_READ | PROT_WRITE | PROT_KERNEL, MAP_STACK)) {
+			halt("no stack page for idle thread");
+		}
+		explicit_bzero((void *)stack_page, PAGE_SIZE);
+		CPU_ZERO(&threads[i + 1].cpus);
+		CPU_SET(i, &threads[i + 1].cpus);
+		CPU_SET(i, &threads[0].cpus);
+		threads[i + 1].state = THREAD_IDLE;
+		threads[i + 1].kern_stack_top = stack_page + PAGE_SIZE;
+		bzero(&threads[i + 1].savearea, sizeof(threads[i + 1].savearea));
+		uintptr_t stack;
+		asm volatile ( "mov %%esp, %0" : "=a"(stack) :);
+		size_t stack_size = threads[current_thread].kern_stack_top - stack;
+		memcpy((void *)(threads[i + 1].kern_stack_top - stack_size), (void *)stack, stack_size);
 
-	//setup_new_stack returns on the current thread, and the new thread
-	uintptr_t new_stack_cur = setup_new_stack(threads[IDLE_THREAD].kern_stack_top - stack_size);
-	if (new_stack_cur) { // thr_new returns on existing thread
-		threads[IDLE_THREAD].kern_stack_cur = new_stack_cur;
-	} else {
-		asm volatile ( "finit" :: ); // clear fpu/sse state
-		while (1) {
-			asm volatile( "sti; hlt; cli" :: );
+		//setup_new_stack returns on the current thread, and the new thread
+		uintptr_t new_stack_cur = setup_new_stack(threads[i + 1].kern_stack_top - stack_size);
+		if (new_stack_cur) { // thr_new returns on existing thread
+			threads[i + 1].kern_stack_cur = new_stack_cur;
+		} else {
+			asm volatile ( "finit" :: ); // clear fpu/sse state
+			while (1) {
+				asm volatile( "sti; hlt; cli" :: );
+			}
 		}
 	}
-
+	DEBUG_PRINTF ("jumping to %08x\n", entrypoint);
 	start_entrypoint(new_top, entrypoint);
 }
 
@@ -2087,6 +2118,23 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 	if (!kern_mmap(&scratch, &__data_start, &__edata - &__data_start, PROT_KERNEL | PROT_READ | PROT_WRITE, 0)) {
 		halt("couldn't map read/write kernel section\n");
 	}
+	
+	ERROR_PRINTF("kernel TLS %08x - %08x\n", &__tdata_start, &__tdata_end);
+	ERROR_PRINTF("TLS size %d\n", &__tdata_end - &__tdata_start);
+	
+/*	halt(NULL);
+	uint32_t base = (uint32_t)&__tdata_end;
+	if (base & (PAGE_SIZE - 1)) {
+		base = (base + PAGE_SIZE) & ~(PAGE_SIZE - 1);
+	}
+	kgs_base.base_1 = base & 0xFFFF;
+	base >>= 16;
+	kgs_base.base_2 = base & 0xFF;
+	base >>= 8;
+	kgs_base.base_3 = base & 0xFF;
+	uint16_t gs_seg = ((void *)&kgs_base - (void *)&null_gdt);
+	ERROR_PRINTF("kgsbase %08x, null gdt %08x, diff %d\n", &kgs_base, &null_gdt, &kgs_base - &null_gdt);
+	asm volatile("mov %0, %%gs" :: "a"(gs_seg)); */
 	
 	if (!kern_mmap(&scratch, (void *)vga_buffer, VGA_BUFFER_SIZE, PROT_KERNEL | PROT_FORCE | PROT_READ | PROT_WRITE, 0)) {
 		ERROR_PRINTF("couldn't map vga buffer\n");
