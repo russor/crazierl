@@ -120,9 +120,47 @@ struct GDTDescr {
    uint8_t base_3;
 } __attribute((packed));
 
-extern struct GDTDescr null_gdt;
-extern struct GDTDescr ugs_base;
-extern struct GDTDescr kgs_base;
+#define MAX_CPUS 256
+#define NUM_GDT (6 + (3 * MAX_CPUS))
+#define GDT_GSBASE_OFFSET 6
+#define GDT_TSS_OFFSET (GDT_GSBASE_OFFSET + (2 * MAX_CPUS))
+struct GDTDescr GDT[NUM_GDT] =
+	{ { // null GDT isn't read, so reuse it for GTD Descriptor
+	    sizeof(GDT) * sizeof(GDT[0]) - 1
+	  },
+	  { }, // skip for alignment
+	  { 0xFFFF,  // (0x10) user code, base 0, limit 0xFFFF FFFF
+	    0, 0,
+	    0xFA,    // Present, Ring 3, Normal, Executable, Non Conforming, Readable, Not accessed
+	    0xCF,    // 4K blocks, 32-bit selector, 2x reserved; limit 16:19
+	    0 },
+	  { 0xFFFF,  // (0x18) kernel code, base 0, limit 0xFFFF FFFF
+	    0, 0,
+	    0x9A,    // Present, Ring 0, Normal, Executable, Non Conforming, Readable, Not accessed
+	    0xCF,    // 4K blocks, 32-bit selector, 2x reserved; limit 16:19
+	    0 },
+	  { 0xFFFF,  // (0x20) user data, base 0, limit 0xFFFF FFFF
+	    0, 0,
+	    0xF2,    // Present, Ring 3, Normal, Data, Grows up, Writable, Not accessed
+	    0xCF,    // 4K blocks, 32-bit selector, 2x reserved; limit 16:19
+	    0 },
+	  { 0xFFFF,  // (0x28) kernel data, base 0, limit 0xFFFF FFFF
+	    0, 0,
+	    0x92,    // Present, Ring 0, Normal, Data, Grows up, Writable, Not accessed
+	    0xCF,    // 4K blocks, 32-bit selector, 2x reserved; limit 16:19
+	    0 },
+	};
+// After this, element x is user GS base, element x + 1 is kernel GS base for each cpu
+// Then, a TSS descriptor for each CPU too
+
+struct TSS_Entry {
+	uint32_t prev_tss; // unused for us
+	uint32_t esp0;// kernel stack pointer
+	uint32_t ss0; // kernel stack segment
+	// we could have more things, but we're not going to
+};
+
+struct TSS_Entry TSS[MAX_CPUS];
 
 struct IDTDescr {
    uint16_t offset_1; // offset bits 0..15
@@ -493,12 +531,13 @@ int switch_thread(unsigned int new_state, uint64_t timeout) {
 		threads[target].state = THREAD_RUNNING;
 		uintptr_t base = threads[target].tls_base;
 
-		ugs_base.base_1 = base & 0xFFFF;
+		size_t user_gs = GDT_GSBASE_OFFSET + (current_cpu * 2);
+		GDT[user_gs].base_1 = base & 0xFFFF;
 		base >>= 16;
-		ugs_base.base_2 = base & 0xFF;
+		GDT[user_gs].base_2 = base & 0xFF;
 		base >>= 8;
-		ugs_base.base_3 = base & 0xFF;
-		tss_esp0 = threads[target].kern_stack_top;
+		GDT[user_gs].base_3 = base & 0xFF;
+		TSS[current_cpu].esp0 = threads[target].kern_stack_top;
 		if (timed_out) {
 			*(int *)threads[target].kern_stack_cur = 1;
 		}
@@ -522,7 +561,7 @@ struct interrupt_frame
 
 void handle_unknown_irq(struct interrupt_frame *frame, uint32_t irq)
 {
-	ERROR_PRINTF("Got unexpected interrupt 0x%02x IP: %08x at ", irq, frame->ip);
+	ERROR_PRINTF("Got unexpected interrupt 0x%02x IP: %08x", irq, frame->ip);
 	halt(NULL);
 }
 
@@ -545,7 +584,7 @@ void handle_ioapic_irq(struct interrupt_frame *frame, unsigned int vector)
 
 void handle_unknown_error(struct interrupt_frame *frame, uint32_t irq, uint32_t error_code)
 {
-	ERROR_PRINTF("Got unexpected error %d (%d) IP: %08x at ", irq, error_code, frame->ip);
+	ERROR_PRINTF("Got unexpected error %d (%d) IP: %08x", irq, error_code, frame->ip);
 	halt(NULL);
 }
 
@@ -1267,11 +1306,12 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				case I386_SET_GSBASE: {
 					uint32_t base = *((uint32_t *) a->parms);
 					threads[current_thread].tls_base = base;
-					ugs_base.base_1 = base & 0xFFFF;
+					size_t user_gs = GDT_GSBASE_OFFSET + (current_cpu * 2);
+					GDT[user_gs].base_1 = base & 0xFFFF;
 					base >>= 16;
-					ugs_base.base_2 = base & 0xFF;
+					GDT[user_gs].base_2 = base & 0xFF;
 					base >>= 8;
-					ugs_base.base_3 = base & 0xFF;
+					GDT[user_gs].base_3 = base & 0xFF;
 					SYSCALL_SUCCESS(0);
 				}
 			}
@@ -1687,7 +1727,7 @@ __attribute__ ((interrupt))
 void handle_gp(struct interrupt_frame *frame, uint32_t error_code)
 {
 	if (frame) {
-		ERROR_PRINTF("Got #GP (%u) IP: %08x at ", error_code, frame->ip);
+		ERROR_PRINTF("Got #GP (%u) IP: %08x", error_code, frame->ip);
 	} else {
 		ERROR_PRINTF("Got #GP, no stack frame\n");
 	}
@@ -1701,7 +1741,7 @@ void handle_pf(struct interrupt_frame *frame, uint32_t error_code)
 	asm volatile("mov %%cr2, %0" : "=a" (addr));
 
 	if (frame) {
-		ERROR_PRINTF("Got #PF (%u) address %08x, IP: %08x at ", error_code, addr, frame->ip);
+		ERROR_PRINTF("Got #PF (%u) address %08x, IP: %08x\n", error_code, addr, frame->ip);
 		kern_mmap_debug(addr);
 	} else {
 		ERROR_PRINTF("Got #PF, no stack frame\n");
@@ -1712,7 +1752,7 @@ void handle_pf(struct interrupt_frame *frame, uint32_t error_code)
 __attribute__ ((interrupt))
 void handle_ud(struct interrupt_frame *frame)
 {
-	ERROR_PRINTF("Got #UD IP: %08x at ", frame->ip);
+	ERROR_PRINTF("Got #UD IP: %08x", frame->ip);
 	halt(NULL);
 }
 
@@ -1787,7 +1827,7 @@ void interrupt_setup()
 		uint32_t handler = (uint32_t)(&unknown_int);
 		handler +=(i * UNKNOWN_INT_STRIDE);
 		IDT[i].offset_1 = handler & 0xFFFF;
-		IDT[i].selector = 0x08;
+		IDT[i].selector = 0x18;
 		IDT[i].zero = 0;
 		IDT[i].type_attr = 0x8E;
 		IDT[i].offset_2 = handler >> 16;
@@ -1935,6 +1975,85 @@ void setup_fds()
 	}
 }
 
+void setup_cpus()
+{
+	ERROR_PRINTF("kernel TLS %08x - %08x\n", &__tdata_start, &__tdata_end);
+	ERROR_PRINTF("TLS size %d\n", &__tdata_end - &__tdata_start);
+
+	if (numcpu >= MAX_THREADS) {
+		ERROR_PRINTF("MAX_THREADS set too low, minimum is numcpu (%d) + 1; 2 * numcpu would be better\n", numcpu);
+		halt("too many CPUs");
+	}
+
+	threads[0].state = THREAD_RUNNING;
+	CPU_ZERO(&threads[0].cpus);
+	threads[0].kern_stack_top = (uintptr_t) &stack_top;
+
+	for (int i = 0; i < numcpu; ++i) {
+		// thread 0 starts as runnable on all CPUs
+		CPU_SET(i, &threads[0].cpus);
+
+		// setup cpu specific idle thread
+		uintptr_t stack_page;
+		if (!kern_mmap(&stack_page, NULL, PAGE_SIZE, PROT_READ | PROT_WRITE | PROT_KERNEL, MAP_STACK)) {
+			halt("no stack page for idle thread");
+		}
+		explicit_bzero((void *)stack_page, PAGE_SIZE);
+		CPU_ZERO(&threads[i + 1].cpus);
+		CPU_SET(i, &threads[i + 1].cpus);
+		threads[i + 1].state = THREAD_IDLE;
+		threads[i + 1].kern_stack_top = stack_page + PAGE_SIZE;
+		bzero(&threads[i + 1].savearea, sizeof(threads[i + 1].savearea));
+		uintptr_t stack;
+		asm volatile ( "mov %%esp, %0" : "=a"(stack) :);
+		size_t stack_size = threads[current_thread].kern_stack_top - stack;
+		memcpy((void *)(threads[i + 1].kern_stack_top - stack_size), (void *)stack, stack_size);
+
+		//setup_new_stack returns on the current thread, and the new thread
+		uintptr_t new_stack_cur = setup_new_stack(threads[i + 1].kern_stack_top - stack_size);
+		if (new_stack_cur) { // thr_new returns on existing thread
+			threads[i + 1].kern_stack_cur = new_stack_cur;
+		} else {
+			asm volatile ( "finit" :: ); // clear fpu/sse state
+			while (1) {
+				asm volatile( "sti; hlt; cli" :: );
+			}
+		}
+
+		// setup GS BASE descriptor for user
+		size_t gsbase = GDT_GSBASE_OFFSET + (i * 2);
+		GDT[gsbase].limit_1 = 0xFFFF;
+		GDT[gsbase].base_1 = 0;
+		GDT[gsbase].base_2 = 0;
+		GDT[gsbase].access = 0xF2; // Present, Ring 3, Normal, Data, Grows up, Writable, Not accessed
+		GDT[gsbase].limit_2 = 0xCF; // 4K blocks, 32-bit selector, 2x reserved; limit 16:19
+		GDT[gsbase].base_3 = 0;
+
+		// setup GS BASE descriptor for kernel
+		++gsbase;
+		GDT[gsbase].limit_1 = 0xFFFF;
+		GDT[gsbase].base_1 = 0;
+		GDT[gsbase].base_2 = 0;
+		GDT[gsbase].access = 0x92; // Present, Ring 0, Normal, Data, Grows up, Writable, Not accessed
+		GDT[gsbase].limit_2 = 0xCF; // 4K blocks, 32-bit selector, 2x reserved; limit 16:19
+		GDT[gsbase].base_3 = 0;
+
+		// Setup task state segments
+		size_t tss = GDT_TSS_OFFSET + i;
+		GDT[tss].limit_1 = sizeof(TSS[0]);
+		GDT[tss].base_1 = ((uintptr_t)&TSS[i]) & 0xFFFF;
+		GDT[tss].base_2 = ((uintptr_t)&TSS[i] >> 16) & 0xFF;
+		GDT[tss].access = 0x89;
+		GDT[tss].limit_2 = 0x40;
+		GDT[tss].base_3 = (uintptr_t)&TSS[i] >> 24;
+
+		TSS[i].esp0 = (uintptr_t)&stack_top;
+		TSS[i].ss0 = 0x28;
+	}
+	uint16_t active_tss = (GDT_TSS_OFFSET * sizeof(GDT[0])) | 0x3;
+	asm volatile ("ltr %0" :: "a"(active_tss));
+}
+
 void setup_entrypoint()
 {
 	struct hardcoded_file * file = find_file("/beam");
@@ -2039,45 +2158,8 @@ void setup_entrypoint()
 	new_top -= sizeof(char *);
 	*(int *)new_top = (sizeof(argv) / sizeof (char*)) - 1;
 
-	if (numcpu >= MAX_THREADS) {
-		ERROR_PRINTF("MAX_THREADS set too low, minimum is numcpu (%d) + 1; 2 * numcpu would be better\n", numcpu);
-		halt("too many CPUs");
-	}
-
-	threads[0].state = THREAD_RUNNING;
-	CPU_ZERO(&threads[0].cpus);
-	threads[0].kern_stack_top = (uintptr_t) &stack_top;
-
-	for (int i = 0; i < numcpu; ++i) {
-		uintptr_t stack_page;
-		if (!kern_mmap(&stack_page, NULL, PAGE_SIZE, PROT_READ | PROT_WRITE | PROT_KERNEL, MAP_STACK)) {
-			halt("no stack page for idle thread");
-		}
-		explicit_bzero((void *)stack_page, PAGE_SIZE);
-		CPU_ZERO(&threads[i + 1].cpus);
-		CPU_SET(i, &threads[i + 1].cpus);
-		CPU_SET(i, &threads[0].cpus);
-		threads[i + 1].state = THREAD_IDLE;
-		threads[i + 1].kern_stack_top = stack_page + PAGE_SIZE;
-		bzero(&threads[i + 1].savearea, sizeof(threads[i + 1].savearea));
-		uintptr_t stack;
-		asm volatile ( "mov %%esp, %0" : "=a"(stack) :);
-		size_t stack_size = threads[current_thread].kern_stack_top - stack;
-		memcpy((void *)(threads[i + 1].kern_stack_top - stack_size), (void *)stack, stack_size);
-
-		//setup_new_stack returns on the current thread, and the new thread
-		uintptr_t new_stack_cur = setup_new_stack(threads[i + 1].kern_stack_top - stack_size);
-		if (new_stack_cur) { // thr_new returns on existing thread
-			threads[i + 1].kern_stack_cur = new_stack_cur;
-		} else {
-			asm volatile ( "finit" :: ); // clear fpu/sse state
-			while (1) {
-				asm volatile( "sti; hlt; cli" :: );
-			}
-		}
-	}
 	DEBUG_PRINTF ("jumping to %08x\n", entrypoint);
-	start_entrypoint(new_top, entrypoint);
+	start_entrypoint(new_top, entrypoint, (GDT_GSBASE_OFFSET * sizeof(GDT[0])) | 0x3);
 }
 
 // This is our kernel's main function
@@ -2119,23 +2201,6 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 		halt("couldn't map read/write kernel section\n");
 	}
 	
-	ERROR_PRINTF("kernel TLS %08x - %08x\n", &__tdata_start, &__tdata_end);
-	ERROR_PRINTF("TLS size %d\n", &__tdata_end - &__tdata_start);
-	
-/*	halt(NULL);
-	uint32_t base = (uint32_t)&__tdata_end;
-	if (base & (PAGE_SIZE - 1)) {
-		base = (base + PAGE_SIZE) & ~(PAGE_SIZE - 1);
-	}
-	kgs_base.base_1 = base & 0xFFFF;
-	base >>= 16;
-	kgs_base.base_2 = base & 0xFF;
-	base >>= 8;
-	kgs_base.base_3 = base & 0xFF;
-	uint16_t gs_seg = ((void *)&kgs_base - (void *)&null_gdt);
-	ERROR_PRINTF("kgsbase %08x, null gdt %08x, diff %d\n", &kgs_base, &null_gdt, &kgs_base - &null_gdt);
-	asm volatile("mov %0, %%gs" :: "a"(gs_seg)); */
-	
 	if (!kern_mmap(&scratch, (void *)vga_buffer, VGA_BUFFER_SIZE, PROT_KERNEL | PROT_FORCE | PROT_READ | PROT_WRITE, 0)) {
 		ERROR_PRINTF("couldn't map vga buffer\n");
 	}
@@ -2158,6 +2223,8 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 	multiboot_module_t *mods = (void *)mb->mods_addr;
 
 	kern_mmap_enable_paging();
+
+	setup_cpus();
 
 	kern_mmap(&scratch, (void *) mods, mods_count * sizeof(mods), PROT_KERNEL | PROT_READ | PROT_FORCE, 0);
 	for (int mod = 0; mod < mods_count; ++mod) {

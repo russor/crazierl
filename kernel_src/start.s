@@ -6,18 +6,15 @@
 // In a bit, we'll actually take a look at the code that defines this label.
 .global _start
 
-.global null_gdt
 .global handle_int_80
 .global start_entrypoint
 .global unknown_int
 .global ioapic_int
 .global setup_new_stack
 .global switch_thread_impl
-.global ugs_base
-.global kgs_base
+.global GDT
 .global stack_top
-.global tss_esp0
- 
+
 // Our bootloader, GRUB, needs to know some basic information about our kernel before it can boot it.
 // We give GRUB this information using a standard known as 'Multiboot'.
 // To define a valid 'Multiboot header' that will be recognised by GRUB, we need to hard code some
@@ -36,67 +33,15 @@
 	// Use the checksum we calculated earlier
 	.long MB_CHECKSUM
 
-.section .data
-	.align 1 // byte backed data here
-	null_gdt: .long 0
-	          .long 0 // required
-	kcod_gdt: .short 0xFFFF // limit 0:15 (0x8)
-	          .short 0      // base 0:15
-	          .byte 0       // base 16:23
-	          .byte 0x9A    // Present, Ring 0, Normal, Executable, Non Conforming, Readable, Not accessed
-	          .byte 0xCF    // 4K blocks, 32-bit selector, 2x reserved; limit 16:19
-	          .byte 0       // base 24:31
-	kdat_gdt: .short 0xFFFF // limit 0:15 (0x10)
-	          .short 0      // base 0:15
-	          .byte 0       // base 16:23
-	          .byte 0x92    // Present, Ring 0, Normal, Data, Grows up, Writable, Not accessed
-	          .byte 0xCF    // 4K blocks, 32-bit selector, 2x reserved; limit 16:19
-	          .byte 0       // base 24:31
-	ucod_gdt: .short 0xFFFF // limit 0:15 (0x18)
-	          .short 0      // base 0:15
-	          .byte 0       // base 16:23
-	          .byte 0xFA    // Present, Ring 3, Normal, Executable, Non Conforming, Readable, Not accessed
-	          .byte 0xCF    // 4K blocks, 32-bit selector, 2x reserved; limit 16:19
-	          .byte 0       // base 24:31
-	udat_gdt: .short 0xFFFF // limit 0:15 (0x20)
-	          .short 0      // base 0:15
-	          .byte 0       // base 16:23
-	          .byte 0xF2    // Present, Ring 3, Normal, Data, Grows up, Writable, Not accessed
-	          .byte 0xCF    // 4K blocks, 32-bit selector, 2x reserved; limit 16:19
-	          .byte 0       // base 24:31
-	tss_dt:   .short 0x000C // limit 0:15 (12 bytes) (0x28)
-	          .short 0      // base 0:15
-	          .byte 0       // base 16:23
-	          .byte 0x89    // 
-	          .byte 0x40    // 
-	          .byte 0       // base 24:31
-	ugs_base: .short 0xFFFF // limit 0:15 (0x30)
-	          .short 0      // base 0:15
-	          .byte 0       // base 16:23
-	          .byte 0xF2    // Present, Ring 0, Normal, Data, Grows up, Writable, Not accessed
-	          .byte 0xCF    // 4K blocks, 32-bit selector, 2x reserved; limit 16:19
-	          .byte 0       // base 24:31
-	kgs_base: .short 0xFFFF // limit 0:15 (0x38)
-	          .short 0      // base 0:15
-	          .byte 0       // base 16:23
-	          .byte 0x92    // Present, Ring 3, Normal, Data, Grows up, Writable, Not accessed
-	          .byte 0xCF    // 4K blocks, 32-bit selector, 2x reserved; limit 16:19
-	          .byte 0       // base 24:31
-	gdtr:     .short (gdtr - null_gdt - 1) // size (minus one)
-	          .long null_gdt // offset
-	tss:	  .long	0       // back link
-	tss_esp0: .long stack_top // ESP0
-		  .long 0x10    // SS0
-
- 
 // This section contains data initialised to zeroes when the kernel is loaded
+.global stack_top
+
 .section .bss
 	// Our C code will need a stack to run.
 	.align 16
 	stack_bottom:
 		.skip 4096 // Reserve a stack
 	stack_top:
-	mb_header: .long
  
 // This section contains our actual assembly code to be run when our kernel loads
 .section .text
@@ -110,30 +55,19 @@
 		pushl %ebx // push multiboot header
 		pushl %eax // push multiboot magic
 
-		// fix the Task Segment descriptor
-		mov $tss, %eax
-		mov %ax, tss_dt + 2
-		shr $16, %eax
-		mov %al, tss_dt + 4
-		mov %ah, tss_dt + 7
-
-
+		mov $GDT, %eax
+		mov %eax, 2 + GDT
 		// setup the Global Descriptor Table with static values
-		lgdtl gdtr
-		jmpl $(kcod_gdt - null_gdt), $reload_CS
+		lgdtl (%eax)
+		jmpl $0x18, $reload_CS
 
 		reload_CS:
-		mov $(kdat_gdt - null_gdt), %ax
+		mov $0x28, %ax
 		mov %ax, %ds
 		mov %ax, %es
 		mov %ax, %fs
-		mov %ax, %gs
 		mov %ax, %ss
 
-		mov $((tss_dt - null_gdt) | 0x3), %eax
-		ltr %ax
-		// GDT loaded!
- 
 		// Now we have a C-worthy (haha!) environment ready to run the rest of our kernel.
 		// At this point, we can call our main C function.
 		call kernel_main
@@ -151,7 +85,7 @@
 		pushl %edx
 		pushl %gs
 		mov %gs, %dx
-		addl $0x8, %edx
+		orl $0x8, %edx
 		andl $-8, %edx
 		mov %dx, %gs
 		mov %esp, %ecx
@@ -173,10 +107,10 @@
 		popl %eax // who needs a return address?
 		popl %ebx // new stack top
 		popl %ecx // entrypoint
+		popl %eax // gs segment
 
-		mov $((ugs_base - null_gdt) | 0x3), %eax
 		mov %ax, %gs
-		mov $((udat_gdt - null_gdt) | 0x3), %eax
+		mov $0x23, %eax
 		mov %ax, %ds
 		mov %ax, %es
 		mov %ax, %fs
@@ -189,7 +123,7 @@
 		orl $0x3000, %eax
 		pushl %eax
 
-		pushl $((ucod_gdt - null_gdt) | 0x3)
+		pushl $0x13
 		pushl %ecx
 		iret
 
