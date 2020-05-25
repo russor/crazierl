@@ -93,8 +93,8 @@ uint8_t WANT_NMI = 0;
 #define MAX_THREADS 32
 #define THREAD_ID_OFFSET 100002
 struct crazierl_thread threads[MAX_THREADS];
-size_t current_thread = 0;
-size_t current_cpu = 0;
+__thread size_t current_thread = 0;
+__thread size_t current_cpu = 0;
 size_t next_thread = 0;
 
 // This is the x86's VGA textmode buffer. To display text, we write data to this memory location
@@ -1306,7 +1306,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				case I386_SET_GSBASE: {
 					uint32_t base = *((uint32_t *) a->parms);
 					threads[current_thread].tls_base = base;
-					size_t user_gs = GDT_GSBASE_OFFSET + (current_cpu * 2);
+					size_t user_gs = GDT_GSBASE_OFFSET + (current_cpu * 2) + 1;
 					GDT[user_gs].base_1 = base & 0xFFFF;
 					base >>= 16;
 					GDT[user_gs].base_2 = base & 0xFF;
@@ -1853,7 +1853,6 @@ void interrupt_setup()
 	IDTR.offset = (uint32_t) &IDT;
 	asm volatile ( "lidt %0" :: "m" (IDTR) );
 	//ERROR_PRINTF("loaded idtl of size 0x%04x\n", IDTR.size);
-	asm volatile ( "sti" :: );
 }
 
 void *entrypoint;
@@ -1975,15 +1974,30 @@ void setup_fds()
 	}
 }
 
+// some values should be 16-byte aligned on x86 for sse (i think)
+#define MAX_ALIGN (16 - 1)
+
 void setup_cpus()
 {
-	ERROR_PRINTF("kernel TLS %08x - %08x\n", &__tdata_start, &__tdata_end);
-	ERROR_PRINTF("TLS size %d\n", &__tdata_end - &__tdata_start);
-
 	if (numcpu >= MAX_THREADS) {
 		ERROR_PRINTF("MAX_THREADS set too low, minimum is numcpu (%d) + 1; 2 * numcpu would be better\n", numcpu);
 		halt("too many CPUs");
 	}
+
+	ERROR_PRINTF("kernel TLS %08x - %08x\n", &__tdata_start, &__tdata_end);
+	// add a pointer to the end, and align both start and end
+	size_t raw_tls_size = &__tdata_end - &__tdata_start;
+	size_t tls_start_padding = (uintptr_t)&__tdata_start & MAX_ALIGN;
+	size_t tls_end_padding = (((uintptr_t)&__tdata_end + sizeof(uintptr_t) + MAX_ALIGN) & ~MAX_ALIGN) - (uintptr_t)&__tdata_end;
+	size_t padded_tls_size = raw_tls_size + tls_start_padding + tls_end_padding;
+	ERROR_PRINTF("TLS size %d, padded %d\n", raw_tls_size, padded_tls_size);
+
+	uintptr_t kernel_tls;
+	if (!kern_mmap(&kernel_tls, NULL, numcpu * padded_tls_size, PROT_READ | PROT_WRITE | PROT_KERNEL, 0)) {
+		halt("couldn't allocate Kernel TLS memory\n");
+	}
+	explicit_bzero((void *)kernel_tls, (numcpu * padded_tls_size + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1));
+	ERROR_PRINTF("kernel_tls at %p\n", kernel_tls);
 
 	threads[0].state = THREAD_RUNNING;
 	CPU_ZERO(&threads[0].cpus);
@@ -2006,7 +2020,7 @@ void setup_cpus()
 		bzero(&threads[i + 1].savearea, sizeof(threads[i + 1].savearea));
 		uintptr_t stack;
 		asm volatile ( "mov %%esp, %0" : "=a"(stack) :);
-		size_t stack_size = threads[current_thread].kern_stack_top - stack;
+		size_t stack_size = threads[0].kern_stack_top - stack;
 		memcpy((void *)(threads[i + 1].kern_stack_top - stack_size), (void *)stack, stack_size);
 
 		//setup_new_stack returns on the current thread, and the new thread
@@ -2020,21 +2034,28 @@ void setup_cpus()
 			}
 		}
 
-		// setup GS BASE descriptor for user
 		size_t gsbase = GDT_GSBASE_OFFSET + (i * 2);
+
+		// setup GS BASE descriptor for kernel
+		// copy master TLS
+		kernel_tls += tls_start_padding;
+		memcpy((void *) kernel_tls, &__tdata_start, raw_tls_size);
+		kernel_tls += raw_tls_size;
+		*(uintptr_t *)kernel_tls = kernel_tls;
+		GDT[gsbase].limit_1 = 0xFFFF;
+		GDT[gsbase].base_1 = kernel_tls & 0xFFFF;
+		GDT[gsbase].base_2 = (kernel_tls >> 16) & 0xFF;
+		GDT[gsbase].access = 0x92; // Present, Ring 0, Normal, Data, Grows up, Writable, Not accessed
+		GDT[gsbase].limit_2 = 0xCF; // 4K blocks, 32-bit selector, 2x reserved; limit 16:19
+		GDT[gsbase].base_3 = kernel_tls >> 24;
+		kernel_tls += tls_end_padding;
+
+		++gsbase;
+		// setup GS BASE descriptor for user
 		GDT[gsbase].limit_1 = 0xFFFF;
 		GDT[gsbase].base_1 = 0;
 		GDT[gsbase].base_2 = 0;
 		GDT[gsbase].access = 0xF2; // Present, Ring 3, Normal, Data, Grows up, Writable, Not accessed
-		GDT[gsbase].limit_2 = 0xCF; // 4K blocks, 32-bit selector, 2x reserved; limit 16:19
-		GDT[gsbase].base_3 = 0;
-
-		// setup GS BASE descriptor for kernel
-		++gsbase;
-		GDT[gsbase].limit_1 = 0xFFFF;
-		GDT[gsbase].base_1 = 0;
-		GDT[gsbase].base_2 = 0;
-		GDT[gsbase].access = 0x92; // Present, Ring 0, Normal, Data, Grows up, Writable, Not accessed
 		GDT[gsbase].limit_2 = 0xCF; // 4K blocks, 32-bit selector, 2x reserved; limit 16:19
 		GDT[gsbase].base_3 = 0;
 
@@ -2052,6 +2073,7 @@ void setup_cpus()
 	}
 	uint16_t active_tss = (GDT_TSS_OFFSET * sizeof(GDT[0])) | 0x3;
 	asm volatile ("ltr %0" :: "a"(active_tss));
+	asm volatile ("mov %0, %%gs" :: "a"(GDT_GSBASE_OFFSET * sizeof(GDT[0])));
 }
 
 void setup_entrypoint()
@@ -2159,7 +2181,7 @@ void setup_entrypoint()
 	*(int *)new_top = (sizeof(argv) / sizeof (char*)) - 1;
 
 	DEBUG_PRINTF ("jumping to %08x\n", entrypoint);
-	start_entrypoint(new_top, entrypoint, (GDT_GSBASE_OFFSET * sizeof(GDT[0])) | 0x3);
+	start_entrypoint(new_top, entrypoint, ((GDT_GSBASE_OFFSET + 1)* sizeof(GDT[0])) | 0x3);
 }
 
 // This is our kernel's main function
@@ -2224,8 +2246,6 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 
 	kern_mmap_enable_paging();
 
-	setup_cpus();
-
 	kern_mmap(&scratch, (void *) mods, mods_count * sizeof(mods), PROT_KERNEL | PROT_READ | PROT_FORCE, 0);
 	for (int mod = 0; mod < mods_count; ++mod) {
 		DEBUG_PRINTF("Module %d (%s):\n 0x%08x-0x%08x\n", mod, mods[mod].cmdline, mods[mod].mod_start, mods[mod].mod_end);
@@ -2237,6 +2257,8 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 		DEBUG_PRINTF("loading %s at %08x\n", filename, file->start);
 		load_file(file->start, file->name, file->size);
 	}
+
+	setup_cpus();
 
 	if (entrypoint) {
 		setup_entrypoint();

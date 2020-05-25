@@ -83,10 +83,8 @@
 		mov    %esp,%ebp
 		pushl %ecx // save
 		pushl %edx
-		pushl %gs
 		mov %gs, %dx
-		orl $0x8, %edx
-		andl $-8, %edx
+		andl $-16, %edx
 		mov %dx, %gs
 		mov %esp, %ecx
 		addl $16, %ecx
@@ -95,7 +93,8 @@
 		call handle_syscall // call into C now
 	handle_int_80_leave:
 		addl $8, %esp // skip pushed syscall and frame pointer
-		popl %gs
+		mov %gs, %dx
+		orl $0xB, %edx
 		popl %edx
 		popl %ecx
 		pop %ebp
@@ -118,9 +117,9 @@
 		pushl %eax
 		pushl %ebx
 
-		pushf	// allow ring 3 to do IO, because why not?
+		pushf
 		popl %eax
-		orl $0x3000, %eax
+		orl $0x3200, %eax // enable interrupts, and allow ring 3 to do IO
 		pushl %eax
 
 		pushl $0x13
