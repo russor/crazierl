@@ -12,6 +12,7 @@
 
 extern const char *syscallnames[];
 extern void * handle_int_80;
+extern void * handle_timer_int;
 extern void * unknown_int;
 #define UNKNOWN_INT_STRIDE 5
 #define FIRST_IOAPIC_VECTOR 0x20
@@ -480,6 +481,7 @@ DECLARE_LOCK(thread_state);
 
 int switch_thread(unsigned int new_state, uint64_t timeout) {
 	LOCK(thread_state);
+	DEBUG_PRINTF("current thread %d (%p), current cpu %d\n", current_thread, &current_thread, current_cpu);
 	size_t old_thread = current_thread;
 	size_t i = old_thread + 1;
 	size_t target = old_thread;
@@ -492,15 +494,17 @@ int switch_thread(unsigned int new_state, uint64_t timeout) {
 	}
 	size_t idle_thread = old_thread;
 	while (i != old_thread) {
-		if (threads[i].state == THREAD_RUNNABLE) {
-			target = i;
-			break;
-		} else if (threads[i].timeout && threads[i].timeout <= fixed_point_time) {
-			target = i;
-			timed_out = 1;
-			break;
-		} else if (threads[i].state == THREAD_IDLE) {
-			idle_thread = i;
+		if (CPU_ISSET(current_cpu, &threads[i].cpus)) {
+			if (threads[i].state == THREAD_RUNNABLE) {
+				target = i;
+				break;
+			} else if (threads[i].timeout && threads[i].timeout <= fixed_point_time) {
+				target = i;
+				timed_out = 1;
+				break;
+			} else if (threads[i].state == THREAD_IDLE) {
+				idle_thread = i;
+			}
 		}
 		++i;
 		if (i == MAX_THREADS) { i = 0; }
@@ -531,7 +535,7 @@ int switch_thread(unsigned int new_state, uint64_t timeout) {
 		threads[target].state = THREAD_RUNNING;
 		uintptr_t base = threads[target].tls_base;
 
-		size_t user_gs = GDT_GSBASE_OFFSET + (current_cpu * 2);
+		size_t user_gs = GDT_GSBASE_OFFSET + (current_cpu * 2) + 1;
 		GDT[user_gs].base_1 = base & 0xFFFF;
 		base >>= 16;
 		GDT[user_gs].base_2 = base & 0xFF;
@@ -566,7 +570,7 @@ void handle_unknown_irq(struct interrupt_frame *frame, uint32_t irq)
 }
 
 int UNCLAIMED_IOAPIC_INT = 0;
-void handle_ioapic_irq(struct interrupt_frame *frame, unsigned int vector)
+void handle_ioapic_irq(unsigned int vector)
 {
 	*(uint32_t *)(local_apic + 0xB0) = 0; // EOI
 	int found = 0;
@@ -588,8 +592,7 @@ void handle_unknown_error(struct interrupt_frame *frame, uint32_t irq, uint32_t 
 	halt(NULL);
 }
 
-__attribute__ ((interrupt))
-void handle_timer(struct interrupt_frame *frame)
+void handle_timer()
 {
 	++TIMER_COUNT;
 	*(uint32_t *)(local_apic + 0xB0) = 0; // EOI
@@ -637,6 +640,7 @@ ssize_t write(int fd, const void * buf, size_t nbyte) {
 	if (FDS[fd].type == BOGFD_TERMOUT || FDS[fd].type == BOGFD_TERMIN) {
 		term_printn(buf, nbyte);
 		written = nbyte;
+		return written; // bail out early, don't try to notify
 	} else if (FDS[fd].type == BOGFD_PIPE) {
 		if (FDS[fd].pipe == NULL) {
 			return -EPIPE;
@@ -1682,6 +1686,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			size_t new_thread = next_thread;
 			++next_thread;
 			threads[new_thread].state = THREAD_INITING;
+			threads[new_thread].cpus = threads[current_thread].cpus;
 			UNLOCK(thread_state);
 			threads[new_thread].kern_stack_top = stack_page + PAGE_SIZE;
 			threads[new_thread].tls_base = (uintptr_t)a->param->tls_base;
@@ -1842,8 +1847,8 @@ void interrupt_setup()
 	IDT[0x0E].offset_1 = ((uint32_t) &handle_pf) & 0xFFFF;
 	IDT[0x0E].offset_2 = ((uint32_t) &handle_pf) >> 16;
 
-	IDT[FIRST_IOAPIC_VECTOR].offset_1 = ((uint32_t) &handle_timer) & 0xFFFF;
-	IDT[FIRST_IOAPIC_VECTOR].offset_2 = ((uint32_t) &handle_timer) >> 16;
+	IDT[FIRST_IOAPIC_VECTOR].offset_1 = ((uint32_t) &handle_timer_int) & 0xFFFF;
+	IDT[FIRST_IOAPIC_VECTOR].offset_2 = ((uint32_t) &handle_timer_int) >> 16;
 
 	IDT[0x80].offset_1 = ((uint32_t) &handle_int_80) & 0xFFFF;
 	IDT[0x80].offset_2 = ((uint32_t) &handle_int_80) >> 16;

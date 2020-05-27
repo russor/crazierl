@@ -7,6 +7,7 @@
 .global _start
 
 .global handle_int_80
+.global handle_timer_int
 .global start_entrypoint
 .global unknown_int
 .global ioapic_int
@@ -87,7 +88,7 @@
 		andl $-16, %edx
 		mov %dx, %gs
 		mov %esp, %ecx
-		addl $16, %ecx
+		addl $12, %ecx
 		pushl %ecx
 		pushl %eax // push syscall number
 		call handle_syscall // call into C now
@@ -95,9 +96,35 @@
 		addl $8, %esp // skip pushed syscall and frame pointer
 		mov %gs, %dx
 		orl $0xB, %edx
+		mov %dx, %gs
 		popl %edx
 		popl %ecx
 		pop %ebp
+		iret
+
+	handle_timer_int:
+		push %ebp
+		mov  %esp, %ebp
+		pushl %eax
+		pushl %ecx
+		pushl %edx
+
+		mov %gs, %dx            // set GS to kernel segment
+		andl $-16, %edx
+		mov %dx, %gs
+
+		call handle_timer
+
+		testl $0x3, 0x20(%esp)  // set GS to user segment, if pushed CS is user segment
+		je timer_done
+		mov %gs, %dx
+		orl $0xB, %edx
+		mov %dx, %gs
+
+	timer_done: popl %edx
+		popl %ecx
+		popl %eax
+		popl %ebp
 		iret
 
 	// handle call from C, adjust the stack a bit, and jump to the
@@ -458,11 +485,20 @@
 		mov $5, %ecx
 		idivw %cx
 		push %eax
-		mov %esp, %eax
-		addl $16, %eax
-		push %eax
+
+		mov %gs, %dx            // set GS to kernel segment
+		andl $-16, %edx
+		mov %dx, %gs
+
 		call handle_ioapic_irq
-		addl $8, %esp
+
+		testl $0x3, 0x20(%esp)  // set GS to user segment, if pushed CS is user segment
+		je apic_done
+		mov %gs, %dx
+		orl $0xB, %edx
+		mov %dx, %gs
+
+	apic_done: pop %eax
 		pop %edx
 		pop %ecx
 		pop %eax
@@ -487,7 +523,6 @@
 		push %esi
 		push %edi
 		push %ebp
-		push %gs
 		push $0 // return 0 for child
 		mov %esp, %eax
 		mov %ecx, %esp // return to current thread stack
@@ -506,7 +541,6 @@
 		push %esi
 		push %edi
 		push %ebp
-		push %gs // needed in case of timer interrupt
 		push $0 // return from switch_thread_impl, can be modified
 		mov 0x8(%ebp), %eax
 		mov %esp, (%eax) // copy stack to old_thread stack pointer
@@ -514,7 +548,6 @@
 		mov %eax, %esp // copy new_thread stack pointer to stack
 	switch_thread_done:
 		pop %eax
-		pop %gs
 		pop %ebp
 		pop %edi
 		pop %esi
