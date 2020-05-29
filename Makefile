@@ -9,7 +9,7 @@ run: obj/mykernel.elf obj/initrd
 	qemu-system-i386 -smp 2 -s -m 256 -serial mon:stdio -kernel obj/mykernel.elf -append $(RTLD) -initrd obj/initrd
 
 debug: obj/mykernel.elf obj/initrd
-	qemu-system-i386 -d cpu_reset,guest_errors -S -s  -m 256 -serial mon:stdio -kernel obj/mykernel.elf -append $(RTLD) -initrd obj/initrd
+	qemu-system-i386 -d cpu_reset,guest_errors -smp 2 -S -s  -m 256 -serial mon:stdio -kernel obj/mykernel.elf -append $(RTLD) -initrd obj/initrd
 
 noisy: obj/mykernel.elf obj/initrd
 	qemu-system-i386 -d nochain,exec,cpu_reset,guest_errors -s  -m 256 -serial mon:stdio -kernel obj/mykernel.elf -append $(RTLD) -initrd obj/initrd
@@ -47,7 +47,7 @@ obj/initrd: hardcode_files.pl preload_local_files $(shell cat preload_local_file
 obj/files.o: files.c files.h
 	$(KERNEL_COMPILER) $< -o $@
 
-obj/kern_mmap.o: kern_mmap.c kern_mmap.h
+obj/kern_mmap.o: kern_mmap.c kern_mmap.h common.h
 	$(KERNEL_COMPILER) $< -o $@
 
 obj/acpi.o: acpi.c acpi.h

@@ -24,6 +24,7 @@ uintptr_t PAGE_DIRECTORY;
 uintptr_t PAGE_TABLE_BASE;
 uintptr_t LEAST_ADDR;
 uintptr_t MAX_ADDR;
+uintptr_t LOW_PAGE;
 int PAGE_SETUP_FINISHED;
 
 uint32_t * pagetable_direntry (uintptr_t logical)
@@ -187,6 +188,16 @@ void kern_mmap_init (unsigned int length, unsigned int addr)
 			uintptr_t len = mmm->len;
 			DEBUG_PRINTF("Available memory at 0x%08x; 0x%08x (%u) bytes\n", addr, len, len);
 			if (addr < ONE_MB) {
+				if (addr < PAGE_SIZE && addr + len >= 2 * PAGE_SIZE) {
+					LOW_PAGE = PAGE_SIZE;
+				} else if (addr < LOW_PAGE) {
+					uintptr_t base = addr & ~(PAGE_SIZE - 1);
+					if (base == addr && len >= PAGE_SIZE) {
+						LOW_PAGE = base;
+					} else if (addr + len >= base + 2 * PAGE_SIZE) {
+						LOW_PAGE = base + PAGE_SIZE;
+					}
+				}
 				if (addr + len <= ONE_MB) {
 					DEBUG_PRINTF(" ignoring, because whole range is under 1 MB\n");
 					continue;

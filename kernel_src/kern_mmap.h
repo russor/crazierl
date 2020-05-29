@@ -14,4 +14,6 @@ void kern_mmap_enable_paging();
 void kern_mmap_debug (uintptr_t);
 uintptr_t kern_mmap_physical(uintptr_t);
 
+extern uintptr_t LOW_PAGE;
+
 #endif

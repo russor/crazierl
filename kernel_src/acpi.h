@@ -16,3 +16,15 @@ struct io_apic {
 
 extern size_t io_apic_count;
 extern struct io_apic io_apics[];
+
+#define CPU_ENABLED (1 << 0)
+#define CPU_STARTED (1 << 1)
+#define CPU_IDLE    (1 << 2)
+
+struct cpu {
+    uint32_t apic_id;
+    uint32_t flags;
+};
+
+#define MAX_CPUS 256
+extern struct cpu cpus[];

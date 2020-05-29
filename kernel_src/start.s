@@ -5,6 +5,8 @@
 // We declare the 'start' label as global (accessible from outside this file), since the linker will need to know where it is.
 // In a bit, we'll actually take a look at the code that defines this label.
 .global _start
+.global ap_trampoline
+.global ap_trampoline2
 
 .global handle_int_80
 .global handle_timer_int
@@ -46,6 +48,7 @@
  
 // This section contains our actual assembly code to be run when our kernel loads
 .section .text
+
 	// Here is the 'start' label we mentioned before. This is the first code that gets run in our kernel.
 	_start:
 		// First thing's first: we want to set up an environment that's ready to run C code.
@@ -557,3 +560,24 @@
 
 		pop %ebp
 		ret
+
+	.code16 // APs start in real mode
+	ap_trampoline:
+		mov $GDT, %eax
+		// setup the Global Descriptor Table with static values
+		lgdtl (%eax)
+		mov %cr0, %eax
+		or $1, %al
+		mov %eax, %cr0 // enable protected mode
+		jmpl $0x18, $ap_trampoline2 // bounce to the second part of the trampoline
+
+	.code32
+	ap_trampoline2:
+		mov $0x28, %ax
+		mov %ax, %ds
+		mov %ax, %es
+		mov %ax, %fs
+		mov %ax, %ss
+
+	tramploop: hlt
+		jmp tramploop

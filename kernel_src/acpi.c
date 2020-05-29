@@ -14,6 +14,8 @@ unsigned int io_apic_count;
 #define MAX_IO_APICS 8
 struct io_apic io_apics[MAX_IO_APICS];
 
+struct cpu cpus[MAX_CPUS];
+
 uint8_t acpi_checksum(uint8_t * p, ssize_t len) {
 	uint8_t ret = 0;
 	while (len) {
@@ -74,8 +76,14 @@ int acpi_process_madt(void * rsdt) {
 		if (subhead->Type == ACPI_MADT_TYPE_LOCAL_APIC && subhead->Length == sizeof(ACPI_MADT_LOCAL_APIC)) {
 			ACPI_MADT_LOCAL_APIC *data = (ACPI_MADT_LOCAL_APIC *)p;
 			if (data->LapicFlags & ACPI_MADT_ENABLED) {
-				ERROR_PRINTF("Processor %d, APIC %d, Flags %x\n", data->ProcessorId, data->Id, data->LapicFlags);
-				++numcpu;
+				if (numcpu < MAX_CPUS) {
+					ERROR_PRINTF("Processor %d, APIC %d, Flags %x\n", data->ProcessorId, data->Id, data->LapicFlags);
+					cpus[numcpu].flags = CPU_ENABLED;
+					cpus[numcpu].apic_id = data->Id;
+					++numcpu;
+				} else {
+					ERROR_PRINTF("Ignoring processor %d, APIC %d; more than MAX_CPUS (%d)\n", data->ProcessorId, data->Id, MAX_CPUS);
+				}
 			} else {
 				ERROR_PRINTF("DISABLED! Processor %d, APIC %d, Flags %x\n", data->ProcessorId, data->Id, data->LapicFlags);
 			}

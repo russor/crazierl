@@ -14,6 +14,8 @@ extern const char *syscallnames[];
 extern void * handle_int_80;
 extern void * handle_timer_int;
 extern void * unknown_int;
+extern void * ap_trampoline;
+extern void * ap_trampoline2;
 #define UNKNOWN_INT_STRIDE 5
 #define FIRST_IOAPIC_VECTOR 0x20
 
@@ -95,7 +97,7 @@ uint8_t WANT_NMI = 0;
 #define THREAD_ID_OFFSET 100002
 struct crazierl_thread threads[MAX_THREADS];
 __thread size_t current_thread = 0;
-__thread size_t current_cpu = 0;
+__thread size_t current_cpu = -1;
 size_t next_thread = 0;
 
 // This is the x86's VGA textmode buffer. To display text, we write data to this memory location
@@ -121,7 +123,6 @@ struct GDTDescr {
    uint8_t base_3;
 } __attribute((packed));
 
-#define MAX_CPUS 256
 #define NUM_GDT (6 + (3 * MAX_CPUS))
 #define GDT_GSBASE_OFFSET 6
 #define GDT_TSS_OFFSET (GDT_GSBASE_OFFSET + (2 * MAX_CPUS))
@@ -179,7 +180,7 @@ struct IDTRecord {
 struct IDTDescr IDT[256];
 struct IDTRecord IDTR;
 
-volatile uint32_t TIMER_COUNT = 0;
+volatile unsigned int TIMER_COUNT = 0;
 
 uint64_t fixed_point_time;
 #define FIXED_POINT_TIME_NANOSECOND(seconds, nanoseconds) (((uint64_t) seconds << 24) + (((uint64_t) nanoseconds << 24) / 1000000000))
@@ -569,10 +570,19 @@ void handle_unknown_irq(struct interrupt_frame *frame, uint32_t irq)
 	halt(NULL);
 }
 
+void local_apic_write(unsigned int reg, uint32_t value)
+{
+	*(uint32_t *)(local_apic + reg) = value;
+}
+
+uint32_t local_apic_read(unsigned int reg) {
+	return *(uint32_t *)(local_apic + reg);
+}
+
 int UNCLAIMED_IOAPIC_INT = 0;
 void handle_ioapic_irq(unsigned int vector)
 {
-	*(uint32_t *)(local_apic + 0xB0) = 0; // EOI
+	local_apic_write(0xB0, 0); // EOI
 	int found = 0;
 	for (int fd = 0; fd < BOGFD_MAX; ++fd) {
 		if (FDS[fd].type == BOGFD_IOAPIC && FDS[fd].status[0] == vector) {
@@ -595,7 +605,7 @@ void handle_unknown_error(struct interrupt_frame *frame, uint32_t irq, uint32_t 
 void handle_timer()
 {
 	++TIMER_COUNT;
-	*(uint32_t *)(local_apic + 0xB0) = 0; // EOI
+	local_apic_write(0xB0, 0); // EOI
 	fixed_point_time += FIXED_POINT_TIME_NANOSECOND(0, 54925438); // PIT timer is 54.92... ms
 	switch_thread(THREAD_RUNNABLE, 0);
 }
@@ -1822,7 +1832,7 @@ void interrupt_setup()
 	
 
 	// vector spurious intererrupts to 0xFF and enable APIC
-	*(uint32_t *)(local_apic + 0xF0) = 0x1FF;
+	local_apic_write(0xF0, 0x1FF);
 	
 	ioapic_set_gsi_vector(timer_gsirq, timer_flags, FIRST_IOAPIC_VECTOR, 0);
 
@@ -1998,7 +2008,7 @@ void setup_cpus()
 	ERROR_PRINTF("TLS size %d, padded %d\n", raw_tls_size, padded_tls_size);
 
 	uintptr_t kernel_tls;
-	if (!kern_mmap(&kernel_tls, NULL, numcpu * padded_tls_size, PROT_READ | PROT_WRITE | PROT_KERNEL, 0)) {
+	if (!kern_mmap(&kernel_tls, NULL, numcpu * padded_tls_size, PROT_READ | PROT_WRITE | PROT_KERNEL, MAP_STACK)) {
 		halt("couldn't allocate Kernel TLS memory\n");
 	}
 	explicit_bzero((void *)kernel_tls, (numcpu * padded_tls_size + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1));
@@ -2189,6 +2199,51 @@ void setup_entrypoint()
 	start_entrypoint(new_top, entrypoint, ((GDT_GSBASE_OFFSET + 1)* sizeof(GDT[0])) | 0x3);
 }
 
+void init_cpus() {
+	unsigned int my_apic_id = local_apic_read(0x20); // >> 24;
+	ERROR_PRINTF("my apic id %x\n", my_apic_id);
+
+	for (int i = 0; i < numcpu; ++i) {
+		if (cpus[i].apic_id == my_apic_id) {
+			current_cpu = i;
+			cpus[i].flags |= CPU_STARTED;
+		} else if (cpus[i].flags & CPU_ENABLED) {
+			ERROR_PRINTF("trying to INIT cpu %d\n", i);
+			local_apic_write(0x310, cpus[i].apic_id << 24);
+			local_apic_write(0x300, 0x04500);
+		} else {
+			halt("numcpus probably shouldn't include disabled cpus??\n");
+		}
+	}
+	if (current_cpu == -1) {
+		halt("could not find boot processor in cpu list?\n");
+	}
+}
+
+void start_cpus() {
+	if (numcpu > 1 && LOW_PAGE == 0) {
+		ERROR_PRINTF("Couldn't find a low page to host the application processor trampoline, no SMP for you\n");
+		return;
+	}
+
+	uintptr_t scratch;
+	if (!kern_mmap(&scratch, (void *)LOW_PAGE, PAGE_SIZE, PROT_WRITE | PROT_READ | PROT_KERNEL | PROT_FORCE, 0)) {
+		halt("couldn't map LOW_PAGE");
+	}
+	memcpy((void *)LOW_PAGE, &ap_trampoline, (uintptr_t)&ap_trampoline2 - (uintptr_t)&ap_trampoline);
+
+	uint8_t trampoline_page = LOW_PAGE / PAGE_SIZE;
+
+	for (int i = 0; i < numcpu; ++i) {
+		if ((cpus[i].flags & (CPU_ENABLED|CPU_STARTED)) == CPU_ENABLED) {
+			uint32_t command_word = (0x04600 | trampoline_page);
+			ERROR_PRINTF("trying to START cpu %d: %x\n", i, command_word);
+			local_apic_write(0x310, cpus[i].apic_id << 24);
+			local_apic_write(0x300, command_word);
+		}
+	}
+}
+
 // This is our kernel's main function
 void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 {
@@ -2201,7 +2256,6 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 	ERROR_PRINTF("Hello, World!\n");
 	enable_sse();
 	interrupt_setup();
-
 
 	get_time();
 
@@ -2216,6 +2270,10 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 			halt("couldn't map space for IO-APIC\n");
 		}
 	}
+	setup_cpus();
+	asm volatile ("sti" ::); // enable interrupts here
+	init_cpus();
+	unsigned int cpus_inited = TIMER_COUNT;
 	
 	ERROR_PRINTF("kernel read-only %08x - %08x\n", &__executable_start, &__etext);
 
@@ -2262,8 +2320,10 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 		DEBUG_PRINTF("loading %s at %08x\n", filename, file->start);
 		load_file(file->start, file->name, file->size);
 	}
-
-	setup_cpus();
+	while (TIMER_COUNT == cpus_inited) {
+		asm volatile ("hlt" ::); // wait for at least one timer interrupt
+	}
+	start_cpus();
 
 	if (entrypoint) {
 		setup_entrypoint();
