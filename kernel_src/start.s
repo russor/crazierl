@@ -15,8 +15,10 @@
 .global ioapic_int
 .global setup_new_stack
 .global switch_thread_impl
+.global switch_ap_thread
 .global GDT
 .global stack_top
+.global LOW_PAGE
 
 // Our bootloader, GRUB, needs to know some basic information about our kernel before it can boot it.
 // We give GRUB this information using a standard known as 'Multiboot'.
@@ -561,6 +563,10 @@
 		pop %ebp
 		ret
 
+	switch_ap_thread:
+		mov %eax, %esp
+		jmp switch_thread_done
+
 	.code16 // APs start in real mode
 	ap_trampoline:
 		mov $GDT, %eax
@@ -579,5 +585,7 @@
 		mov %ax, %fs
 		mov %ax, %ss
 
-	tramploop: hlt
-		jmp tramploop
+		mov LOW_PAGE, %eax
+		addl $4096, %eax
+		mov %eax, %esp
+		call start_ap

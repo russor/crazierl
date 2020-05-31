@@ -25,7 +25,8 @@ struct pipe_buffer {
 
 struct BogusFD {
 	int type;
-	long flags;
+	unsigned long flags;
+	DECLARE_LOCK(lock);
 	union {
 		struct hardcoded_file * file;
 		struct pipe_buffer * pb;

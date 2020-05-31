@@ -24,6 +24,7 @@ extern void * stack_top;
 extern void start_entrypoint();
 extern uintptr_t setup_new_stack(uintptr_t stack_pointer);
 extern int switch_thread_impl(uintptr_t* oldstack, uintptr_t newstack);
+extern void switch_ap_thread(uintptr_t newstack);
 extern void __executable_start, __etext, __data_start, __edata, __tdata_start, __tdata_end;
 extern uintptr_t tss_esp0;
 
@@ -647,9 +648,11 @@ ssize_t write(int fd, const void * buf, size_t nbyte) {
 	if (fd < 0 || fd >= BOGFD_MAX) {
 		return -EBADF;
 	}
+	LOCK(FDS[fd].lock);
 	if (FDS[fd].type == BOGFD_TERMOUT || FDS[fd].type == BOGFD_TERMIN) {
 		term_printn(buf, nbyte);
 		written = nbyte;
+		UNLOCK(FDS[fd].lock);
 		return written; // bail out early, don't try to notify
 	} else if (FDS[fd].type == BOGFD_PIPE) {
 		if (FDS[fd].pipe == NULL) {
@@ -667,6 +670,7 @@ ssize_t write(int fd, const void * buf, size_t nbyte) {
 		wait_target = &FDS[fd];
 	} else {
 		ERROR_PRINTF("write (%d, %08x, %d) = EBADF\n", fd, buf, nbyte);
+		UNLOCK(FDS[fd].lock);
 		return -EBADF;
 	}
 	LOCK(thread_state);
@@ -688,6 +692,7 @@ ssize_t write(int fd, const void * buf, size_t nbyte) {
 		}
 	}
 	UNLOCK(thread_state);
+	UNLOCK(FDS[fd].lock);
 	return written;
 }
 
@@ -2017,8 +2022,14 @@ void setup_cpus()
 	threads[0].state = THREAD_RUNNING;
 	CPU_ZERO(&threads[0].cpus);
 	threads[0].kern_stack_top = (uintptr_t) &stack_top;
+	unsigned int my_apic_id = local_apic_read(0x20) >> 24;
+	ERROR_PRINTF("my apic id %x\n", my_apic_id);
+	size_t this_cpu = -1;
 
 	for (int i = 0; i < numcpu; ++i) {
+		if (cpus[i].apic_id == my_apic_id) {
+			this_cpu = i;
+		}
 		// thread 0 starts as runnable on all CPUs
 		CPU_SET(i, &threads[0].cpus);
 
@@ -2086,9 +2097,13 @@ void setup_cpus()
 		TSS[i].esp0 = (uintptr_t)&stack_top;
 		TSS[i].ss0 = 0x28;
 	}
-	uint16_t active_tss = (GDT_TSS_OFFSET * sizeof(GDT[0])) | 0x3;
+	uint16_t active_tss = ((GDT_TSS_OFFSET + this_cpu) * sizeof(GDT[0])) | 0x3;
 	asm volatile ("ltr %0" :: "a"(active_tss));
-	asm volatile ("mov %0, %%gs" :: "a"(GDT_GSBASE_OFFSET * sizeof(GDT[0])));
+	asm volatile ("mov %0, %%gs" :: "a"((GDT_GSBASE_OFFSET + 2 * this_cpu)* sizeof(GDT[0])));
+	current_cpu = this_cpu;
+	if (current_cpu == -1) {
+		halt("could not find boot processor in cpu list?\n");
+	}
 }
 
 void setup_entrypoint()
@@ -2200,14 +2215,10 @@ void setup_entrypoint()
 }
 
 void init_cpus() {
-	unsigned int my_apic_id = local_apic_read(0x20); // >> 24;
-	ERROR_PRINTF("my apic id %x\n", my_apic_id);
-
 	for (int i = 0; i < numcpu; ++i) {
-		if (cpus[i].apic_id == my_apic_id) {
-			current_cpu = i;
+		if (current_cpu == i) {
 			cpus[i].flags |= CPU_STARTED;
-		} else if (cpus[i].flags & CPU_ENABLED) {
+		} else if ((cpus[i].flags & (CPU_ENABLED|CPU_STARTED)) == CPU_ENABLED) {
 			ERROR_PRINTF("trying to INIT cpu %d\n", i);
 			local_apic_write(0x310, cpus[i].apic_id << 24);
 			local_apic_write(0x300, 0x04500);
@@ -2218,6 +2229,31 @@ void init_cpus() {
 	if (current_cpu == -1) {
 		halt("could not find boot processor in cpu list?\n");
 	}
+}
+
+int start_cpu(size_t cpu, uint8_t page) {
+	uint32_t command_word = (0x04600 | page);
+	ERROR_PRINTF("trying to START cpu %d: %x\n", cpu, command_word);
+	local_apic_write(0x310, cpus[cpu].apic_id << 24);
+	local_apic_write(0x300, command_word);
+
+	unsigned int max_wait = TIMER_COUNT + 2;
+	while (TIMER_COUNT < max_wait) {
+		if (cpus[cpu].flags & CPU_STARTED) {
+			return 1;
+		}
+	}
+	ERROR_PRINTF("trying to START cpu %d a second time\n", cpu);
+	local_apic_write(0x300, command_word);
+	max_wait = TIMER_COUNT + 10;
+	while (TIMER_COUNT < max_wait) {
+		if (cpus[cpu].flags & CPU_STARTED) {
+			return 1;
+		}
+	}
+	ERROR_PRINTF("couldn't start cpu %d\n", cpu);
+	cpus[cpu].flags &= ~CPU_ENABLED;
+	return 0;
 }
 
 void start_cpus() {
@@ -2236,13 +2272,55 @@ void start_cpus() {
 
 	for (int i = 0; i < numcpu; ++i) {
 		if ((cpus[i].flags & (CPU_ENABLED|CPU_STARTED)) == CPU_ENABLED) {
-			uint32_t command_word = (0x04600 | trampoline_page);
-			ERROR_PRINTF("trying to START cpu %d: %x\n", i, command_word);
-			local_apic_write(0x310, cpus[i].apic_id << 24);
-			local_apic_write(0x300, command_word);
+			if (start_cpu(i, trampoline_page)) {
+				break;
+			}
 		}
 	}
 }
+
+void start_ap() {
+	enable_sse();
+	unsigned int my_apic_id = local_apic_read(0x20) >> 24;
+	ERROR_PRINTF("my apic id %x\n", my_apic_id);
+	size_t cpu_to_start = -1;
+	size_t this_cpu = -1;
+	for (int i = 0; i < numcpu; ++i) {
+		if (cpus[i].apic_id == my_apic_id) {
+			this_cpu = i;
+			cpus[i].flags |= CPU_STARTED;
+		} else if (cpu_to_start == -1 && (cpus[i].flags & (CPU_ENABLED|CPU_STARTED)) == CPU_ENABLED) {
+			cpu_to_start = i;
+		}
+	}
+	uint64_t base_msr = readmsr(0x1b);
+
+	if (!(base_msr & 0x800)) {
+		halt("an enabled local APIC is required\n");
+	}
+	if (local_apic != (base_msr & (~((1 << 12) - 1)))) {
+		ERROR_PRINTF("local_apic from APIC %08x does not match value from MSR %08x\n", local_apic, base_msr & (~((1 << 12) - 1)));
+		halt(NULL);
+	}
+
+	// vector spurious intererrupts to 0xFF and enable APIC
+	local_apic_write(0xF0, 0x1FF);
+	asm volatile ( "lidt %0" :: "m" (IDTR) );
+	uint16_t active_tss = ((GDT_TSS_OFFSET + this_cpu) * sizeof(GDT[0])) | 0x3;
+	asm volatile ("ltr %0" :: "a"(active_tss));
+	uint16_t gs_segment = (GDT_GSBASE_OFFSET + 2 * this_cpu) * sizeof(GDT[0]);
+	asm volatile ("mov %0, %%gs" :: "a"(gs_segment));
+	current_cpu = this_cpu;
+	ERROR_PRINTF("got here!\n");
+
+	for (int i = 0; i < MAX_THREADS; ++i) {
+		if (CPU_ISSET(current_cpu, &threads[i].cpus) && threads[i].state == THREAD_IDLE) {
+			switch_ap_thread(threads[i].kern_stack_cur);
+		}
+	}
+	halt("code should not get here");
+}
+
 
 // This is our kernel's main function
 void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
