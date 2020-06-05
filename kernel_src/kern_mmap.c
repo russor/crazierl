@@ -247,8 +247,11 @@ void kern_mmap_init (unsigned int length, unsigned int addr)
 	PAGE_SETUP_FINISHED = 1;
 }
 
+DECLARE_LOCK(mmap_lock);
+
 int kern_mmap (uintptr_t *ret, void * addr, size_t len, int prot, int flags)
 {
+	LOCK(mmap_lock);
 	if (len & (PAGE_SIZE -1)) {
 		len = (len & ~(PAGE_SIZE - 1)) + PAGE_SIZE;
 	}
@@ -307,13 +310,15 @@ int kern_mmap (uintptr_t *ret, void * addr, size_t len, int prot, int flags)
 		}
 		if (!found) {
 			*ret = ENOMEM;
+			UNLOCK(mmap_lock);
 			return 0;
 		}
 	} else {
 		*ret = (uintptr_t) addr;
 	}
 	add_page_mappings(mappingflags, *ret, len);
-	DEBUG_PRINTF("kern_mmap (%08x, %08x, %08x, %x, %x)\n", *ret, addr, len, prot, flags);
+	DEBUG_PRINTF("kern_mmap (%08x (%08x), %08x, %08x, %x, %x)\n", *ret, ret, addr, len, prot, flags);
+	UNLOCK(mmap_lock);
 	return 1;
 }
 

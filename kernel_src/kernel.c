@@ -12,14 +12,15 @@
 
 extern const char *syscallnames[];
 extern void * handle_int_80;
-extern void * handle_timer_int;
-extern void * unknown_int;
 extern void * ap_trampoline;
 extern void * ap_trampoline2;
-#define UNKNOWN_INT_STRIDE 5
-#define FIRST_IOAPIC_VECTOR 0x20
+#define IRQ_STRIDE 8
+#define FIRST_IRQ_VECTOR 0x20
+#define TIMER_VECTOR FIRST_IRQ_VECTOR
+#define SWITCH_VECTOR (FIRST_IRQ_VECTOR + 1)
+#define HALT_VECTOR (FIRST_IRQ_VECTOR + 2)
 
-extern void * ioapic_int;
+extern void * gen_int;
 extern void * stack_top;
 extern void start_entrypoint();
 extern uintptr_t setup_new_stack(uintptr_t stack_pointer);
@@ -90,7 +91,7 @@ typedef uint32_t u_int32_t;
 
 struct BogusFD FDS[BOGFD_MAX];
 size_t next_fd;
-uint8_t next_ioapic_vector = 1;
+uint8_t next_irq_vector = FIRST_IRQ_VECTOR;
 
 uint8_t WANT_NMI = 0;
  
@@ -402,6 +403,15 @@ void term_printf(const char* format, ...)
        write(2, foo, strlen(foo));
 }
 
+void local_apic_write(unsigned int reg, uint32_t value)
+{
+	*(uint32_t *)(local_apic + reg) = value;
+}
+
+uint32_t local_apic_read(unsigned int reg) {
+	return *(uint32_t *)(local_apic + reg);
+}
+
 _Noreturn
 void halt(char * message) {
 	find_cursor();
@@ -413,8 +423,11 @@ void halt(char * message) {
 			term_printn(FDS[i].pipe->pb->data, FDS[i].pipe->pb->length);
 		}
 	}
-	asm volatile ( "hlt" :: );
-	while (1) { }
+	local_apic_write(0x300, 0x34000 | HALT_VECTOR);
+
+	while (1) {
+		asm volatile ( "hlt" :: );
+	}
 }
 
 uint8_t read_cmos(uint8_t reg)
@@ -481,6 +494,27 @@ void get_time()
 
 DECLARE_LOCK(thread_state);
 
+
+
+void wake_cpu(size_t cpu) {
+	local_apic_write(0x310, cpus[cpu].apic_id << 24);
+	local_apic_write(0x300, 0x04000 | SWITCH_VECTOR);
+}
+
+void wake_cpu_for_thread(size_t thread) {
+	cpuset_t t_cpus;
+	CPU_COPY(&threads[thread].cpus, &t_cpus);
+	int cpu = CPU_FFS(&t_cpus) - 1;
+	while (cpu != -1) {
+		if (cpus[cpu].flags & CPU_IDLE) {
+			//wake_cpu(cpu);
+			break;
+		}
+		CPU_CLR(cpu, &t_cpus);
+		cpu = CPU_FFS(&t_cpus) - 1;
+	}
+}
+
 int switch_thread(unsigned int new_state, uint64_t timeout) {
 	LOCK(thread_state);
 	DEBUG_PRINTF("current thread %d (%p), current cpu %d\n", current_thread, &current_thread, current_cpu);
@@ -507,19 +541,22 @@ int switch_thread(unsigned int new_state, uint64_t timeout) {
 			} else if (threads[i].state == THREAD_IDLE) {
 				idle_thread = i;
 			}
+		} else if (threads[i].timeout && threads[i].timeout <= fixed_point_time) {
+			wake_cpu_for_thread(i);
 		}
 		++i;
 		if (i == MAX_THREADS) { i = 0; }
 	}
 	if (target == old_thread) {
 		if (new_state == THREAD_RUNNABLE) {
+			cpus[current_cpu].flags |= CPU_IDLE;
 			UNLOCK(thread_state);
 			return 0;
 		} else {
 			target = idle_thread;
 		}
 	}
-	DEBUG_PRINTF("switching from %d (%d) to %d\n", old_thread, new_state, target);
+	DEBUG_PRINTF("switching from %d (%d) to %d on cpu %d\n", old_thread, new_state, target, current_cpu);
 	DEBUG_PRINTF("new stack %p of %p\n",
 		threads[target].kern_stack_cur, threads[target].kern_stack_top);
 	DEBUG_PRINTF("old stack %p of %p\n",
@@ -547,6 +584,8 @@ int switch_thread(unsigned int new_state, uint64_t timeout) {
 		if (timed_out) {
 			*(int *)threads[target].kern_stack_cur = 1;
 		}
+	} else {
+		//cpus[current_cpu].flags |= CPU_IDLE;
 	}
 	UNLOCK(thread_state);
 	int we_timed_out = switch_thread_impl(&threads[old_thread].kern_stack_cur, threads[target].kern_stack_cur);
@@ -565,35 +604,47 @@ struct interrupt_frame
 };
 
 
-void handle_unknown_irq(struct interrupt_frame *frame, uint32_t irq)
-{
-	ERROR_PRINTF("Got unexpected interrupt 0x%02x IP: %08x", irq, frame->ip);
-	halt(NULL);
-}
-
-void local_apic_write(unsigned int reg, uint32_t value)
-{
-	*(uint32_t *)(local_apic + reg) = value;
-}
-
-uint32_t local_apic_read(unsigned int reg) {
-	return *(uint32_t *)(local_apic + reg);
-}
 
 int UNCLAIMED_IOAPIC_INT = 0;
-void handle_ioapic_irq(unsigned int vector)
+void handle_irq(unsigned int vector)
 {
 	local_apic_write(0xB0, 0); // EOI
-	int found = 0;
-	for (int fd = 0; fd < BOGFD_MAX; ++fd) {
-		if (FDS[fd].type == BOGFD_IOAPIC && FDS[fd].status[0] == vector) {
-			++found;
-			write(fd, "!", 1);
+	vector += FIRST_IRQ_VECTOR;
+	switch (vector) {
+		case TIMER_VECTOR: {
+			++TIMER_COUNT;
+			fixed_point_time += FIXED_POINT_TIME_NANOSECOND(0, 54925438); // PIT timer is 54.92... ms
+			size_t woken = 0;
+			// TODO: only wake idle cpus, or for timeouts
+			for (size_t i = 0; i < numcpu; ++i) {
+				if (i == current_cpu) { continue; }
+				if (cpus[i].flags & (CPU_STARTED)) {
+					wake_cpu(i);
+				}
+			}
+			switch_thread(THREAD_RUNNABLE, 0);
+			break;
 		}
-	}
-	if (!found && !UNCLAIMED_IOAPIC_INT) {
-		UNCLAIMED_IOAPIC_INT = 1;
-		ERROR_PRINTF("didn't find FD for ioapic vector %d\n", vector);
+		case SWITCH_VECTOR: {
+			switch_thread(THREAD_RUNNABLE, 0);
+			break;
+		}
+		case HALT_VECTOR: {
+			halt("halted by IPI\n");
+		}
+		default: {
+			int found = 0;
+			for (int fd = 0; fd < BOGFD_MAX; ++fd) {
+				if (FDS[fd].type == BOGFD_IOAPIC && FDS[fd].status[0] == vector) {
+					++found;
+					write(fd, "!", 1);
+				}
+			}
+			if (!found) { // && !UNCLAIMED_IOAPIC_INT) {
+				UNCLAIMED_IOAPIC_INT = 1;
+				ERROR_PRINTF("unexpected interrupt vector %X on cpu %d\n", vector, current_cpu);
+			}
+		}
 	}
 }
 
@@ -601,14 +652,6 @@ void handle_unknown_error(struct interrupt_frame *frame, uint32_t irq, uint32_t 
 {
 	ERROR_PRINTF("Got unexpected error %d (%d) IP: %08x", irq, error_code, frame->ip);
 	halt(NULL);
-}
-
-void handle_timer()
-{
-	++TIMER_COUNT;
-	local_apic_write(0xB0, 0); // EOI
-	fixed_point_time += FIXED_POINT_TIME_NANOSECOND(0, 54925438); // PIT timer is 54.92... ms
-	switch_thread(THREAD_RUNNABLE, 0);
 }
 
 void ioapic_set_gsi_vector(unsigned int irq, uint8_t flags, uint8_t vector, uint8_t physcpu) {
@@ -656,6 +699,7 @@ ssize_t write(int fd, const void * buf, size_t nbyte) {
 		return written; // bail out early, don't try to notify
 	} else if (FDS[fd].type == BOGFD_PIPE) {
 		if (FDS[fd].pipe == NULL) {
+			UNLOCK(FDS[fd].lock);
 			return -EPIPE;
 		} else {
 			written = min(nbyte, BOGFD_PB_LEN - FDS[fd].pipe->pb->length);
@@ -679,8 +723,10 @@ ssize_t write(int fd, const void * buf, size_t nbyte) {
 		for (int thread = 0; thread < MAX_THREADS; ++thread) {
 			if (threads[thread].state == THREAD_IO_READ && (struct BogusFD *) threads[thread].wait_target == wait_target) {
 				threads[thread].state = THREAD_RUNNABLE;
+				wake_cpu_for_thread(thread);
 			} else if (threads[thread].state == THREAD_POLL) {
 				threads[thread].state = THREAD_RUNNABLE;
+				wake_cpu_for_thread(thread);
 			}
 		}
 		FDS[fd].flags &= ~BOGFD_BLOCKED_READ;
@@ -688,6 +734,7 @@ ssize_t write(int fd, const void * buf, size_t nbyte) {
 		for (int thread = 0; thread < MAX_THREADS; ++thread) {
 			if (threads[thread].state == THREAD_POLL) {
 				threads[thread].state = THREAD_RUNNABLE;
+				wake_cpu_for_thread(thread);
 			}
 		}
 	}
@@ -744,6 +791,7 @@ int kern_umtx_op(struct _umtx_op_args *a) {
 			for (int thread = 0; count > 0 && thread < MAX_THREADS; ++thread) {
 				if (threads[thread].state == THREAD_UMTX_WAIT && threads[thread].wait_target == phys) {
 					threads[thread].state = THREAD_RUNNABLE;
+					wake_cpu_for_thread(thread);
 					--count;
 				}
 			}
@@ -757,6 +805,7 @@ int kern_umtx_op(struct _umtx_op_args *a) {
 				for (int thread = 0; thread < MAX_THREADS; ++thread) {
 					if (threads[thread].state == THREAD_UMTX_WAIT && threads[thread].wait_target == phys) {
 						threads[thread].state = THREAD_RUNNABLE;
+						wake_cpu_for_thread(thread);
 					}
 				}
 				UNLOCK(thread_state);
@@ -811,6 +860,7 @@ int kern_umtx_op(struct _umtx_op_args *a) {
 					threads[thread].wait_target == (uintptr_t) a->obj) {
 					if (found == 0) {
 						threads[thread].state = THREAD_RUNNABLE;
+						wake_cpu_for_thread(thread);
 						found = 1;
 					} else {
 						mutex->m_owner |= UMUTEX_CONTESTED;
@@ -1220,31 +1270,27 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 						halt("bad path for interrupt\n");
 					}
 					long flags = strtol(endptr, NULL, 10);
-					uint32_t handler = (uint32_t)(&unknown_int) + ((FIRST_IOAPIC_VECTOR + next_ioapic_vector) * UNKNOWN_INT_STRIDE);
 
-					while (next_ioapic_vector < 8) {
-						if (IDT[FIRST_IOAPIC_VECTOR + next_ioapic_vector].offset_1 == ((uint32_t)(handler) & 0xFFFF) &&
-						    IDT[FIRST_IOAPIC_VECTOR + next_ioapic_vector].offset_2 == ((uint32_t)(handler) >> 16)) {
+					while (next_irq_vector < 0xF0) {
+						if (!(IDT[next_irq_vector].type_attr & 0x80)) {
 						    break;
 						}
-						++next_ioapic_vector;
-						handler += UNKNOWN_INT_STRIDE;
+						++next_irq_vector;
 					}
-					if (next_ioapic_vector >= 8) {
-						halt("more than 8 ioapic vectors were requested\n");
+					if (next_irq_vector >= 0xF0) {
+						halt("too many irq vectors were requested, max vector is 0xF0\n");
 					}
-					uint8_t my_vector = next_ioapic_vector;
-					++next_ioapic_vector;
+					uint8_t my_vector = next_irq_vector;
+					++next_irq_vector;
 
 					FDS[a->s].type = BOGFD_IOAPIC;
 					FDS[a->s].status[0] = my_vector;
 					FDS[a->s].status[1] = 0;
 					FDS[a->s].status[2] = global_irq;
 
-					IDT[FIRST_IOAPIC_VECTOR + my_vector].offset_1 = ((uint32_t)&ioapic_int + (my_vector * UNKNOWN_INT_STRIDE)) & 0xFFFF;
-					IDT[FIRST_IOAPIC_VECTOR + my_vector].offset_2 = ((uint32_t)&ioapic_int + (my_vector * UNKNOWN_INT_STRIDE)) >> 16;
+					IDT[my_vector].type_attr |= 0x80;
 					
-					ioapic_set_gsi_vector(global_irq, flags, FIRST_IOAPIC_VECTOR + my_vector, 0); // TODO pick cpu
+					ioapic_set_gsi_vector(global_irq, flags, my_vector, current_cpu);
 
 					UNCLAIMED_IOAPIC_INT = 0;
 					SYSCALL_SUCCESS(0);
@@ -1766,7 +1812,7 @@ void handle_pf(struct interrupt_frame *frame, uint32_t error_code)
 	} else {
 		ERROR_PRINTF("Got #PF, no stack frame\n");
 	}
-	halt("page fault");
+	halt("page fault\n");
 }
 
 __attribute__ ((interrupt))
@@ -1839,35 +1885,45 @@ void interrupt_setup()
 	// vector spurious intererrupts to 0xFF and enable APIC
 	local_apic_write(0xF0, 0x1FF);
 	
-	ioapic_set_gsi_vector(timer_gsirq, timer_flags, FIRST_IOAPIC_VECTOR, 0);
+	ioapic_set_gsi_vector(timer_gsirq, timer_flags, TIMER_VECTOR, 0);
 
 	// default to unknown_interrupt handler
-	for (int i = 0; i < (sizeof(IDT) / sizeof(IDT[0])); ++i) {
-		IDT[i].type_attr = 0;
-		uint32_t handler = (uint32_t)(&unknown_int);
-		handler +=(i * UNKNOWN_INT_STRIDE);
+	for (int i = FIRST_IRQ_VECTOR; i < (sizeof(IDT) / sizeof(IDT[0])); ++i) {
+		uint32_t handler = (uint32_t)(&gen_int);
+		handler +=((i - FIRST_IRQ_VECTOR) * IRQ_STRIDE);
 		IDT[i].offset_1 = handler & 0xFFFF;
 		IDT[i].selector = 0x18;
 		IDT[i].zero = 0;
-		IDT[i].type_attr = 0x8E;
+		if (i >= 0xF0) { 
+			IDT[i].type_attr = 0x8E;
+		} else {
+			IDT[i].type_attr = 0x0E;
+		}
 		IDT[i].offset_2 = handler >> 16;
 	}
 
+	IDT[0x06].selector = 0x18;
+	IDT[0x06].type_attr = 0x8E;
 	IDT[0x06].offset_1 = ((uint32_t) &handle_ud) & 0xFFFF;
 	IDT[0x06].offset_2 = ((uint32_t) &handle_ud) >> 16;
 
+	IDT[0x0D].selector = 0x18;
+	IDT[0x0D].type_attr = 0x8E;
 	IDT[0x0D].offset_1 = ((uint32_t) &handle_gp) & 0xFFFF;
 	IDT[0x0D].offset_2 = ((uint32_t) &handle_gp) >> 16;
 
+	IDT[0x0E].selector = 0x18;
+	IDT[0x0E].type_attr = 0x8E;
 	IDT[0x0E].offset_1 = ((uint32_t) &handle_pf) & 0xFFFF;
 	IDT[0x0E].offset_2 = ((uint32_t) &handle_pf) >> 16;
-
-	IDT[FIRST_IOAPIC_VECTOR].offset_1 = ((uint32_t) &handle_timer_int) & 0xFFFF;
-	IDT[FIRST_IOAPIC_VECTOR].offset_2 = ((uint32_t) &handle_timer_int) >> 16;
 
 	IDT[0x80].offset_1 = ((uint32_t) &handle_int_80) & 0xFFFF;
 	IDT[0x80].offset_2 = ((uint32_t) &handle_int_80) >> 16;
 	IDT[0x80].type_attr = 0xEE; // allow all rings to call in
+	
+	IDT[TIMER_VECTOR].type_attr |= 0x80;
+	IDT[SWITCH_VECTOR].type_attr |= 0x80;
+	IDT[HALT_VECTOR].type_attr |= 0x80;
 	
 	IDTR.size = sizeof(IDT) - 1;
 	IDTR.offset = (uint32_t) &IDT;
@@ -1997,6 +2053,13 @@ void setup_fds()
 // some values should be 16-byte aligned on x86 for sse (i think)
 #define MAX_ALIGN (16 - 1)
 
+void idle() {
+	asm volatile ( "finit" :: ); // clear fpu/sse state
+	while (1) {
+		asm volatile( "sti; hlt; cli" :: );
+	}
+}
+
 void setup_cpus()
 {
 	if (numcpu >= MAX_THREADS) {
@@ -2029,6 +2092,7 @@ void setup_cpus()
 	for (int i = 0; i < numcpu; ++i) {
 		if (cpus[i].apic_id == my_apic_id) {
 			this_cpu = i;
+			//CPU_SET(i, &threads[0].cpus);
 		}
 		// thread 0 starts as runnable on all CPUs
 		CPU_SET(i, &threads[0].cpus);
@@ -2047,19 +2111,9 @@ void setup_cpus()
 		uintptr_t stack;
 		asm volatile ( "mov %%esp, %0" : "=a"(stack) :);
 		size_t stack_size = threads[0].kern_stack_top - stack;
-		memcpy((void *)(threads[i + 1].kern_stack_top - stack_size), (void *)stack, stack_size);
-
-		//setup_new_stack returns on the current thread, and the new thread
-		uintptr_t new_stack_cur = setup_new_stack(threads[i + 1].kern_stack_top - stack_size);
-		if (new_stack_cur) { // thr_new returns on existing thread
-			threads[i + 1].kern_stack_cur = new_stack_cur;
-		} else {
-			asm volatile ( "finit" :: ); // clear fpu/sse state
-			while (1) {
-				asm volatile( "sti; hlt; cli" :: );
-			}
-		}
-
+		uintptr_t new_stack_cur = setup_new_idle(threads[i + 1].kern_stack_top);
+		threads[i + 1].kern_stack_cur = new_stack_cur;
+		threads[i + 1].state = THREAD_IDLE;
 		size_t gsbase = GDT_GSBASE_OFFSET + (i * 2);
 
 		// setup GS BASE descriptor for kernel
@@ -2119,9 +2173,13 @@ void setup_entrypoint()
 	if (!kern_mmap(&user_stack, NULL, USER_STACK_SIZE, PROT_WRITE | PROT_READ, MAP_STACK | MAP_ANON)) {
 		halt("couldn't get map for user stack\n");
 	}
+	ERROR_PRINTF("here1\n");
+	ERROR_PRINTF("%p\n", user_stack);
 	user_stack += USER_STACK_SIZE; // we actually want to keep track of the top of the stack
+	ERROR_PRINTF("here2\n");
 
 	void* new_top = (void*) user_stack;
+	ERROR_PRINTF("here3\n");
 
 	// list of page sizes
 	new_top -= sizeof(int);
@@ -2349,7 +2407,9 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 		}
 	}
 	setup_cpus();
+	ERROR_PRINTF("yo\n");
 	asm volatile ("sti" ::); // enable interrupts here
+	ERROR_PRINTF("yo!\n");
 	init_cpus();
 	unsigned int cpus_inited = TIMER_COUNT;
 	

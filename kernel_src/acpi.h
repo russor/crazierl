@@ -19,6 +19,8 @@ extern struct io_apic io_apics[];
 
 #define CPU_ENABLED (1 << 0)
 #define CPU_STARTED (1 << 1)
+// cpu is running idle task OR did not switch tasks at last timer
+// used to decide which cpu to wake when a thread becomes runnable
 #define CPU_IDLE    (1 << 2)
 
 struct cpu {
