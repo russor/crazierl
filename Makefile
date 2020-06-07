@@ -12,7 +12,7 @@ debug: obj/mykernel.elf obj/initrd
 	qemu-system-i386 -d cpu_reset,guest_errors -smp 2 -S -s  -m 256 -serial mon:stdio -kernel obj/mykernel.elf -append $(RTLD) -initrd obj/initrd
 
 noisy: obj/mykernel.elf obj/initrd
-	qemu-system-i386 -d nochain,exec,cpu_reset,guest_errors -s  -m 256 -serial mon:stdio -kernel obj/mykernel.elf -append $(RTLD) -initrd obj/initrd
+	qemu-system-i386 -smp 2 -d nochain,exec,cpu_reset,guest_errors -s  -m 256 -serial mon:stdio -kernel obj/mykernel.elf -append $(RTLD) -initrd obj/initrd
 
 debugger:
 	gdb -ex "set confirm off" -ex "add-symbol-file obj/mykernel.elf" -ex "add-symbol-file $$(find $(OTPDIR) -name beam.smp)" -ex "target remote localhost:1234"

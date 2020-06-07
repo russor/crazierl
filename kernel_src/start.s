@@ -90,12 +90,13 @@
 		mov    %esp,%ebp
 		pushl %ecx
 		pushl %edx
+		pushl %esi
+		pushl %edi
+
 		mov %gs, %dx
 		andl $-16, %edx
 		mov %dx, %gs
 		lea 0x4(%ebp), %ecx
-		pushl %esi
-		pushl %edi
 
 		pushl %ecx // interrupt frame
 		pushl %eax // push syscall number
@@ -656,15 +657,33 @@
 		push %ebp
 		mov %esp, %ebp
 		mov %esp, %ecx // current thread stack pointer
-		mov 0x8(%ebp), %eax // new thread stack pointer
-		mov %eax, %esp // temporarily use new stack
+		mov 0xC(%ebp), %edx // current thread stack top
+		mov 0x8(%ebp), %esp // temporarily use new thread stack top
 
-		push 0x4(%ebp) // push return to thr_new
-		push %ebp
+		mov $5, %eax
+	copy_iframe:
+		subl $4, %edx
+		pushl (%edx)
+		dec %eax
+		jne copy_iframe
+
+		push $0 // %ebp
+		subl $4, %edx
 		mov %esp, %ebp
-		push $setup_new_stack_done // return address for switch_thread_impl
+
+		mov $4, %eax
+	copy_registers:
+		subl $4, %edx
+		pushl (%edx)
+		dec %eax
+		jne copy_registers
+
+		subl $8, %esp
+		pushl $handle_int_80_leave
+
+		pushl $thr_new_new_thread
 		push %ebp
-		mov %esp, %ebp // will need ebp to save it
+
 		push %ebx
 		push %ecx
 		push %edx

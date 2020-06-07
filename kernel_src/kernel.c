@@ -23,7 +23,8 @@ extern void * ap_trampoline2;
 extern void * gen_int;
 extern void * stack_top;
 extern void start_entrypoint();
-extern uintptr_t setup_new_stack(uintptr_t stack_pointer);
+extern uintptr_t setup_new_stack(uintptr_t new_stack_top, uintptr_t current_stack_top);
+extern uintptr_t setup_new_idle(uintptr_t new_stack_top);
 extern int switch_thread_impl(uintptr_t* oldstack, uintptr_t newstack);
 extern void switch_ap_thread(uintptr_t newstack);
 extern void __executable_start, __etext, __data_start, __edata, __tdata_start, __tdata_end;
@@ -1752,29 +1753,18 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			threads[new_thread].kern_stack_top = stack_page + PAGE_SIZE;
 			threads[new_thread].tls_base = (uintptr_t)a->param->tls_base;
 			bzero(&threads[new_thread].savearea, sizeof(threads[new_thread].savearea));
-			uintptr_t stack;
-			asm volatile ( "mov %%esp, %0" : "=a"(stack) :);
-			size_t stack_size = threads[current_thread].kern_stack_top - stack;
-			memcpy((void *)(threads[new_thread].kern_stack_top - stack_size), (void *)stack, stack_size);
 
-			//setup_new_stack returns on the current thread, and the new thread
-			uintptr_t new_stack_cur = setup_new_stack(threads[new_thread].kern_stack_top - stack_size);
-			if (new_stack_cur) { // thr_new returns on existing thread
-				ERROR_PRINTF("thr_new return (%d) on old thread (%d)\n", new_thread, current_thread);
-				threads[new_thread].kern_stack_cur = new_stack_cur;
-				*a->param->child_tid = *a->param->parent_tid = THREAD_ID_OFFSET + new_thread;
-				struct interrupt_frame * new_frame = (struct interrupt_frame *) (threads[new_thread].kern_stack_top - sizeof(struct interrupt_frame));
-				new_frame->ip = (uint32_t) a->param->start_func;
-				new_frame->sp = (uint32_t) a->param->stack_base + a->param->stack_size - sizeof(a->param->arg);
-				*(void **)new_frame->sp = a->param->arg;
-				new_frame->sp -= sizeof(a->param->arg); //skip a spot for the return address from the initial function
-				new_frame->flags &= ~CARRY;
-				threads[new_thread].state = THREAD_RUNNABLE;
-			} else { // thr_new returns on new thread
-				ERROR_PRINTF("thr_new return on new thread (%d)\n", current_thread);
-				asm volatile ( "finit" :: ); // clear fpu/sse state
-				return 0; // break convention on purpose
-			}
+			uintptr_t new_stack_cur = setup_new_stack(threads[new_thread].kern_stack_top, threads[current_thread].kern_stack_top);
+			ERROR_PRINTF("thr_new return (%d) on old thread (%d) cpu %d\n", new_thread, current_thread, current_cpu);
+			threads[new_thread].kern_stack_cur = new_stack_cur;
+			*a->param->child_tid = *a->param->parent_tid = THREAD_ID_OFFSET + new_thread;
+			struct interrupt_frame * new_frame = (struct interrupt_frame *) (threads[new_thread].kern_stack_top - sizeof(struct interrupt_frame));
+			new_frame->ip = (uint32_t) a->param->start_func;
+			new_frame->sp = (uint32_t) a->param->stack_base + a->param->stack_size - sizeof(a->param->arg);
+			*(void **)new_frame->sp = a->param->arg;
+			new_frame->sp -= sizeof(a->param->arg); //skip a spot for the return address from the initial function
+			new_frame->flags &= ~CARRY;
+			threads[new_thread].state = THREAD_RUNNABLE;
 			SYSCALL_SUCCESS(0);
 		}
 		case SYS_clock_getres: SYSCALL_FAILURE(EINVAL); // TODO clock stuff
@@ -1787,6 +1777,13 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 		ERROR_PRINTF("got unknown syscall %d\n", call);
 	}
 	halt ("halting\n");
+}
+
+int thr_new_new_thread()
+{
+	ERROR_PRINTF("thr_new return on new thread (%d), cpu %d\n", current_thread, current_cpu);
+	asm volatile ( "finit" :: ); // clear fpu/sse state
+	return 0;
 }
 
 __attribute__ ((interrupt))
@@ -2092,7 +2089,7 @@ void setup_cpus()
 	for (int i = 0; i < numcpu; ++i) {
 		if (cpus[i].apic_id == my_apic_id) {
 			this_cpu = i;
-			//CPU_SET(i, &threads[0].cpus);
+			CPU_SET(i, &threads[0].cpus);
 		}
 		// thread 0 starts as runnable on all CPUs
 		CPU_SET(i, &threads[0].cpus);
