@@ -516,8 +516,10 @@ void wake_cpu_for_thread(size_t thread) {
 	}
 }
 
-int switch_thread(unsigned int new_state, uint64_t timeout) {
-	LOCK(thread_state);
+int switch_thread(unsigned int new_state, uint64_t timeout, int locked) {
+	if (!locked) {
+		LOCK(thread_state);
+	}
 	DEBUG_PRINTF("current thread %d (%p), current cpu %d\n", current_thread, &current_thread, current_cpu);
 	size_t old_thread = current_thread;
 	size_t i = old_thread + 1;
@@ -586,7 +588,7 @@ int switch_thread(unsigned int new_state, uint64_t timeout) {
 			*(int *)threads[target].kern_stack_cur = 1;
 		}
 	} else {
-		//cpus[current_cpu].flags |= CPU_IDLE;
+		cpus[current_cpu].flags |= CPU_IDLE;
 	}
 	UNLOCK(thread_state);
 	int we_timed_out = switch_thread_impl(&threads[old_thread].kern_stack_cur, threads[target].kern_stack_cur);
@@ -623,15 +625,16 @@ void handle_irq(unsigned int vector)
 					wake_cpu(i);
 				}
 			}
-			switch_thread(THREAD_RUNNABLE, 0);
+			switch_thread(THREAD_RUNNABLE, 0, 0);
 			break;
 		}
 		case SWITCH_VECTOR: {
-			switch_thread(THREAD_RUNNABLE, 0);
+			switch_thread(THREAD_RUNNABLE, 0, 0);
 			break;
 		}
 		case HALT_VECTOR: {
-			halt("halted by IPI\n");
+			ERROR_PRINTF("halted by IPI, cpu %d, thread %d\n", current_cpu, current_thread);
+			halt(NULL);
 		}
 		default: {
 			int found = 0;
@@ -651,7 +654,7 @@ void handle_irq(unsigned int vector)
 
 void handle_unknown_error(struct interrupt_frame *frame, uint32_t irq, uint32_t error_code)
 {
-	ERROR_PRINTF("Got unexpected error %d (%d) IP: %08x", irq, error_code, frame->ip);
+	ERROR_PRINTF("Got unexpected error %d (%d) IP: %08x cpu %d", irq, error_code, frame->ip, current_cpu);
 	halt(NULL);
 }
 
@@ -777,7 +780,7 @@ size_t kern_read(int fd, void * buf, size_t nbyte, int async) {
 		} else {
 			FDS[fd].flags |= BOGFD_BLOCKED_READ;
 			threads[current_thread].wait_target = (uintptr_t) &FDS[fd];
-			switch_thread(THREAD_IO_READ, 0);
+			switch_thread(THREAD_IO_READ, 0, 0);
 		}
 	}
 }
@@ -815,6 +818,7 @@ int kern_umtx_op(struct _umtx_op_args *a) {
 		}
 		case UMTX_OP_WAIT_UINT:
 		case UMTX_OP_WAIT_UINT_PRIVATE: {
+			LOCK(thread_state);
 			if (*(u_int *)a->obj == a->val) {
 				uint64_t timeout = 0;
 				if ((size_t) a->uaddr1 == sizeof(struct _umtx_time)) {
@@ -827,17 +831,20 @@ int kern_umtx_op(struct _umtx_op_args *a) {
 					halt("umtx wait_uint with timespec timeout\n");
 				}
 				threads[current_thread].wait_target = kern_mmap_physical((uintptr_t) a->obj);
-				if (switch_thread(THREAD_UMTX_WAIT, timeout)) {
+				if (switch_thread(THREAD_UMTX_WAIT, timeout, 1)) {
 					return -ETIMEDOUT;
 				}
+			} else {
+				UNLOCK(thread_state);
 			}
 			return 0;
 		}
 		case UMTX_OP_MUTEX_WAIT: {
 			struct umutex *mutex = a->obj;
 			while (1) {
-				// TODO locking/atomics
+				LOCK(thread_state);
 				if ((mutex->m_owner & ~UMUTEX_CONTESTED) == UMUTEX_UNOWNED) {
+					UNLOCK(thread_state);
 					break;
 				}
 				if (a->uaddr1 != NULL || a->uaddr2 != NULL) {
@@ -845,7 +852,7 @@ int kern_umtx_op(struct _umtx_op_args *a) {
 				}
 				mutex->m_owner |= UMUTEX_CONTESTED;
 				threads[current_thread].wait_target = (uintptr_t) a->obj;
-				switch_thread(THREAD_UMTX_MUTEX_WAIT, 0);
+				switch_thread(THREAD_UMTX_MUTEX_WAIT, 0, 1);
 			}
 			return 0;
 		}
@@ -894,6 +901,7 @@ int kern_ppoll(struct ppoll_args *a) {
 				ERROR_PRINTF("  FD %d: events %08x -> %08x\n", a->fds[i].fd, a->fds[i].events, a->fds[i].revents);
 			}
 		}*/
+		LOCK(thread_state);
 		for (int i = 0; i < a->nfds; ++i) {
 			if (a->fds[i].fd < 0 || a->fds[i].fd >= BOGFD_MAX) { continue; } // no EBADF?
 			struct BogusFD *fd = &FDS[a->fds[i].fd];
@@ -915,9 +923,10 @@ int kern_ppoll(struct ppoll_args *a) {
 			}
 		}
 		if (changedfds) {
+			UNLOCK(thread_state);
 			return changedfds;
 		}
-		if (switch_thread(THREAD_POLL, timeout)) {
+		if (switch_thread(THREAD_POLL, timeout, 1)) {
 			return 0;
 		};
 	}
@@ -993,7 +1002,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					} else {
 						FDS[a->s].flags |= BOGFD_BLOCKED_WRITE;
 						threads[current_thread].wait_target = (uintptr_t) &FDS[a->s];
-						switch_thread(THREAD_IO_WRITE, 0);
+						switch_thread(THREAD_IO_WRITE, 0, 0);
 					}
 				} else {
 					SYSCALL_FAILURE(-ret);
@@ -1012,7 +1021,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					} else {
 						FDS[a->fd].flags |= BOGFD_BLOCKED_WRITE;
 						threads[current_thread].wait_target = (uintptr_t) &FDS[a->fd];
-						switch_thread(THREAD_IO_WRITE, 0);
+						switch_thread(THREAD_IO_WRITE, 0, 0);
 					}
 				} else {
 					SYSCALL_FAILURE(-ret);
@@ -1045,7 +1054,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					} else {
 						FDS[a->fd].flags |= BOGFD_BLOCKED_WRITE;
 						threads[current_thread].wait_target = (uintptr_t) &FDS[a->fd];
-						switch_thread(THREAD_IO_WRITE, 0);
+						switch_thread(THREAD_IO_WRITE, 0, 0);
 					}
 				} else {
 					ERROR_PRINTF("writev (%d, %08x, %d)\n", a->fd, a->iovp, a->iovcnt);
@@ -1349,7 +1358,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 		case SYS_select: {
 			struct select_args *a = argp;
 			if (a->nd == 0 && a->tv == NULL) {
-				switch_thread(THREAD_WAIT_FOREVER, 0);
+				switch_thread(THREAD_WAIT_FOREVER, 0, 0);
 			}
 			ERROR_PRINTF("select(%d, %p, %p, %p, %p)\n", a->nd, a->in, a->ou, a->ex, a->tv);
 			break;
@@ -1501,7 +1510,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			SYSCALL_SUCCESS(0);
 		}
 		case SYS_sched_yield: {
-			switch_thread(THREAD_RUNNABLE, 0);
+			switch_thread(THREAD_RUNNABLE, 0, 0);
 			SYSCALL_SUCCESS(0);
 		}
 		case SYS_sigprocmask: {
@@ -1790,9 +1799,9 @@ __attribute__ ((interrupt))
 void handle_gp(struct interrupt_frame *frame, uint32_t error_code)
 {
 	if (frame) {
-		ERROR_PRINTF("Got #GP (%u) IP: %08x", error_code, frame->ip);
+		ERROR_PRINTF("Got #GP (%u) IP: %08x cpu %d\n", error_code, frame->ip, current_cpu);
 	} else {
-		ERROR_PRINTF("Got #GP, no stack frame\n");
+		ERROR_PRINTF("Got #GP, no stack frame cpu %d\n", current_cpu);
 	}
 	halt(NULL);
 }
@@ -1804,10 +1813,10 @@ void handle_pf(struct interrupt_frame *frame, uint32_t error_code)
 	asm volatile("mov %%cr2, %0" : "=a" (addr));
 
 	if (frame) {
-		ERROR_PRINTF("Got #PF (%u) address %08x, IP: %08x\n", error_code, addr, frame->ip);
+		ERROR_PRINTF("Got #PF (%u) address %08x, IP: %08x cpu %d, thread %d\n", error_code, addr, frame->ip, current_cpu, current_thread);
 		kern_mmap_debug(addr);
 	} else {
-		ERROR_PRINTF("Got #PF, no stack frame\n");
+		ERROR_PRINTF("Got #PF, no stack frame, cpu %d\n", current_cpu);
 	}
 	halt("page fault\n");
 }
@@ -1815,7 +1824,7 @@ void handle_pf(struct interrupt_frame *frame, uint32_t error_code)
 __attribute__ ((interrupt))
 void handle_ud(struct interrupt_frame *frame)
 {
-	ERROR_PRINTF("Got #UD IP: %08x", frame->ip);
+	ERROR_PRINTF("Got #UD IP: %08x, cpu %d", frame->ip, current_cpu);
 	halt(NULL);
 }
 
@@ -2336,6 +2345,7 @@ void start_cpus() {
 
 void start_ap() {
 	enable_sse();
+	kern_mmap_enable_paging();
 	unsigned int my_apic_id = local_apic_read(0x20) >> 24;
 	ERROR_PRINTF("my apic id %x\n", my_apic_id);
 	size_t cpu_to_start = -1;
@@ -2370,6 +2380,7 @@ void start_ap() {
 
 	for (int i = 0; i < MAX_THREADS; ++i) {
 		if (CPU_ISSET(current_cpu, &threads[i].cpus) && threads[i].state == THREAD_IDLE) {
+			current_thread = i;
 			switch_ap_thread(threads[i].kern_stack_cur);
 		}
 	}

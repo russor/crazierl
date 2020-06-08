@@ -92,6 +92,9 @@
 		pushl %edx
 		pushl %esi
 		pushl %edi
+		pushl %ds
+		pushl %es
+		pushl %fs
 
 		mov %gs, %dx
 		andl $-16, %edx
@@ -106,6 +109,9 @@
 		mov %gs, %dx
 		orl $0xB, %edx
 		mov %dx, %gs
+		popl %fs
+		popl %es
+		popl %ds
 		popl %edi
 		popl %esi
 		popl %edx
@@ -671,7 +677,7 @@
 		subl $4, %edx
 		mov %esp, %ebp
 
-		mov $4, %eax
+		mov $7, %eax
 	copy_registers:
 		subl $4, %edx
 		pushl (%edx)
@@ -731,8 +737,7 @@
 		push $0 // return from switch_thread_impl, can be modified
 		mov 0x8(%ebp), %eax
 		mov %esp, (%eax) // copy stack to old_thread stack pointer
-		mov 0xC(%ebp), %eax
-		mov %eax, %esp // copy new_thread stack pointer to stack
+		mov 0xC(%ebp), %esp // copy new_thread stack pointer to stack
 	switch_thread_done:
 		pop %eax
 		pop %edi

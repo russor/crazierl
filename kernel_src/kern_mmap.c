@@ -327,6 +327,7 @@ void kern_mmap_enable_paging() {
 	uint32_t a;
 	asm volatile("mov %%cr0, %0" : "=a" (a));
 	a|= 0x80000001; 
+	a&= 0x9FFFFFFF;
 	DEBUG_PRINTF("setting cr0 to %08x\n", a);
 	asm volatile("mov %0, %%cr0" :: "a"(a));
 }
