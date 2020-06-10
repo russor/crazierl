@@ -11,6 +11,7 @@
 .global handle_int_80
 .global start_entrypoint
 .global gen_int
+.global gen_error
 .global setup_new_stack
 .global setup_new_idle
 .global switch_thread_impl
@@ -148,485 +149,485 @@
 	.align 8
 	gen_int:
 		// repeat for possible vectors
-		// skip 0x - 1F
-
+		// skip 00-1F
 		// 2x
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 
 		// 3x
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 
 		// 4x
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 
 		// 5x
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 
 		// 6x
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 
 		// 7x
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 
 		// 8x
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 
 		// 9x
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 
 		// Ax
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 
 		// Bx
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 
 		// Cx
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 
 		// Dx
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 
 		// Ex
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 
 		// Fx
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 	.align 8
-		call call_handler
+		call int_handler
 
-	call_handler:
+
+	int_handler:
 		xchg %ebp, (%esp)
 		push %eax
 		mov %ebp, %eax
@@ -653,6 +654,113 @@
 
 	gen_int_done:
 		pop %eax
+		pop %edx
+		pop %ecx
+		pop %eax
+		pop %ebp
+		iret
+
+	.align 8
+	gen_error:
+		// repeat for possible vectors
+		// 0x
+	.align 8
+		call err_handler
+	.align 8
+		call err_handler
+	.align 8
+		call err_handler
+	.align 8
+		call err_handler
+	.align 8
+		call err_handler
+	.align 8
+		call err_handler
+	.align 8
+		call err_handler
+	.align 8
+		call err_handler
+	.align 8
+		call err_handler
+	.align 8
+		call err_handler
+	.align 8
+		call err_handler
+	.align 8
+		call err_handler
+	.align 8
+		call err_handler
+	.align 8
+		call err_handler
+	.align 8
+		call err_handler
+	.align 8
+		call err_handler
+
+		// 1x
+	.align 8
+		call err_handler
+	.align 8
+		call err_handler
+	.align 8
+		call err_handler
+	.align 8
+		call err_handler
+	.align 8
+		call err_handler
+	.align 8
+		call err_handler
+	.align 8
+		call err_handler
+	.align 8
+		call err_handler
+	.align 8
+		call err_handler
+	.align 8
+		call err_handler
+	.align 8
+		call err_handler
+	.align 8
+		call err_handler
+	.align 8
+		call err_handler
+	.align 8
+		call err_handler
+	.align 8
+		call err_handler
+	.align 8
+		call err_handler
+
+	err_handler:
+		xchg %ebp, (%esp)
+		push %eax
+		mov %ebp, %eax
+		mov %esp, %ebp
+		addl $4, %ebp
+		push %ecx
+		push %edx
+
+		lea 0xC(%ebp), %ecx
+		pushl %ecx	// interrupt frame address
+		pushl 0x8(%ebp) // error_code
+		sub $(gen_error), %eax
+		shr $3, %eax
+		pushl %eax		// interrupt vector
+
+		mov %gs, %dx            // set GS to kernel segment
+		andl $-16, %edx
+		mov %dx, %gs
+
+		call handle_error
+
+		testl $0x3, 0x24(%esp)  // set GS to user segment, if pushed CS is user segment
+		je gen_error_done
+		mov %gs, %dx
+		orl $0xB, %edx
+		mov %dx, %gs
+
+	gen_error_done:
+		addl $12, %esp
 		pop %edx
 		pop %ecx
 		pop %eax

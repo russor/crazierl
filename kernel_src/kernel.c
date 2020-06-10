@@ -21,6 +21,7 @@ extern void * ap_trampoline2;
 #define HALT_VECTOR (FIRST_IRQ_VECTOR + 2)
 
 extern void * gen_int;
+extern void * gen_error;
 extern void * stack_top;
 extern void start_entrypoint();
 extern uintptr_t setup_new_stack(uintptr_t new_stack_top, uintptr_t current_stack_top);
@@ -573,6 +574,7 @@ int switch_thread(unsigned int new_state, uint64_t timeout, int locked) {
 		threads[old_thread].timeout = timeout;
 	}
 	asm volatile ( "fxsave (%0)" :: "a"(&threads[old_thread].savearea) :);
+	TSS[current_cpu].esp0 = threads[target].kern_stack_top;
 	if (threads[target].state != THREAD_IDLE) {
 		threads[target].state = THREAD_RUNNING;
 		uintptr_t base = threads[target].tls_base;
@@ -583,15 +585,14 @@ int switch_thread(unsigned int new_state, uint64_t timeout, int locked) {
 		GDT[user_gs].base_2 = base & 0xFF;
 		base >>= 8;
 		GDT[user_gs].base_3 = base & 0xFF;
-		TSS[current_cpu].esp0 = threads[target].kern_stack_top;
 		if (timed_out) {
 			*(int *)threads[target].kern_stack_cur = 1;
 		}
 	} else {
 		cpus[current_cpu].flags |= CPU_IDLE;
 	}
-	UNLOCK(thread_state);
 	int we_timed_out = switch_thread_impl(&threads[old_thread].kern_stack_cur, threads[target].kern_stack_cur);
+	UNLOCK(thread_state);
 	asm volatile ( "fxrstor (%0)" :: "a"(&threads[current_thread].savearea) :);
 	threads[current_thread].timeout = 0;
 	return we_timed_out;
@@ -1790,12 +1791,14 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 
 int thr_new_new_thread()
 {
+	UNLOCK(thread_state);
 	ERROR_PRINTF("thr_new return on new thread (%d), cpu %d\n", current_thread, current_cpu);
 	asm volatile ( "finit" :: ); // clear fpu/sse state
 	return 0;
 }
 
-__attribute__ ((interrupt))
+
+
 void handle_gp(struct interrupt_frame *frame, uint32_t error_code)
 {
 	if (frame) {
@@ -1806,7 +1809,6 @@ void handle_gp(struct interrupt_frame *frame, uint32_t error_code)
 	halt(NULL);
 }
 
-__attribute__ ((interrupt))
 void handle_pf(struct interrupt_frame *frame, uint32_t error_code)
 {
 	uint32_t addr;
@@ -1826,6 +1828,17 @@ void handle_ud(struct interrupt_frame *frame)
 {
 	ERROR_PRINTF("Got #UD IP: %08x, cpu %d", frame->ip, current_cpu);
 	halt(NULL);
+}
+
+void handle_error(unsigned int vector, uint32_t error_code, struct interrupt_frame *frame)
+{
+	ERROR_PRINTF("error vector %d\n", vector);
+	switch (vector) {
+		case 0xd: handle_gp(frame, error_code); break;
+		case 0xe: handle_pf(frame, error_code); break;
+		default:
+			ERROR_PRINTF("unknown error (0x%x): 0x%x, IP %08x cpu %d, thread %d\n", vector, error_code, frame->ip, current_cpu, current_thread);
+	}
 }
 
 uint64_t readmsr (uint32_t msr)
@@ -1894,8 +1907,9 @@ void interrupt_setup()
 	ioapic_set_gsi_vector(timer_gsirq, timer_flags, TIMER_VECTOR, 0);
 
 	// default to unknown_interrupt handler
+	uint32_t handler;
 	for (int i = FIRST_IRQ_VECTOR; i < (sizeof(IDT) / sizeof(IDT[0])); ++i) {
-		uint32_t handler = (uint32_t)(&gen_int);
+		handler = (uint32_t)(&gen_int);
 		handler +=((i - FIRST_IRQ_VECTOR) * IRQ_STRIDE);
 		IDT[i].offset_1 = handler & 0xFFFF;
 		IDT[i].selector = 0x18;
@@ -1910,18 +1924,23 @@ void interrupt_setup()
 
 	IDT[0x06].selector = 0x18;
 	IDT[0x06].type_attr = 0x8E;
-	IDT[0x06].offset_1 = ((uint32_t) &handle_ud) & 0xFFFF;
-	IDT[0x06].offset_2 = ((uint32_t) &handle_ud) >> 16;
+	handler = (uint32_t)(&handle_ud);
+	IDT[0x06].offset_1 = handler & 0xFFFF;
+	IDT[0x06].offset_2 = handler >> 16;
 
 	IDT[0x0D].selector = 0x18;
 	IDT[0x0D].type_attr = 0x8E;
-	IDT[0x0D].offset_1 = ((uint32_t) &handle_gp) & 0xFFFF;
-	IDT[0x0D].offset_2 = ((uint32_t) &handle_gp) >> 16;
+	handler = (uint32_t)(&gen_error);
+	handler +=(0x0D * IRQ_STRIDE);
+	IDT[0x0D].offset_1 = handler & 0xFFFF;
+	IDT[0x0D].offset_2 = handler >> 16;
 
 	IDT[0x0E].selector = 0x18;
 	IDT[0x0E].type_attr = 0x8E;
-	IDT[0x0E].offset_1 = ((uint32_t) &handle_pf) & 0xFFFF;
-	IDT[0x0E].offset_2 = ((uint32_t) &handle_pf) >> 16;
+	handler = (uint32_t)(&gen_error);
+	handler +=(0x0E * IRQ_STRIDE);
+	IDT[0x0E].offset_1 = handler & 0xFFFF;
+	IDT[0x0E].offset_2 = handler >> 16;
 
 	IDT[0x80].offset_1 = ((uint32_t) &handle_int_80) & 0xFFFF;
 	IDT[0x80].offset_2 = ((uint32_t) &handle_int_80) >> 16;
@@ -2061,6 +2080,7 @@ void setup_fds()
 
 void idle() {
 	asm volatile ( "finit" :: ); // clear fpu/sse state
+	UNLOCK(thread_state);
 	while (1) {
 		asm volatile( "sti; hlt; cli" :: );
 	}
@@ -2381,6 +2401,7 @@ void start_ap() {
 	for (int i = 0; i < MAX_THREADS; ++i) {
 		if (CPU_ISSET(current_cpu, &threads[i].cpus) && threads[i].state == THREAD_IDLE) {
 			current_thread = i;
+			LOCK(thread_state);
 			switch_ap_thread(threads[i].kern_stack_cur);
 		}
 	}
