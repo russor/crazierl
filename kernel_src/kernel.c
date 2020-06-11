@@ -560,7 +560,7 @@ int switch_thread(unsigned int new_state, uint64_t timeout, int locked) {
 			target = idle_thread;
 		}
 	}
-	DEBUG_PRINTF("switching from %d (%d) to %d on cpu %d\n", old_thread, new_state, target, current_cpu);
+	DEBUG_PRINTF("switching from %d (%d) to %d (%d) on cpu %d\n", old_thread, new_state, target, threads[target].state, current_cpu);
 	DEBUG_PRINTF("new stack %p of %p\n",
 		threads[target].kern_stack_cur, threads[target].kern_stack_top);
 	DEBUG_PRINTF("old stack %p of %p\n",
@@ -592,9 +592,9 @@ int switch_thread(unsigned int new_state, uint64_t timeout, int locked) {
 		cpus[current_cpu].flags |= CPU_IDLE;
 	}
 	int we_timed_out = switch_thread_impl(&threads[old_thread].kern_stack_cur, threads[target].kern_stack_cur);
+	threads[current_thread].timeout = 0;
 	UNLOCK(thread_state);
 	asm volatile ( "fxrstor (%0)" :: "a"(&threads[current_thread].savearea) :);
-	threads[current_thread].timeout = 0;
 	return we_timed_out;
 }
 
