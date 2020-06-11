@@ -97,7 +97,7 @@ uint8_t next_irq_vector = FIRST_IRQ_VECTOR;
 
 uint8_t WANT_NMI = 0;
  
-#define MAX_THREADS 32
+#define MAX_THREADS 128
 #define THREAD_ID_OFFSET 100002
 struct crazierl_thread threads[MAX_THREADS];
 __thread size_t current_thread = 0;
@@ -2078,9 +2078,12 @@ void setup_fds()
 // some values should be 16-byte aligned on x86 for sse (i think)
 #define MAX_ALIGN (16 - 1)
 
+void start_cpus();
+
 void idle() {
 	asm volatile ( "finit" :: ); // clear fpu/sse state
 	UNLOCK(thread_state);
+	start_cpus();
 	while (1) {
 		asm volatile( "sti; hlt; cli" :: );
 	}
@@ -2222,9 +2225,6 @@ void setup_entrypoint()
 		NULL};
 	// set up arguments
 	char *argv[] = {"/beam",
-			"-S", "1:1", // one scheduler
-			"-SDcpu", "1:1", //one dirty cpu scheduler
-			"-SDio", "1", // one dirty i/o scheduler
 			"--", "-root", "",
 			"-progname", "erl", "--", "-home", "/",
 			"-pz", "/obj/",
@@ -2341,6 +2341,7 @@ int start_cpu(size_t cpu, uint8_t page) {
 }
 
 void start_cpus() {
+	LOCK(thread_state);
 	if (numcpu > 1 && LOW_PAGE == 0) {
 		ERROR_PRINTF("Couldn't find a low page to host the application processor trampoline, no SMP for you\n");
 		return;
@@ -2351,7 +2352,6 @@ void start_cpus() {
 		halt("couldn't map LOW_PAGE");
 	}
 	memcpy((void *)LOW_PAGE, &ap_trampoline, (uintptr_t)&ap_trampoline2 - (uintptr_t)&ap_trampoline);
-
 	uint8_t trampoline_page = LOW_PAGE / PAGE_SIZE;
 
 	for (int i = 0; i < numcpu; ++i) {
@@ -2361,6 +2361,7 @@ void start_cpus() {
 			}
 		}
 	}
+	UNLOCK(thread_state);
 }
 
 void start_ap() {
