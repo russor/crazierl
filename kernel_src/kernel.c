@@ -415,17 +415,27 @@ uint32_t local_apic_read(unsigned int reg) {
 }
 
 _Noreturn
-void halt(char * message) {
+void halt(char * message, int dontpropagate) {
 	find_cursor();
 	if (message) {
 		term_print(message);
 	}
 	for (int i = 2; i >= 0; --i) {
+		LOCK(FDS[i].lock);
 		if (FDS[i].type == BOGFD_PIPE) {
 			term_printn(FDS[i].pipe->pb->data, FDS[i].pipe->pb->length);
 		}
+		FDS[i].type = BOGFD_TERMOUT;
+		UNLOCK(FDS[i].lock);
 	}
-	local_apic_write(0x300, 0x34000 | HALT_VECTOR);
+	if (!dontpropagate) {
+		for (int cpu = 0; cpu < numcpu; ++cpu) {
+			if (cpu != current_cpu) {
+				local_apic_write(0x310, cpus[cpu].apic_id << 24);
+				local_apic_write(0x300, 0x04000 | HALT_VECTOR);
+			}
+		}
+	}
 
 	while (1) {
 		asm volatile ( "hlt" :: );
@@ -635,7 +645,7 @@ void handle_irq(unsigned int vector)
 		}
 		case HALT_VECTOR: {
 			ERROR_PRINTF("halted by IPI, cpu %d, thread %d\n", current_cpu, current_thread);
-			halt(NULL);
+			halt(NULL, 1);
 		}
 		default: {
 			int found = 0;
@@ -656,7 +666,7 @@ void handle_irq(unsigned int vector)
 void handle_unknown_error(struct interrupt_frame *frame, uint32_t irq, uint32_t error_code)
 {
 	ERROR_PRINTF("Got unexpected error %d (%d) IP: %08x cpu %d", irq, error_code, frame->ip, current_cpu);
-	halt(NULL);
+	halt(NULL, 0);
 }
 
 void ioapic_set_gsi_vector(unsigned int irq, uint8_t flags, uint8_t vector, uint8_t physcpu) {
@@ -687,7 +697,7 @@ void ioapic_set_gsi_vector(unsigned int irq, uint8_t flags, uint8_t vector, uint
 		++ioapic;
 	}
 	ERROR_PRINTF("couldn't find IO-APIC for irq %d\n", origirq);
-	halt(NULL);
+	halt(NULL, 0);
 }
 
 ssize_t write(int fd, const void * buf, size_t nbyte) {
@@ -829,7 +839,7 @@ int kern_umtx_op(struct _umtx_op_args *a) {
 						timeout += fixed_point_time;
 					}
 				} else if ((ssize_t) a->uaddr1 == sizeof(struct timespec)) {
-					halt("umtx wait_uint with timespec timeout\n");
+					halt("umtx wait_uint with timespec timeout\n", 0);
 				}
 				threads[current_thread].wait_target = kern_mmap_physical((uintptr_t) a->obj);
 				if (switch_thread(THREAD_UMTX_WAIT, timeout, 1)) {
@@ -849,7 +859,7 @@ int kern_umtx_op(struct _umtx_op_args *a) {
 					break;
 				}
 				if (a->uaddr1 != NULL || a->uaddr2 != NULL) {
-					halt("umtx mutex_wait with timeout\n");
+					halt("umtx mutex_wait with timeout\n", 0);
 				}
 				mutex->m_owner |= UMUTEX_CONTESTED;
 				threads[current_thread].wait_target = (uintptr_t) a->obj;
@@ -883,7 +893,7 @@ int kern_umtx_op(struct _umtx_op_args *a) {
 	}
 
 	ERROR_PRINTF("_umtx_op(%08x, %d, %d, %08x, %08x)\n", a->obj, a->op, a->val, a->uaddr1, a->uaddr2);
-	halt("unknown umtx op");
+	halt("unknown umtx op", 0);
 }
 
 // separate function, because uint64_t breaks stack setup for thr_new otherwise
@@ -1203,7 +1213,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				if (fd->flags & O_NONBLOCK) {
 					SYSCALL_FAILURE(EAGAIN);
 				} else {
-					halt("blocking recvfrom");
+					halt("blocking recvfrom", 0);
 				}
 			}
 		}
@@ -1278,7 +1288,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					char * endptr;
 					long global_irq = strtol(name + strlen(IOAPIC_PATH), &endptr, 10);
 					if (*endptr != '/') {
-						halt("bad path for interrupt\n");
+						halt("bad path for interrupt\n", 0);
 					}
 					long flags = strtol(endptr, NULL, 10);
 
@@ -1289,7 +1299,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 						++next_irq_vector;
 					}
 					if (next_irq_vector >= 0xF0) {
-						halt("too many irq vectors were requested, max vector is 0xF0\n");
+						halt("too many irq vectors were requested, max vector is 0xF0\n", 0);
 					}
 					uint8_t my_vector = next_irq_vector;
 					++next_irq_vector;
@@ -1313,7 +1323,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 							FDS[a->s].type = BOGFD_PIPE;
 							FDS[a->s].pipe = &FDS[fd];
 							if (!kern_mmap((uintptr_t*)&FDS[a->s].pb, NULL, PAGE_SIZE, PROT_READ | PROT_WRITE | PROT_KERNEL, 0)) {
-								halt ("couldn't allocate buffer for /kern/fd/");
+								halt ("couldn't allocate buffer for /kern/fd/", 0);
 							}
 							FDS[a->s].pb->length = 0;
 							
@@ -1349,7 +1359,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 						(O_NONBLOCK | O_APPEND | O_DIRECT | O_ASYNC));
 				case F_SETFL: {
 					if ((a->arg & (O_NONBLOCK | O_APPEND | O_DIRECT | O_ASYNC)) != a->arg) {
-						halt("bad args to fcntl F_SETFL");
+						halt("bad args to fcntl F_SETFL", 0);
 					}
 					FDS[a->fd].flags = (FDS[a->fd].flags & (O_NONBLOCK | O_APPEND | O_DIRECT | O_ASYNC)) | a->arg;
 					SYSCALL_SUCCESS(0);
@@ -1786,7 +1796,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 	} else {
 		ERROR_PRINTF("got unknown syscall %d\n", call);
 	}
-	halt ("halting\n");
+	halt ("halting\n", 0);
 }
 
 int thr_new_new_thread()
@@ -1806,7 +1816,7 @@ void handle_gp(struct interrupt_frame *frame, uint32_t error_code)
 	} else {
 		ERROR_PRINTF("Got #GP, no stack frame cpu %d\n", current_cpu);
 	}
-	halt(NULL);
+	halt(NULL, 0);
 }
 
 void handle_pf(struct interrupt_frame *frame, uint32_t error_code)
@@ -1820,14 +1830,14 @@ void handle_pf(struct interrupt_frame *frame, uint32_t error_code)
 	} else {
 		ERROR_PRINTF("Got #PF, no stack frame, cpu %d\n", current_cpu);
 	}
-	halt("page fault\n");
+	halt("page fault\n", 0);
 }
 
 __attribute__ ((interrupt))
 void handle_ud(struct interrupt_frame *frame)
 {
 	ERROR_PRINTF("Got #UD IP: %08x, cpu %d", frame->ip, current_cpu);
-	halt(NULL);
+	halt(NULL, 0);
 }
 
 void handle_error(unsigned int vector, uint32_t error_code, struct interrupt_frame *frame)
@@ -1879,25 +1889,25 @@ void interrupt_setup()
 
 	char * rsdt = acpi_find_rsdt(NULL);
 	if (rsdt == NULL) {
-		halt("ACPI is required, but could not find RSDP");
+		halt("ACPI is required, but could not find RSDP", 1);
 	}
 	ERROR_PRINTF("RSDT is at %p\n", rsdt);
 	if (! acpi_check_table(rsdt)) {
-		halt("Invalid ACPI RSDT table\n");
+		halt("Invalid ACPI RSDT table\n", 1);
 	}
 	
 	if (! acpi_process_madt(rsdt)) {
-		halt("processing ACPI MADT (APIC) failed\n");
+		halt("processing ACPI MADT (APIC) failed\n", 1);
 	}
 	
 	uint64_t base_msr = readmsr(0x1b);
 	
 	if (!(base_msr & 0x800)) {
-		halt("an enabled local APIC is required\n");
+		halt("an enabled local APIC is required\n", 1);
 	}
 	if (local_apic != (base_msr & (~((1 << 12) - 1)))) {
 		ERROR_PRINTF("local_apic from APIC %08x does not match value from MSR %08x\n", local_apic, base_msr & (~((1 << 12) - 1)));
-		halt(NULL);
+		halt(NULL, 1);
 	}
 	
 
@@ -2018,7 +2028,7 @@ void load_file(void *start, char *name, size_t size)
 				phead->p_filesz, phead->p_memsz);
 			if (phead->p_offset < lastoffset) {
 				ERROR_PRINTF("elf header %d has p_offset > last_offset; halting\n", i);
-				halt(NULL);
+				halt(NULL, 1);
 			}
 			if (phead->p_offset > lastoffset) {
 				size_t count = phead->p_offset - lastoffset;
@@ -2028,7 +2038,7 @@ void load_file(void *start, char *name, size_t size)
 
 			if (phead->p_filesz > phead->p_memsz) {
 				ERROR_PRINTF("elf header %d has p_filesz > p_memsz; halting\n", i);
-				halt(NULL);
+				halt(NULL, 1);
 			}
 			uint8_t *src = start + phead->p_offset;
 			uint8_t *dst = (void*) (load_addr - first_virtual +  phead->p_vaddr);
@@ -2093,7 +2103,7 @@ void setup_cpus()
 {
 	if (numcpu >= MAX_THREADS) {
 		ERROR_PRINTF("MAX_THREADS set too low, minimum is numcpu (%d) + 1; 2 * numcpu would be better\n", numcpu);
-		halt("too many CPUs");
+		halt("too many CPUs", 1);
 	}
 
 	ERROR_PRINTF("kernel TLS %08x - %08x\n", &__tdata_start, &__tdata_end);
@@ -2106,7 +2116,7 @@ void setup_cpus()
 
 	uintptr_t kernel_tls;
 	if (!kern_mmap(&kernel_tls, NULL, numcpu * padded_tls_size, PROT_READ | PROT_WRITE | PROT_KERNEL, MAP_STACK)) {
-		halt("couldn't allocate Kernel TLS memory\n");
+		halt("couldn't allocate Kernel TLS memory\n", 1);
 	}
 	explicit_bzero((void *)kernel_tls, (numcpu * padded_tls_size + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1));
 	ERROR_PRINTF("kernel_tls at %p\n", kernel_tls);
@@ -2129,7 +2139,7 @@ void setup_cpus()
 		// setup cpu specific idle thread
 		uintptr_t stack_page;
 		if (!kern_mmap(&stack_page, NULL, PAGE_SIZE, PROT_READ | PROT_WRITE | PROT_KERNEL, MAP_STACK)) {
-			halt("no stack page for idle thread");
+			halt("no stack page for idle thread", 1);
 		}
 		explicit_bzero((void *)stack_page, PAGE_SIZE);
 		CPU_ZERO(&threads[i + 1].cpus);
@@ -2185,7 +2195,7 @@ void setup_cpus()
 	asm volatile ("mov %0, %%gs" :: "a"((GDT_GSBASE_OFFSET + 2 * this_cpu)* sizeof(GDT[0])));
 	current_cpu = this_cpu;
 	if (current_cpu == -1) {
-		halt("could not find boot processor in cpu list?\n");
+		halt("could not find boot processor in cpu list?\n", 1);
 	}
 }
 
@@ -2200,15 +2210,12 @@ void setup_entrypoint()
 	FDS[next_fd].pos = file->start;
 	++next_fd;
 	if (!kern_mmap(&user_stack, NULL, USER_STACK_SIZE, PROT_WRITE | PROT_READ, MAP_STACK | MAP_ANON)) {
-		halt("couldn't get map for user stack\n");
+		halt("couldn't get map for user stack\n", 0);
 	}
-	ERROR_PRINTF("here1\n");
 	ERROR_PRINTF("%p\n", user_stack);
 	user_stack += USER_STACK_SIZE; // we actually want to keep track of the top of the stack
-	ERROR_PRINTF("here2\n");
 
 	void* new_top = (void*) user_stack;
-	ERROR_PRINTF("here3\n");
 
 	// list of page sizes
 	new_top -= sizeof(int);
@@ -2307,11 +2314,11 @@ void init_cpus() {
 			local_apic_write(0x310, cpus[i].apic_id << 24);
 			local_apic_write(0x300, 0x04500);
 		} else {
-			halt("numcpus probably shouldn't include disabled cpus??\n");
+			halt("numcpus probably shouldn't include disabled cpus??\n", 0);
 		}
 	}
 	if (current_cpu == -1) {
-		halt("could not find boot processor in cpu list?\n");
+		halt("could not find boot processor in cpu list?\n", 0);
 	}
 }
 
@@ -2349,7 +2356,7 @@ void start_cpus() {
 
 	uintptr_t scratch;
 	if (!kern_mmap(&scratch, (void *)LOW_PAGE, PAGE_SIZE, PROT_WRITE | PROT_READ | PROT_KERNEL | PROT_FORCE, 0)) {
-		halt("couldn't map LOW_PAGE");
+		halt("couldn't map LOW_PAGE", 0);
 	}
 	memcpy((void *)LOW_PAGE, &ap_trampoline, (uintptr_t)&ap_trampoline2 - (uintptr_t)&ap_trampoline);
 	uint8_t trampoline_page = LOW_PAGE / PAGE_SIZE;
@@ -2382,11 +2389,11 @@ void start_ap() {
 	uint64_t base_msr = readmsr(0x1b);
 
 	if (!(base_msr & 0x800)) {
-		halt("an enabled local APIC is required\n");
+		halt("an enabled local APIC is required\n", 0);
 	}
 	if (local_apic != (base_msr & (~((1 << 12) - 1)))) {
 		ERROR_PRINTF("local_apic from APIC %08x does not match value from MSR %08x\n", local_apic, base_msr & (~((1 << 12) - 1)));
-		halt(NULL);
+		halt(NULL, 0);
 	}
 
 	// vector spurious intererrupts to 0xFF and enable APIC
@@ -2397,7 +2404,6 @@ void start_ap() {
 	uint16_t gs_segment = (GDT_GSBASE_OFFSET + 2 * this_cpu) * sizeof(GDT[0]);
 	asm volatile ("mov %0, %%gs" :: "a"(gs_segment));
 	current_cpu = this_cpu;
-	ERROR_PRINTF("got here!\n");
 
 	for (int i = 0; i < MAX_THREADS; ++i) {
 		if (CPU_ISSET(current_cpu, &threads[i].cpus) && threads[i].state == THREAD_IDLE) {
@@ -2406,7 +2412,7 @@ void start_ap() {
 			switch_ap_thread(threads[i].kern_stack_cur);
 		}
 	}
-	halt("code should not get here");
+	halt("code should not get here", 0);
 }
 
 
@@ -2429,11 +2435,11 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 	
 	kern_mmap_init(mb->mmap_length, mb->mmap_addr);
 	if (!kern_mmap(&scratch, (void *)local_apic, PAGE_SIZE, PROT_KERNEL | PROT_READ | PROT_WRITE | PROT_FORCE, 0)) {
-		halt("couldn't map space for Local APIC\n");
+		halt("couldn't map space for Local APIC\n", 1);
 	}
 	for (size_t i = 0; i < io_apic_count; ++i) {
 		if (!kern_mmap(&scratch, (void *)io_apics[i].address, PAGE_SIZE, PROT_KERNEL | PROT_READ | PROT_WRITE | PROT_FORCE, 0)) {
-			halt("couldn't map space for IO-APIC\n");
+			halt("couldn't map space for IO-APIC\n", 1);
 		}
 	}
 	setup_cpus();
@@ -2446,12 +2452,12 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 	ERROR_PRINTF("kernel read-only %08x - %08x\n", &__executable_start, &__etext);
 
 	if (!kern_mmap(&scratch, &__executable_start, &__etext - &__executable_start, PROT_KERNEL | PROT_READ, 0)) {
-		halt("couldn't map read only kernel section\n");
+		halt("couldn't map read only kernel section\n", 1);
 	}
 
 	ERROR_PRINTF("kernel read-write %08x - %08x\n", &__data_start, &__edata);
 	if (!kern_mmap(&scratch, &__data_start, &__edata - &__data_start, PROT_KERNEL | PROT_READ | PROT_WRITE, 0)) {
-		halt("couldn't map read/write kernel section\n");
+		halt("couldn't map read/write kernel section\n", 1);
 	}
 	
 	if (!kern_mmap(&scratch, (void *)vga_buffer, VGA_BUFFER_SIZE, PROT_KERNEL | PROT_FORCE | PROT_READ | PROT_WRITE, 0)) {
@@ -2496,5 +2502,5 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 	if (entrypoint) {
 		setup_entrypoint();
 	}
-	halt("end of kernel!");
+	halt("end of kernel!", 0);
 }
