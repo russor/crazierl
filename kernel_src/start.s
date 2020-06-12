@@ -740,9 +740,9 @@
 		push %ecx
 		push %edx
 
-		lea 0xC(%ebp), %ecx
+		lea 0x8(%ebp), %ecx
 		pushl %ecx	// interrupt frame address
-		pushl 0x8(%ebp) // error_code
+		pushl 0x4(%ebp) // error_code
 		sub $(gen_error), %eax
 		shr $3, %eax
 		pushl %eax		// interrupt vector
