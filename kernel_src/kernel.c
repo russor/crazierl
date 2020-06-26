@@ -1760,7 +1760,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				ERROR_PRINTF("thr_new (...) = EPROCLIM\n");
 				SYSCALL_FAILURE(EPROCLIM);
 			}
-			if (!kern_mmap(&stack_page, NULL, PAGE_SIZE, PROT_READ | PROT_WRITE | PROT_KERNEL, MAP_STACK)) {
+			if (!kern_mmap(&stack_page, NULL, PAGE_SIZE, PROT_READ | PROT_WRITE | PROT_KERNEL, 0)) {
 				ERROR_PRINTF("thr_new (...) = ENOMEM\n");
 				SYSCALL_FAILURE(ENOMEM);
 			}
