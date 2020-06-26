@@ -91,6 +91,8 @@ typedef uint32_t u_int32_t;
 #include <machine/sysarch.h>
 #undef _KERNEL
 
+
+DECLARE_LOCK(all_fds);
 struct BogusFD FDS[BOGFD_MAX];
 size_t next_fd;
 uint8_t next_irq_vector = FIRST_IRQ_VECTOR;
@@ -1077,11 +1079,13 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			argp += sizeof(argp);
 		case SYS_open: {
 			struct open_args *a = argp;
+			LOCK(all_fds);
 			while (next_fd < BOGFD_MAX && FDS[next_fd].type != BOGFD_CLOSED) {
 				++next_fd;
 			}
 			if (next_fd >= BOGFD_MAX) {
 				ERROR_PRINTF("open (%s) = EMFILE\n", a->path);
+				UNLOCK(all_fds);
 				SYSCALL_FAILURE(EMFILE);
 			}
 
@@ -1100,6 +1104,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					FDS[next_fd].file = file;
 					FDS[next_fd].namelen = len;
 					DEBUG_PRINTF("open (%s, ...) = %d\n", path, next_fd);
+					UNLOCK(all_fds);
 					SYSCALL_SUCCESS(next_fd++);
 				}
 			} else {
@@ -1109,19 +1114,23 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					FDS[next_fd].file = file;
 					FDS[next_fd].pos = file->start;
 					DEBUG_PRINTF("open (%s, ...) = %d\n", path, next_fd);
+					UNLOCK(all_fds);
 					SYSCALL_SUCCESS(next_fd++);
 				}
 			}
 			if (strcmp("/dev/null", path) == 0) {
 				FDS[next_fd].type = BOGFD_NULL;
 				DEBUG_PRINTF("open (%s, ...) = %d\n", path, next_fd);
+				UNLOCK(all_fds);
 				SYSCALL_SUCCESS(next_fd++);
 			}
 			DEBUG_PRINTF ("open (%s, %08x) = ENOENT\n", path, a->flags);
+			UNLOCK(all_fds);
 			SYSCALL_FAILURE(ENOENT);
 		}
 		case SYS_close: {
 			struct close_args *a = argp;
+			LOCK(FDS[a->fd].lock);
 			if (FDS[a->fd].type == BOGFD_PIPE) {
 				if (FDS[a->fd].pipe == &FDS[0]) {
 					find_cursor();
@@ -1159,18 +1168,23 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				}
 			}
 
+			LOCK(all_fds);
 			if (FDS[a->fd].type != BOGFD_CLOSED) {
 				DEBUG_PRINTF("close (%d)\n", a->fd);
-				FDS[a->fd].type = BOGFD_CLOSED;
 				FDS[next_fd].flags = 0;
 				FDS[a->fd].file = NULL;
 				FDS[a->fd].buffer = NULL;
+				FDS[a->fd].type = BOGFD_CLOSED;
+				UNLOCK(FDS[a->fd].lock);
 				if (a->fd < next_fd) {
 					next_fd = a->fd;
 				}
+				UNLOCK(all_fds);
 				SYSCALL_SUCCESS(0);
 			} else {
 				ERROR_PRINTF("close (%d) = EBADF\n", a->fd);
+				UNLOCK(FDS[a->fd].lock);
+				UNLOCK(all_fds);
 				SYSCALL_FAILURE(EBADF);
 			}
 		}
@@ -1264,6 +1278,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			struct socket_args *a = argp;
 			DEBUG_PRINTF("socket (%d, %d, %d)\n", a->domain, a->type, a->protocol);
 			if (a->domain == PF_UNIX) {
+				LOCK(all_fds);
 				while (next_fd < BOGFD_MAX && FDS[next_fd].type != BOGFD_CLOSED) {
 					++next_fd;
 				}
@@ -1272,7 +1287,10 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					SYSCALL_FAILURE(EMFILE);
 				}
 				FDS[next_fd].type = BOGFD_UNIX;
-				SYSCALL_SUCCESS(next_fd++);
+				size_t ret = next_fd;
+				++next_fd;
+				UNLOCK(all_fds);
+				SYSCALL_SUCCESS(ret);
 			}
 			SYSCALL_FAILURE(EACCES);
 		}
@@ -1594,11 +1612,13 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 		case SYS_pipe2: {
 			struct pipe2_args *a = argp;
 			int pipe1, pipe2;
+			LOCK(all_fds);
 			while (next_fd < BOGFD_MAX && FDS[next_fd].type != BOGFD_CLOSED) {
 				++next_fd;
 			}
 			if (next_fd >= BOGFD_MAX) {
 				ERROR_PRINTF("pipe2 (...) = EMFILE (1)\n");
+				UNLOCK(all_fds);
 				SYSCALL_FAILURE(EMFILE);
 			}
 			pipe1 = next_fd;
@@ -1609,6 +1629,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			if (next_fd >= BOGFD_MAX) {
 				next_fd = pipe1;
 				ERROR_PRINTF("pipe2 (...) = EMFILE (2)\n");
+				UNLOCK(all_fds);
 				SYSCALL_FAILURE(EMFILE);
 			}
 			pipe2 = next_fd;
@@ -1618,6 +1639,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			if (!kern_mmap((uintptr_t*)&FDS[pipe1].pb, NULL, PAGE_SIZE, PROT_READ | PROT_WRITE | PROT_KERNEL, 0)) {
 				next_fd = pipe1;
 				ERROR_PRINTF("pipe2 (...) = ENOMEM\n");
+				UNLOCK(all_fds);
 				SYSCALL_FAILURE(ENOMEM);
 			}
 			FDS[pipe1].type = BOGFD_PIPE;
@@ -1630,6 +1652,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			a->fildes[0] = pipe1;
 			a->fildes[1] = pipe2;
 			ERROR_PRINTF("pipe2 -> %d <-> %d\n", pipe1, pipe2);
+			UNLOCK(all_fds);
 			SYSCALL_SUCCESS(0);
 		}
 		case SYS_ppoll: {
