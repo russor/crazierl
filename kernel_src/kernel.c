@@ -533,7 +533,7 @@ int switch_thread(unsigned int new_state, uint64_t timeout, int locked) {
 	if (!locked) {
 		LOCK(thread_state);
 	}
-	DEBUG_PRINTF("current thread %d (%p), current cpu %d\n", current_thread, &current_thread, current_cpu);
+	//DEBUG_PRINTF("current thread %d (%p), current cpu %d\n", current_thread, &current_thread, current_cpu);
 	size_t old_thread = current_thread;
 	size_t i = old_thread + 1;
 	size_t target = old_thread;
@@ -2466,9 +2466,7 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 		}
 	}
 	setup_cpus();
-	ERROR_PRINTF("yo\n");
 	asm volatile ("sti" ::); // enable interrupts here
-	ERROR_PRINTF("yo!\n");
 	init_cpus();
 	unsigned int cpus_inited = TIMER_COUNT;
 	

@@ -310,6 +310,8 @@ int kern_mmap (uintptr_t *ret, void * addr, size_t len, int prot, int flags)
 		}
 		if (!found) {
 			*ret = ENOMEM;
+			ERROR_PRINTF("unable to allocate\n");
+			ERROR_PRINTF("kern_mmap (%08x (%08x), %08x, %08x, %x, %x)\n", *ret, ret, addr, len, prot, flags);
 			UNLOCK(mmap_lock);
 			return 0;
 		}
