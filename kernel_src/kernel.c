@@ -96,6 +96,7 @@ DECLARE_LOCK(all_fds);
 struct BogusFD FDS[BOGFD_MAX];
 size_t next_fd;
 uint8_t next_irq_vector = FIRST_IRQ_VECTOR;
+volatile int cpus_initing = 1;
 
 uint8_t WANT_NMI = 0;
  
@@ -630,6 +631,9 @@ void handle_irq(unsigned int vector)
 		case TIMER_VECTOR: {
 			++TIMER_COUNT;
 			fixed_point_time += FIXED_POINT_TIME_NANOSECOND(0, 54925438); // PIT timer is 54.92... ms
+			if (cpus_initing) {
+				break;
+			}
 			size_t woken = 0;
 			// TODO: only wake idle cpus, or for timeouts
 			for (size_t i = 0; i < numcpu; ++i) {
@@ -2324,6 +2328,13 @@ void setup_entrypoint()
 	new_top -= sizeof(char *);
 	*(int *)new_top = (sizeof(argv) / sizeof (char*)) - 1;
 
+	if (cpus_initing) {
+		ERROR_PRINTF ("waiting for cpus to init\n");
+		while (cpus_initing) {
+			asm volatile ( "hlt" :: );
+		}
+	}
+
 	DEBUG_PRINTF ("jumping to %08x\n", entrypoint);
 	start_entrypoint(new_top, entrypoint, ((GDT_GSBASE_OFFSET + 1)* sizeof(GDT[0])) | 0x3);
 }
@@ -2384,12 +2395,16 @@ void start_cpus() {
 	memcpy((void *)LOW_PAGE, &ap_trampoline, (uintptr_t)&ap_trampoline2 - (uintptr_t)&ap_trampoline);
 	uint8_t trampoline_page = LOW_PAGE / PAGE_SIZE;
 
-	for (int i = 0; i < numcpu; ++i) {
+	int i = 0;
+	for (; i < numcpu; ++i) {
 		if ((cpus[i].flags & (CPU_ENABLED|CPU_STARTED)) == CPU_ENABLED) {
 			if (start_cpu(i, trampoline_page)) {
 				break;
 			}
 		}
+	}
+	if (i == numcpu) {
+		cpus_initing = 0;
 	}
 	UNLOCK(thread_state);
 }
