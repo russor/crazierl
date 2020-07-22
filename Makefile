@@ -8,6 +8,9 @@ NIF_COMPILER=clang -m32 -fpic -g -gdwarf-2 -shared -I../installed/lib/erlang/usr
 run: obj/mykernel.elf obj/initrd
 	qemu-system-i386 -smp 4 -s -m 256 -serial mon:stdio -kernel obj/mykernel.elf -append $(RTLD) -initrd obj/initrd
 
+netboot: obj/mykernel.elf obj/initrd
+	scp $^ 192.168.0.12:/var/lib/tftpboot/crazierl/
+
 debug: obj/mykernel.elf obj/initrd
 	qemu-system-i386 -d cpu_reset,guest_errors -smp 2 -S -s  -m 256 -serial mon:stdio -kernel obj/mykernel.elf -append $(RTLD) -initrd obj/initrd
 
