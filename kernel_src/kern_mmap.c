@@ -53,7 +53,7 @@ int mem_available (uintptr_t addr, size_t len)
 {
 	while (len) {
 		uint32_t * page_table_entry = pagetable_entry(*(pagetable_direntry(addr)), addr);
-		if (*page_table_entry & PAGE_PRESENT) {
+		if (*page_table_entry == 0 || *page_table_entry & PAGE_PRESENT) {
 			return 0;
 		}
 		addr += PAGE_SIZE;
@@ -95,6 +95,8 @@ void add_page_mapping (uint16_t flags, uintptr_t logical, uintptr_t physical) {
 		if (unlikely(!PAGE_SETUP_FINISHED || (flags & PAGE_FORCE))){
 			*table_entry = (physical & ~(PAGE_SIZE -1)) | (flags & (PAGE_SIZE - 1));
 		} else {
+			DEBUG_PRINTF("table_entry %p (%x), directory_entry %p (%x), logical %p\n",
+				table_entry, *table_entry, directory_entry, *directory_entry, logical);
 			ERROR_PRINTF("Trying to setup a mapping without a page table entry\n");
 			while (1) {}
 		}
@@ -244,6 +246,7 @@ void kern_mmap_init (unsigned int length, unsigned int addr)
 			DEBUG_PRINTF("unavailable memory (%d) at 0x%08x; 0x%08x (%u) bytes\n", mmm->type, addr, len, len);
 		}
 	}
+	ERROR_PRINTF("finished setting up pages\n");
 	PAGE_SETUP_FINISHED = 1;
 }
 

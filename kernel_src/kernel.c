@@ -271,6 +271,8 @@ void term_init()
 //	outb(PORT_COM1 + 1, 0x00);    //                0x00 (hi byte)
 	outb(PORT_COM1 + 0, 0x0C);    // Set divisor to 0x0C (lo byte) 9600 baud
 	outb(PORT_COM1 + 1, 0x00);    //                0x00 (hi byte)
+	outb(PORT_COM1 + 0, 0x18);    // Set divisor to 0x0C (lo byte) 4800 baud
+	outb(PORT_COM1 + 1, 0x00);    //                0x00 (hi byte)
 
 	outb(PORT_COM1 + 3, 0x03);    // 8 bits, no parity, one stop bit
 	outb(PORT_COM1 + 2, 0xC7);    // Enable FIFO, clear them, with 14-byte threshold
@@ -282,6 +284,9 @@ int is_transmit_empty() {
 }
 
 void write_serial(char a) {
+	if (a == '\n') {
+		write_serial('\r');
+	}
 	while (is_transmit_empty() == 0);
 	outb(PORT_COM1,a);
 }

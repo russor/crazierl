@@ -40,6 +40,7 @@ void init_files(multiboot_module_t *mod) {
 		ERROR_PRINTF("couldn't allocate %d bytes for filenames and file table\n", total_namelen);
 		return;
 	}
+	DEBUG_PRINTF("zeroing out fat_and_names %p, %d\n", fat_and_names, total_len);
 
 	hardcoded_files = (void*) fat_and_names;
 	hardcoded_files->count = files;
@@ -70,6 +71,7 @@ void init_files(multiboot_module_t *mod) {
 			mmaplen = (mmaplen & ~(PAGE_SIZE -1)) + PAGE_SIZE;
 		}
 
+		DEBUG_PRINTF("allocating %d bytes (%d) for file %s\n", mmaplen, filelen, (char *) start);
 		if (!kern_mmap(&file, NULL, mmaplen, PROT_READ | PROT_WRITE | PROT_KERNEL, MAP_ANON | MAP_STACK)) {
 			ERROR_PRINTF("couldn't allocate %d bytes (%d) for file %s\n", mmaplen, filelen, (char *)start);
 			return;
