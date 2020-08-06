@@ -1,0 +1,6 @@
+./otp_build autoconf
+#DED_LD=i386-none-elf-cc LD=i386-none-elf-cc 
+#./configure --enable-plain-emulator --disable-sctp --disable-silent-rules --without-termcap --disable-threads --without-ssl --enable-builtin-zlib --host=i386-none-elf --disable-hipe --without-dynamic-trace
+# working non-smp CC="cc -m32" LDFLAGS=-L/usr/lib32 ./configure --enable-plain-emulator --disable-sctp --disable-silent-rules --disable-threads --without-ssl --disable-hipe --without-dynamic-trace --prefix=/home/toast/crazierl/installed
+#./configure --enable-m32-build --enable-plain-emulator --disable-sctp --disable-silent-rules --disable-threads --without-ssl --disable-hipe --without-dynamic-trace --prefix=/home/toast/crazierl/installed
+./configure --disable-kernel-poll --enable-m32-build --enable-dirty-schedulers=no --disable-sctp --disable-silent-rules --without-ssl --disable-hipe --without-dynamic-trace --prefix=/home/toast/crazierl/installed
