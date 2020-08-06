@@ -102,7 +102,7 @@ int acpi_process_madt(void * rsdt) {
 			d &= 0x0F;
 			if (d != data->Id) {
 				ERROR_PRINTF("IO-APIC id (%d) doesn't match id from MADT (%d)\n", d, data->Id);
-				return 0;
+				//return 0;
 			}
 			io_apics[io_apic_count].address[0] = 1;
 			d = io_apics[io_apic_count].address[4];
