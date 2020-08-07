@@ -14,7 +14,16 @@ static ERL_NIF_TERM inb_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 	uint8_t ret;
 	if (!enif_get_uint(env, argv[0], &port)) { return enif_make_badarg(env); }
 	asm volatile ( "inb %1, %0" : "=a"(ret) : "Nd"((uint16_t)port) );
-	return enif_make_uint(env, ret);	
+	return enif_make_uint(env, ret);
+}
+
+static ERL_NIF_TERM inl_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
+{
+	unsigned int port;
+	uint32_t ret;
+	if (!enif_get_uint(env, argv[0], &port)) { return enif_make_badarg(env); }
+	asm volatile ( "inl %1, %0" : "=a"(ret) : "Nd"((uint16_t)port) );
+	return enif_make_uint(env, ret);
 }
 
 static ERL_NIF_TERM outb_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
@@ -23,7 +32,16 @@ static ERL_NIF_TERM outb_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]
 	if (!enif_get_uint(env, argv[0], &port)) { return enif_make_badarg(env); }
 	if (!enif_get_uint(env, argv[1], &val)) { return enif_make_badarg(env); }
 	asm volatile ( "outb %0, %1" : : "a"((uint8_t)val), "Nd"((uint16_t)port) );
-	return enif_make_atom(env, "ok");	
+	return enif_make_atom(env, "ok");
+}
+
+static ERL_NIF_TERM outl_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
+{
+	unsigned int port, val;
+	if (!enif_get_uint(env, argv[0], &port)) { return enif_make_badarg(env); }
+	if (!enif_get_uint(env, argv[1], &val)) { return enif_make_badarg(env); }
+	asm volatile ( "outl %0, %1" : : "a"((uint32_t)val), "Nd"((uint16_t)port) );
+	return enif_make_atom(env, "ok");
 }
 
 static ERL_NIF_TERM map_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
@@ -84,7 +102,9 @@ static ERL_NIF_TERM bcopy_from_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM 
 
 static ErlNifFunc nif_funcs[] = {
     {"inb", 1, inb_nif},
+    {"inl", 1, inl_nif},
     {"outb", 2, outb_nif},
+    {"outl", 2, outl_nif},
     {"map", 2, map_nif},
     {"bcopy_to", 3, bcopy_to_nif},
     {"bcopy_from", 3, bcopy_from_nif}

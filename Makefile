@@ -127,6 +127,10 @@ obj/console.beam: console.erl
 	../installed/bin/erlc $^
 	mv console.beam obj/
 
+obj/pci.beam: pci.erl
+	../installed/bin/erlc $^
+	mv pci.beam obj/
+
 obj/vgakb.beam: vgakb.erl
 	../installed/bin/erlc $^
 	mv vgakb.beam obj/

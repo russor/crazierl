@@ -5,5 +5,6 @@ obj/crazierl_nif.so
 obj/crazierl.beam
 obj/comport.beam
 obj/console.beam
+obj/pci.beam
 obj/vgakb.beam
 obj/acpi.beam
