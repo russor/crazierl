@@ -2265,6 +2265,7 @@ void setup_entrypoint()
 	char * env[] = {"BINDIR=/", "ERL_INETRC=/cfg/inetrc",
 		"TERM=vt100",
 		"LD_32_PRELOAD=/obj/libuserland.so",
+		"LD_PRELOAD=/obj/libuserland.so",
 		//"LD_32_DEBUG=1",
 		NULL};
 	// set up arguments
