@@ -1,21 +1,25 @@
-RTLD=/libexec/ld-elf32.so.1
+ifeq ($(wildcard /libexec/ld-elf32.so.1),)
+	RTLD=/libexec/ld-elf.so.1
+else
+	RTLD=/libexec/ld-elf32.so.1
+endif
 OTPDIR=../installed
 
 KERNEL_COMPILER=clang -m32 -mno-sse -g -ffreestanding -gdwarf-2 -c -DCRAZIERL_KERNEL
 USER_COMPILER=clang -m32 -fpic -g -gdwarf-2 -c -DCRAZIERL_USER
-NIF_COMPILER=clang -m32 -fpic -g -gdwarf-2 -shared -I../installed/lib/erlang/usr/include/
+NIF_COMPILER=clang -m32 -fpic -g -gdwarf-2 -shared -I$(OTPDIR)/lib/erlang/usr/include/
 
 run: obj/mykernel.elf obj/initrd
-	qemu-system-i386 -smp 4 -s -m 512 -serial mon:stdio -kernel obj/mykernel.elf -append $(RTLD) -initrd obj/initrd
+	qemu-system-i386 -display none -smp 4 -s -m 512 -serial mon:stdio -kernel obj/mykernel.elf -append $(RTLD) -initrd obj/initrd
 
 netboot: obj/mykernel.elf obj/initrd
 	scp $^ 192.168.0.12:/var/lib/tftpboot/crazierl/
 
 debug: obj/mykernel.elf obj/initrd
-	qemu-system-i386 -d cpu_reset,guest_errors -smp 2 -S -s  -m 256 -serial mon:stdio -kernel obj/mykernel.elf -append $(RTLD) -initrd obj/initrd
+	qemu-system-i386 -display none -d cpu_reset,guest_errors -smp 2 -S -s  -m 256 -serial mon:stdio -kernel obj/mykernel.elf -append $(RTLD) -initrd obj/initrd
 
 noisy: obj/mykernel.elf obj/initrd
-	qemu-system-i386 -smp 2 -d nochain,exec,cpu_reset,guest_errors -s  -m 256 -serial mon:stdio -kernel obj/mykernel.elf -append $(RTLD) -initrd obj/initrd
+	qemu-system-i386 -display none -smp 2 -d nochain,exec,cpu_reset,guest_errors -s  -m 256 -serial mon:stdio -kernel obj/mykernel.elf -append $(RTLD) -initrd obj/initrd
 
 debugger:
 	gdb -ex "set confirm off" -ex "add-symbol-file obj/mykernel.elf" -ex "add-symbol-file $$(find $(OTPDIR) -name beam.smp)" -ex "target remote localhost:1234"
@@ -116,25 +120,25 @@ obj/files_userland.o: files.c
 obj/crazierl_nif.so: crazierl_nif.c
 	$(NIF_COMPILER) $^ -o $@
 obj/crazierl.beam: crazierl.erl
-	../installed/bin/erlc $^
+	$(OTPDIR)/bin/erlc $^
 	mv crazierl.beam obj/
 
 obj/comport.beam: comport.erl
-	../installed/bin/erlc $^
+	$(OTPDIR)/bin/erlc $^
 	mv comport.beam obj/
 
 obj/console.beam: console.erl
-	../installed/bin/erlc $^
+	$(OTPDIR)/bin/erlc $^
 	mv console.beam obj/
 
 obj/pci.beam: pci.erl
-	../installed/bin/erlc $^
+	$(OTPDIR)/bin/erlc $^
 	mv pci.beam obj/
 
 obj/vgakb.beam: vgakb.erl
-	../installed/bin/erlc $^
+	$(OTPDIR)/bin/erlc $^
 	mv vgakb.beam obj/
 
 obj/acpi.beam: acpi.erl
-	../installed/bin/erlc $^
+	$(OTPDIR)/bin/erlc $^
 	mv acpi.beam obj/
