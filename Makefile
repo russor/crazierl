@@ -6,7 +6,7 @@ USER_COMPILER=clang -m32 -fpic -g -gdwarf-2 -c -DCRAZIERL_USER
 NIF_COMPILER=clang -m32 -fpic -g -gdwarf-2 -shared -I../installed/lib/erlang/usr/include/
 
 run: obj/mykernel.elf obj/initrd
-	qemu-system-i386 -smp 4 -s -m 512 -serial mon:stdio -kernel obj/mykernel.elf -append $(RTLD) -initrd obj/initrd
+	qemu-system-i386 -device virtio-net -smp 4 -s -m 512 -serial mon:stdio -kernel obj/mykernel.elf -append $(RTLD) -initrd obj/initrd
 
 netboot: obj/mykernel.elf obj/initrd
 	scp $^ 192.168.0.12:/var/lib/tftpboot/crazierl/
