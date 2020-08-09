@@ -1812,7 +1812,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			bzero(&threads[new_thread].savearea, sizeof(threads[new_thread].savearea));
 
 			uintptr_t new_stack_cur = setup_new_stack(threads[new_thread].kern_stack_top, threads[current_thread].kern_stack_top);
-			ERROR_PRINTF("thr_new return (%d) on old thread (%d) cpu %d\n", new_thread, current_thread, current_cpu);
+			DEBUG_PRINTF("thr_new return (%d) on old thread (%d) cpu %d\n", new_thread, current_thread, current_cpu);
 			threads[new_thread].kern_stack_cur = new_stack_cur;
 			*a->param->child_tid = *a->param->parent_tid = THREAD_ID_OFFSET + new_thread;
 			struct interrupt_frame * new_frame = (struct interrupt_frame *) (threads[new_thread].kern_stack_top - sizeof(struct interrupt_frame));
@@ -1839,7 +1839,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 int thr_new_new_thread()
 {
 	UNLOCK(thread_state);
-	ERROR_PRINTF("thr_new return on new thread (%d), cpu %d\n", current_thread, current_cpu);
+	DEBUG_PRINTF("thr_new return on new thread (%d), cpu %d\n", current_thread, current_cpu);
 	asm volatile ( "finit" :: ); // clear fpu/sse state
 	return 0;
 }
