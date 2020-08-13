@@ -8,3 +8,4 @@ obj/console.beam
 obj/pci.beam
 obj/vgakb.beam
 obj/acpi.beam
+pci.hrl
