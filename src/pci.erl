@@ -26,7 +26,7 @@ scan_bus(Bus, Device, Function, Acc) ->
 		_ -> Acc2
 	end.
 
-probe_device(Bus, Device, Function, <<16#FFFFFFFF:32/little>>) -> 
+probe_device(_Bus, _Device, _Function, <<16#FFFFFFFF:32/little>>) ->
 	{none, 0};
 probe_device(Bus, Device, Function, Config) when size(Config) == 256 ->
 	<<Vendor:16/little, DeviceId:16/little,
@@ -76,13 +76,40 @@ probe_device(Bus, Device, Function, Bin) ->
 	NextWord = pciConfigReadWord(Bus, Device, Function, size(Bin)),
 	probe_device(Bus, Device, Function, <<Bin/binary, NextWord/binary>>).
 
-probe_bar(_PCICommon, _BAR, _Offset) -> tba.
+probe_bar(_, <<0:32>>, _) -> none;
+probe_bar(#pci_common{bus = Bus, device = Device, function = Function}, <<BaseLS:4, Prefetch:1, Type:2, 0:1, BaseMS:24/little>> = BAR, Offset) ->
+	<<Base:32>> = <<BaseMS:24, BaseLS:4, 0:4>>,
+	pciConfigWriteWord(Bus, Device, Function, Offset, <<16#F:4, Prefetch:1, Type:2, 0:1, 16#FFFFFF:24>>),
+	<<ReflectLS:4, _:4, ReflectMS:24/little>> = pciConfigReadWord(Bus, Device, Function, Offset),
+	<<Reflect:32/signed>> = <<ReflectMS:24, ReflectLS:4, 0:4>>,
+	pciConfigWriteWord(Bus, Device, Function, Offset, BAR),
+	#pci_mem_bar{base = Base, size = -Reflect, prefetch = (Prefetch == 1), type = Type};
+
+probe_bar(#pci_common{bus = Bus, device = Device, function = Function}, <<BaseLS:6, Reserved:1, 1:1, BaseMS:24/little>> = BAR, Offset) ->
+	<<Base:32>> = <<BaseMS:24, BaseLS:6, 0:2>>,
+	pciConfigWriteWord(Bus, Device, Function, Offset, <<16#FF:6, Reserved:1, 1:1, 16#FFFFFF:24>>),
+	<<ReflectLS:6, _:2, ReflectMS:24/little>> = pciConfigReadWord(Bus, Device, Function, Offset),
+	<<Reflect:32/signed>> = <<ReflectMS:24, ReflectLS:6, 0:2>>,
+	pciConfigWriteWord(Bus, Device, Function, Offset, BAR),
+	#pci_io_bar{base = Base, size = -Reflect}.
+
+
+pciFunctionAddress(Bus, Device, Function, Offset) ->
+	<<Address:32>> = <<1:1, 0:7, Bus:8, Device:5, Function:3, Offset:8>>,
+	Address.
 
 pciConfigReadWord(Bus, Device, Function, Offset) when Offset band 3 == 0 ->
-	<<Address:32>> = <<1:1, 0:7, Bus:8, Device:5, Function:3, Offset:8>>,
+	Address = pciFunctionAddress(Bus, Device, Function, Offset),
 	crazierl:outl(16#CF8, Address),
 	Out = crazierl:inl(16#CFC),
 	<<Out:32/little>>.
+pciConfigWriteWord(Bus, Device, Function, Offset, Value) when is_binary(Value) ->
+	<<V:32/little>> = Value,
+	pciConfigWriteWord(Bus, Device, Function, Offset, V);
+pciConfigWriteWord(Bus, Device, Function, Offset, Value) when Offset band 3 == 0 ->
+	Address = pciFunctionAddress(Bus, Device, Function, Offset),
+	crazierl:outl(16#CF8, Address),
+	crazierl:outl(16#CFC, Value).
 	
 		
 

@@ -14,3 +14,11 @@
 	common, bar0, bar1,
 	secondary_bus
 }).
+
+-record (pci_mem_bar, {
+	base, size, prefetch, type
+}).
+
+-record (pci_io_bar, {
+	base, size
+}).
