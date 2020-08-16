@@ -5,7 +5,7 @@
 }).
 
 -record (pci_device, {
-	common, subsystem_vendor, subsystem_device,
+	common, chip_vendor, chip_device_id,
 	interrupt_line, interrupt_pin,
 	bar0, bar1, bar2, bar3, bar4, bar5
 }).

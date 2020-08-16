@@ -3,8 +3,16 @@
 -export([start/0]).
 -include("pci.hrl").
 
+pci_order(#pci_device{common = A}, B) -> pci_order(A, B);
+pci_order(#pci_bridge{common = A}, B) -> pci_order(A, B);
+pci_order(A, #pci_device{common = B}) -> pci_order(A, B);
+pci_order(A, #pci_bridge{common = B}) -> pci_order(A, B);
+pci_order(A, B) -> A =< B.
+
 start() ->
-	scan_bus(0, 0, 0, []).
+	AllDevices = scan_bus(0, 0, 0, []),
+	Sorted = lists:sort(fun pci_order/2, AllDevices),
+	print_pci(Sorted).
 
 scan_bus(_, 32, _, Acc) -> Acc; % only 32 devices per Bus
 scan_bus(Bus, Device, Function, Acc) ->
@@ -50,12 +58,12 @@ probe_device(Bus, Device, Function, Config) when size(Config) == 256 ->
 	Return = case HeaderType of
 		0 -> <<BAR0:4/binary, BAR1:4/binary, BAR2:4/binary, BAR3:4/binary, BAR4:4/binary, BAR5:4/binary,
 			  _CardBusCIS:4/binary,
-			  SubVendor:16/little, SubDevice:16/little,
+			  ChipVendor:16/little, ChipDeviceId:16/little,
 			  _ExpansionRomBase:32/little,
 			  _Capabilities:8, _:24,
 			  _:32,
 			  InterruptLine:8, InterruptPIN:8, _MinGrant:8, _MaxLatency:8, _/binary>> = TypeSpecific,
-			#pci_device{common = PCICommon, subsystem_vendor = SubVendor, subsystem_device = SubDevice,
+			#pci_device{common = PCICommon, chip_vendor = ChipVendor, chip_device_id = ChipDeviceId,
 			            interrupt_line = InterruptLine, interrupt_pin = InterruptPIN,
 			            bar0 = probe_bar(PCICommon, BAR0, 16#10),
 			            bar1 = probe_bar(PCICommon, BAR1, 16#14),
@@ -111,6 +119,15 @@ pciConfigWriteWord(Bus, Device, Function, Offset, Value) when Offset band 3 == 0
 	crazierl:outl(16#CF8, Address),
 	crazierl:outl(16#CFC, Value).
 	
-		
-
+print_pci([]) -> ok;
+print_pci([#pci_device{common = C} = D | Tail]) ->
+	io:format("pci ~2B:~2B:~B class=0x~4.16.0B~4.16.0B card=0x~4.16.0B~4.16.0B chip=0x~4.16.0B~4.16.0B rev=0x~2.16.0B~n",
+	io:for
+		[C#pci_common.bus, C#pci_common.device, C#pci_common.function,
+		 C#pci_common.class, C#pci_common.sub_class,
+		 C#pci_common.device_id, C#pci_common.vendor,
+		 D#pci_device.chip_device_id, D#pci_device.chip_vendor,
+		 C#pci_common.revision
+		]),
+	print_pci(Tail).
 
