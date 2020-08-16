@@ -122,7 +122,6 @@ pciConfigWriteWord(Bus, Device, Function, Offset, Value) when Offset band 3 == 0
 print_pci([]) -> ok;
 print_pci([#pci_device{common = C} = D | Tail]) ->
 	io:format("pci ~2B:~2B:~B class=0x~4.16.0B~4.16.0B card=0x~4.16.0B~4.16.0B chip=0x~4.16.0B~4.16.0B rev=0x~2.16.0B~n",
-	io:for
 		[C#pci_common.bus, C#pci_common.device, C#pci_common.function,
 		 C#pci_common.class, C#pci_common.sub_class,
 		 C#pci_common.device_id, C#pci_common.vendor,
