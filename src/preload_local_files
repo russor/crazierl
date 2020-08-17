@@ -8,4 +8,5 @@ obj/console.beam
 obj/pci.beam
 obj/vgakb.beam
 obj/acpi.beam
+obj/virtio_net.beam
 pci.hrl

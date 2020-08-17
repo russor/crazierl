@@ -103,42 +103,46 @@ obj/umoddi3.o: /usr/src/lib/libc/quad/umoddi3.c
 obj/udivdi3.o: /usr/src/lib/libc/quad/udivdi3.c
 	$(KERNEL_COMPILER) $^ -o $@
 obj/llabs.o: /usr/src/lib/libc/stdlib/llabs.c
-	$(KERNEL_COMPILER) $^ -o $@
+	$(KERNEL_COMPILER) $< -o $@
 
 obj/explicit_bzero.o: /usr/src/sys/libkern/explicit_bzero.c
-	$(KERNEL_COMPILER) $^ -o $@
+	$(KERNEL_COMPILER) $< -o $@
 
 obj/libuserland.so: obj/userland.o obj/files_userland.o
 	clang -m32 -fpic -shared -Wl,-soname,libuserland.so -o obj/libuserland.so $^
 
 obj/userland.o: userland.c
-	$(USER_COMPILER) $^ -o $@
+	$(USER_COMPILER) $< -o $@
 
 obj/files_userland.o: files.c
-	$(USER_COMPILER) $^ -o $@
+	$(USER_COMPILER) $< -o $@
 
 obj/crazierl_nif.so: crazierl_nif.c
-	$(NIF_COMPILER) $^ -o $@
+	$(NIF_COMPILER) $< -o $@
 obj/crazierl.beam: crazierl.erl
-	$(OTPDIR)/bin/erlc $^
+	$(OTPDIR)/bin/erlc $<
 	mv crazierl.beam obj/
 
 obj/comport.beam: comport.erl
-	$(OTPDIR)/bin/erlc $^
+	$(OTPDIR)/bin/erlc $<
 	mv comport.beam obj/
 
 obj/console.beam: console.erl
-	$(OTPDIR)/bin/erlc $^
+	$(OTPDIR)/bin/erlc $<
 	mv console.beam obj/
 
-obj/pci.beam: pci.erl
-	$(OTPDIR)/bin/erlc $^
+obj/pci.beam: pci.erl pci.hrl
+	$(OTPDIR)/bin/erlc $<
 	mv pci.beam obj/
 
+obj/virtio_net.beam: virtio_net.erl pci.hrl
+	$(OTPDIR)/bin/erlc $<
+	mv virtio_net.beam obj/
+
 obj/vgakb.beam: vgakb.erl
-	$(OTPDIR)/bin/erlc $^
+	$(OTPDIR)/bin/erlc $<
 	mv vgakb.beam obj/
 
 obj/acpi.beam: acpi.erl
-	$(OTPDIR)/bin/erlc $^
+	$(OTPDIR)/bin/erlc $<
 	mv acpi.beam obj/
