@@ -7,12 +7,11 @@
 -record (pci_device, {
 	common, chip_vendor, chip_device_id,
 	interrupt_line, interrupt_pin,
-	bar0, bar1, bar2, bar3, bar4, bar5
+	bars
 }).
 
 -record (pci_bridge, {
-	common, bar0, bar1,
-	secondary_bus
+	common, bars, secondary_bus
 }).
 
 -record (pci_mem_bar, {
