@@ -259,7 +259,7 @@ int kern_mmap (uintptr_t *ret, void * addr, size_t len, int prot, int flags)
 		len = (len & ~(PAGE_SIZE - 1)) + PAGE_SIZE;
 	}
 	addr = (void*)((uintptr_t)addr & ~(PAGE_SIZE -1)); // align to page, just in case
-	if (addr != NULL && !mem_available((uintptr_t)addr, len) && !((prot & PROT_FORCE) || (prot & PROT_KERNEL))) {
+	if (addr != NULL && !((prot & PROT_FORCE) || (prot & PROT_KERNEL)) && !mem_available((uintptr_t)addr, len)) {
 		ERROR_PRINTF("range %08x, %08x not available; looking for anything!\n", addr, len);
 		addr = NULL;
 	}
