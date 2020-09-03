@@ -109,6 +109,8 @@ probe_device(Bus, Device, Function, Config) when size(Config) == 256 ->
 				class = Class, sub_class = SubClass, revision = RevisionId, prog_if = ProgIf,
 				capabilities = CapList},
 	% FIXME: disable io/mem addressing, so probing bars is safe!
+	% maybe this should be done in the driver, devices involved in console (vga, serial, etc)
+	% don't get disabled, or get disabled carefully
 	Return = case HeaderType of
 		0 -> <<BAR0:4/binary, BAR1:4/binary, BAR2:4/binary, BAR3:4/binary, BAR4:4/binary, BAR5:4/binary,
 			  _CardBusCIS:4/binary,
