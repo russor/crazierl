@@ -135,21 +135,24 @@ probe_device(Bus, Device, Function, Bin) ->
 	NextWord = pciConfigReadWord(Bus, Device, Function, size(Bin)),
 	probe_device(Bus, Device, Function, <<Bin/binary, NextWord/binary>>).
 
+% I hope the capabilities list doesn't have a loop!
+probe_capabilities(_, _, Acc) when length(Acc) > 255 ->
+	lists:reverse([loop | Acc]);
 probe_capabilities(Config, Offset, Acc) when Offset band 3 == 0 ->
 	<<Type:8, NextMSB:6, _:2>> = binary:part(Config, {Offset, 2}),
 	Next = NextMSB bsl 2,
+	Cap = parse_capability(Type, Config, Offset),
 	case Next of
-		0 ->
-			Cap = parse_capability(Type, binary:part(Config, {Offset + 2, size(Config) - (Offset + 2)})),
-			lists:reverse([Cap | Acc]);
-		_ ->	Cap = parse_capability(Type, binary:part(Config, {Offset + 2, Next - (Offset + 2)})),
-			probe_capabilities(Config, Next, [Cap | Acc])
+		0 -> lists:reverse([Cap | Acc]);
+		_ -> probe_capabilities(Config, Next, [Cap | Acc])
 	end.
 
-parse_capability(9, <<Length:8, Data:(Length - 3)/binary, _/binary>>) ->
+parse_capability(9, Config, Offset) ->
+	<<Length:8>> = binary:part(Config, {Offset + 2, 1}),
+	Data = binary:part(Config, {Offset + 3, Length - 3}),
 	{vendor_specific, Data};
-parse_capability(Type, Data) ->
-	{Type, Data}.
+parse_capability(Type, _Config, Offset) ->
+	{Type, Offset}.
 
 probe_bars(_PCI, _Offset, [], Acc) ->
 	list_to_tuple(lists:reverse(Acc));
