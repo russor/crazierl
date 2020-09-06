@@ -189,7 +189,11 @@ probe_bars(PCI, Offset, [<<BaseLS:6, Reserved:1, 1:1, BaseMS:24/little>> = BAR |
 	<<Base:32>> = <<BaseMS:24, BaseLS:6, 0:2>>,
 	pciConfigWriteWord(PCI, Offset, <<16#FF:6, Reserved:1, 1:1, 16#FFFFFF:24>>),
 	<<ReflectLS:6, _:2, ReflectMS:24/little>> = pciConfigReadWord(PCI, Offset),
-	<<Reflect:32/signed>> = <<ReflectMS:24, ReflectLS:6, 0:2>>,
+	Reflect = case <<ReflectMS:24, ReflectLS:6, 0:2>> of
+		<<0:16, Val:16/signed>> -> Val;
+		<<Val:32/signed>> -> Val
+	end,
+	io:format("~.16B, ~B~n", [Reflect, -Reflect]),
 	pciConfigWriteWord(PCI, Offset, BAR),
 	probe_bars(PCI, Offset + 4, Tail, [#pci_io_bar{base = Base, size = -Reflect}| Acc]).
 
