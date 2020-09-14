@@ -20,4 +20,6 @@ start() ->
 	console:start([
 		{comport, start, [16#3f8, "/kern/ioapic/4/0"]},
 		{vgakb, start, [16#60, "/kern/ioapic/1/0"]}
-	]).
+	]),
+	pci:start(),
+	pci:attach(virtio_net, []).

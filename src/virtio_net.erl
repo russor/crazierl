@@ -4,6 +4,14 @@
 -export([check/2, attach/2]).
 -record (virtio_pci_cap, {bar, offset, length}).
 
+%TODO generate these from structs
+-define (DEVICE_FEATURE_SELECT, 0).
+-define (DEVICE_FEATURE, 4).
+-define (DRIVER_FEATURE_SELECT, 8).
+-define (DRIVER_FEATURE, 12).
+-define (DEVICE_STATUS, 20).
+
+
 
 check(#pci_device{common = #pci_common{vendor = 16#1AF4, device_id = 16#1000}}, _Args) -> true;
 check(#pci_device{common = #pci_common{vendor = 16#1AF4, device_id = 16#1041}}, _Args) -> true.
@@ -12,14 +20,32 @@ attach(Device, _Args) ->
 	Common = Device#pci_device.common,
 	Capabilities = parse_capabilities(Common#pci_common.capabilities, #{}),
 	{ok, CommonMap} = map_structure(common_cfg, Device, Capabilities),
-	io:format("got here ~w~n", [CommonMap]),
-	crazierl:bcopy_to(CommonMap, 0, <<0:32/little>>),
-	<<FeaturesLo:32/little>> = crazierl:bcopy_from(CommonMap, 4, 4),
-	crazierl:bcopy_to(CommonMap, 0, <<1:32/little>>),
-	<<FeaturesHi:32/little>> = crazierl:bcopy_from(CommonMap, 4, 4),
-	Features = parse_features(<<FeaturesHi:32, FeaturesLo:32>>, []),
-	io:format("~w~n", [Features]),
-	io:format("~w~n", [Capabilities]),
+	crazierl:bcopy_to(CommonMap, ?DEVICE_STATUS, <<0>>), % reset device
+	<<0>> = crazierl:bcopy_from(CommonMap, ?DEVICE_STATUS, 1), % confirm
+	crazierl:bcopy_to(CommonMap, ?DEVICE_STATUS, <<1>>), % OS ACK
+	<<1>> = crazierl:bcopy_from(CommonMap, ?DEVICE_STATUS, 1), % confirm
+	crazierl:bcopy_to(CommonMap, ?DEVICE_STATUS, <<3>>), % driver ACK
+
+	crazierl:bcopy_to(CommonMap, ?DEVICE_FEATURE_SELECT, <<0:32/little>>),
+	<<DeviceFeaturesLo:32/little>> = crazierl:bcopy_from(CommonMap, ?DEVICE_FEATURE, 4),
+	crazierl:bcopy_to(CommonMap, ?DEVICE_FEATURE_SELECT, <<1:32/little>>),
+	<<DeviceFeaturesHi:32/little>> = crazierl:bcopy_from(CommonMap, ?DEVICE_FEATURE, 4),
+	DeviceFeatures = parse_features(<<DeviceFeaturesHi:32, DeviceFeaturesLo:32>>),
+	io:format("~w~n", [DeviceFeatures]),
+	true = maps:is_key(virtio_version_1, DeviceFeatures),
+	true = maps:is_key(mac, DeviceFeatures),
+	DriverFeatures = make_features([virtio_version_1, mac]),
+	<<DriverFeaturesLo:4/binary, DriverFeaturesHi:4/binary>> = <<DriverFeatures:64/little>>,
+	crazierl:bcopy_to(CommonMap, ?DRIVER_FEATURE_SELECT, <<0:32/little>>),
+	crazierl:bcopy_to(CommonMap, ?DRIVER_FEATURE, DriverFeaturesLo),
+	crazierl:bcopy_to(CommonMap, ?DRIVER_FEATURE_SELECT, <<1:32/little>>),
+	crazierl:bcopy_to(CommonMap, ?DRIVER_FEATURE, DriverFeaturesHi),
+
+	<<3>> = crazierl:bcopy_from(CommonMap, ?DEVICE_STATUS, 1), % confirm
+	crazierl:bcopy_to(CommonMap, ?DEVICE_STATUS, <<11>>), % features_OK
+	<<DeviceStatus>> = crazierl:bcopy_from(CommonMap, ?DEVICE_STATUS, 1),
+	io:format("device status ~.2B~n", [DeviceStatus]),
+
 	loop(Device).
 
 parse_capabilities([{vendor_specific, <<RawType:8, Bar:8, _:3/binary, Offset:32/little, Length:32/little, _/binary>>}|T], Map) ->
@@ -34,9 +60,7 @@ parse_capabilities([], Map) -> Map.
 map_structure(Key, #pci_device{bars = Bars}, Caps) ->
 	Cap = maps:get(Key, Caps),
 	Bar = element(Cap#virtio_pci_cap.bar + 1, Bars),
-	io:format("bar~B, ~w~n", [Cap#virtio_pci_cap.bar, Bar]),
 	true = (Bar#pci_mem_bar.size >= (Cap#virtio_pci_cap.offset + Cap#virtio_pci_cap.length)),
-	io:format("crazierl:map(~.16B, ~B)~n", [Bar#pci_mem_bar.base + Cap#virtio_pci_cap.offset, Cap#virtio_pci_cap.length]),
 	crazierl:map(Bar#pci_mem_bar.base + Cap#virtio_pci_cap.offset, Cap#virtio_pci_cap.length).
 
 loop(Device) ->
@@ -51,15 +75,24 @@ virtio_cfg_type(4) -> device_cfg;
 virtio_cfg_type(5) -> pci_cfg;
 virtio_cfg_type(O) -> {reserved, O}.
 
+parse_features(Binary) -> parse_features(Binary, #{}).
+
 parse_features(<<1:1, Rest/bitstring>>, Acc) ->
-	parse_features(Rest, [feature_flag(bit_size(Rest)) | Acc]);
+	parse_features(Rest, Acc#{feature_flag(bit_size(Rest)) => true});
 parse_features(<<0:1, Rest/bitstring>>, Acc) -> parse_features(Rest, Acc);
 parse_features(<<>>, Acc) -> Acc.
+
+make_features(List) -> make_features(List, 0).
+
+make_features([H | T], Acc) ->
+	Bit = feature_flag(H),
+	make_features(T, Acc bor (1 bsl Bit));
+make_features([], Acc) -> Acc.
 
 feature_flag(0) -> checksum;
 feature_flag(1) -> guest_checksum;
 feature_flag(2) -> control_guest_offloads;
-feature_flag(3) -> mtuy;
+feature_flag(3) -> mtu;
 feature_flag(5) -> mac;
 feature_flag(6) -> legacy_gso;
 feature_flag(7) -> guest_tso4;
@@ -91,4 +124,40 @@ feature_flag(41) -> legacy_guest_rsc4;
 feature_flag(52) -> legacy_guest_rsc6;
 feature_flag(61) -> rsc_ext;
 feature_flag(62) -> standby;
-feature_flag(X) -> {unknown, X}.
+feature_flag(N) when is_integer(N) -> {unknown, N};
+
+feature_flag(checksum) -> 0;
+feature_flag(guest_checksum) -> 1;
+feature_flag(control_guest_offloads) -> 2;
+feature_flag(mtu) -> 3;
+feature_flag(mac) -> 5;
+feature_flag(legacy_gso) -> 6;
+feature_flag(guest_tso4) -> 7;
+feature_flag(guest_tso6) -> 8;
+feature_flag(guest_ecn) -> 9;
+feature_flag(guest_ufo) -> 10;
+feature_flag(host_tso4) -> 11;
+feature_flag(host_tso6) -> 12;
+feature_flag(host_ecn) -> 13;
+feature_flag(host_ufo) -> 14;
+feature_flag(merge_rxbuf) -> 15;
+feature_flag(config_status) -> 16;
+feature_flag(control_vq) -> 17;
+feature_flag(control_rx) -> 18;
+feature_flag(control_vlan) -> 19;
+feature_flag(guest_announce) -> 21;
+feature_flag(multi_queue) -> 22;
+feature_flag(ctrl_mac_addr) -> 23;
+feature_flag(virtio_ring_indirect_desc) -> 28;
+feature_flag(virtio_ring_event_idx) -> 29;
+feature_flag(virtio_version_1) -> 32;
+feature_flag(virtio_access_platform) -> 33;
+feature_flag(virito_ring_packed) -> 34;
+feature_flag(virtio_in_order) -> 35;
+feature_flag(virtio_order_platform) -> 36;
+feature_flag(virtio_sr_iov) -> 37;
+feature_flag(virtio_notification_data) -> 38;
+feature_flag(legacy_guest_rsc4) -> 41;
+feature_flag(legacy_guest_rsc6) -> 52;
+feature_flag(rsc_ext) -> 61;
+feature_flag(standby) -> 62.
