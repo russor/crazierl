@@ -2,21 +2,50 @@
 
 -include ("pci.hrl").
 -export([check/2, attach/2]).
--record (virtio_pci_cap, {bar, offset, length}).
+-record (virtio_pci_cap, {bar, offset, length, data}).
+-record (virtq, {map, avail_idx, used, used_idx, notify}).
 
-%TODO generate these from structs
+% TODO split virtio and net bits
+
+% TODO generate these from structs
 -define (DEVICE_FEATURE_SELECT, 0).
 -define (DEVICE_FEATURE, 4).
 -define (DRIVER_FEATURE_SELECT, 8).
 -define (DRIVER_FEATURE, 12).
 -define (DEVICE_STATUS, 20).
+-define (QUEUE_SELECT, 22).
+-define (QUEUE_SIZE, 24).
+-define (QUEUE_MSIX_VECTOR, 26).
+-define (QUEUE_ENABLE, 28).
+-define (QUEUE_NOTIFY_OFF, 30).
+-define (QUEUE_DESC, 32).
+-define (QUEUE_DRIVER, 40).
+-define (QUEUE_DEVICE, 48).
 
+-define (VIRTQ_LEN, (1 bsl 2)). % must be power of two
+-define (VIRTQ_DESC_SIZE, 16).
+-define (VIRTQ_DESC_TABLE_LEN, (?VIRTQ_DESC_SIZE * ?VIRTQ_LEN)).
+-define (VIRTQ_AVAIL_SIZE, 2).
+-define (VIRTQ_AVAIL_RING_LEN, (6 + (?VIRTQ_AVAIL_SIZE *?VIRTQ_LEN))).
+-define (VIRTQ_AVAIL_USED_PADDING, 2). % will always need to pad 2 bytes for alignment
+-define (VIRTQ_USED_SIZE, 8).
+-define (VIRTQ_USED_RING_LEN, (6 + (?VIRTQ_USED_SIZE * ?VIRTQ_LEN))).
+-define (VIRTQ_BUFFER_SIZE, (1514 + 12)). % 1514 max packet + 12 byte header
+-define (VIRTQ_BUFFER_LEN, (?VIRTQ_BUFFER_SIZE * ?VIRTQ_LEN)).
+
+-define (VIRTQ_AVAIL_START, ?VIRTQ_DESC_TABLE_LEN).
+-define (VIRTQ_USED_START, (?VIRTQ_DESC_TABLE_LEN + ?VIRTQ_AVAIL_RING_LEN
+                         + ?VIRTQ_AVAIL_USED_PADDING)).
+-define (VIRTQ_BUFFER_START, (?VIRTQ_DESC_TABLE_LEN + ?VIRTQ_AVAIL_RING_LEN
+                         + ?VIRTQ_AVAIL_USED_PADDING + ?VIRTQ_USED_RING_LEN)).
+-define (VIRTQ_TOTAL_LEN, (?VIRTQ_BUFFER_START + ?VIRTQ_BUFFER_LEN)).
 
 
 check(#pci_device{common = #pci_common{vendor = 16#1AF4, device_id = 16#1000}}, _Args) -> true;
 check(#pci_device{common = #pci_common{vendor = 16#1AF4, device_id = 16#1041}}, _Args) -> true.
 
 attach(Device, _Args) ->
+	register(?MODULE, self()),
 	Common = Device#pci_device.common,
 	Capabilities = parse_capabilities(Common#pci_common.capabilities, #{}),
 	{ok, CommonMap} = map_structure(common_cfg, Device, Capabilities),
@@ -31,7 +60,7 @@ attach(Device, _Args) ->
 	crazierl:bcopy_to(CommonMap, ?DEVICE_FEATURE_SELECT, <<1:32/little>>),
 	<<DeviceFeaturesHi:32/little>> = crazierl:bcopy_from(CommonMap, ?DEVICE_FEATURE, 4),
 	DeviceFeatures = parse_features(<<DeviceFeaturesHi:32, DeviceFeaturesLo:32>>),
-	io:format("~w~n", [DeviceFeatures]),
+	%io:format("~w~n", [DeviceFeatures]),
 	true = maps:is_key(virtio_version_1, DeviceFeatures),
 	true = maps:is_key(mac, DeviceFeatures),
 	DriverFeatures = make_features([virtio_version_1, mac]),
@@ -43,16 +72,23 @@ attach(Device, _Args) ->
 
 	<<3>> = crazierl:bcopy_from(CommonMap, ?DEVICE_STATUS, 1), % confirm
 	crazierl:bcopy_to(CommonMap, ?DEVICE_STATUS, <<11>>), % features_OK
-	<<DeviceStatus>> = crazierl:bcopy_from(CommonMap, ?DEVICE_STATUS, 1),
-	io:format("device status ~.2B~n", [DeviceStatus]),
+	{ok, NotifyMap} = map_structure(notify_cfg, Device, Capabilities),
 
-	loop(Device).
+	<<NotifyOffsetMult:32/little>> = (maps:get(notify_cfg, Capabilities))#virtio_pci_cap.data,
+	RxQ = setup_virtq(CommonMap, read, 0, NotifyOffsetMult, NotifyMap),
+	TxQ = setup_virtq(CommonMap, write, 1, NotifyOffsetMult, NotifyMap),
 
-parse_capabilities([{vendor_specific, <<RawType:8, Bar:8, _:3/binary, Offset:32/little, Length:32/little, _/binary>>}|T], Map) ->
+	<<11>> = crazierl:bcopy_from(CommonMap, ?DEVICE_STATUS, 1), % confirm
+	crazierl:bcopy_to(CommonMap, ?DEVICE_STATUS, <<15>>), % features_OK
+
+	NewRxQ = offer_desc(RxQ, {0, ?VIRTQ_LEN - 1}),
+	loop(Device, NotifyMap, NewRxQ, TxQ).
+
+parse_capabilities([{vendor_specific, <<RawType:8, Bar:8, _:3/binary, Offset:32/little, Length:32/little, Data/binary>>}|T], Map) ->
 	Type = virtio_cfg_type(RawType),
 	case maps:is_key(Type, Map) of
 		true -> parse_capabilities(T, Map);
-		false -> parse_capabilities(T, Map#{Type => #virtio_pci_cap{bar = Bar, offset = Offset, length = Length}})
+		false -> parse_capabilities(T, Map#{Type => #virtio_pci_cap{bar = Bar, offset = Offset, length = Length, data = Data}})
 	end;
 parse_capabilities([_H|T], Map) -> parse_capabilities(T, Map);
 parse_capabilities([], Map) -> Map.
@@ -63,9 +99,16 @@ map_structure(Key, #pci_device{bars = Bars}, Caps) ->
 	true = (Bar#pci_mem_bar.size >= (Cap#virtio_pci_cap.offset + Cap#virtio_pci_cap.length)),
 	crazierl:map(Bar#pci_mem_bar.base + Cap#virtio_pci_cap.offset, Cap#virtio_pci_cap.length).
 
-loop(Device) ->
-	timer:sleep(10000),
-	loop(Device).
+loop(Device, NotifyMap, RxQ, TxQ) ->
+	receive
+		{send, Binary} ->
+			io:format("don't know how to send yet~n")
+	after 1000 ->
+		ok
+	end,
+	NewRx = check_queue(RxQ, read),
+	NewTx = check_queue(TxQ, write),
+	loop(Device, NotifyMap, NewRx, NewTx).
 
 
 virtio_cfg_type(1) -> common_cfg;
@@ -161,3 +204,75 @@ feature_flag(legacy_guest_rsc4) -> 41;
 feature_flag(legacy_guest_rsc6) -> 52;
 feature_flag(rsc_ext) -> 61;
 feature_flag(standby) -> 62.
+
+setup_virtq(CommonMap, Type, QueueNum, NotifyMult, NotifyMap) ->
+	{ok, Map} = crazierl:map(0, ?VIRTQ_TOTAL_LEN),
+	{_Virtual, Physical} = crazierl:map_addr(Map),
+	Flags = case Type of
+		read -> 2;
+		write -> 0
+	end,
+	DescriptorTable = virtq_descriptors(Physical + ?VIRTQ_BUFFER_START, Flags, 0, <<>>),
+	crazierl:bcopy_to(Map, 0, <<DescriptorTable/binary, 1:16/little>>), % available ring has notifications disabled and nothing available
+	Used = case Type of
+		read -> ignore;
+		write -> (1 bsl ?VIRTQ_LEN) - 1
+	end,
+	crazierl:bcopy_to(CommonMap, ?QUEUE_SELECT, <<QueueNum:16/little>>),
+	crazierl:bcopy_to(CommonMap, ?QUEUE_SIZE, <<?VIRTQ_LEN:16/little>>),
+	crazierl:bcopy_to(CommonMap, ?QUEUE_DESC, <<Physical:64/little>>),
+	crazierl:bcopy_to(CommonMap, ?QUEUE_DRIVER, <<(Physical + ?VIRTQ_AVAIL_START):64/little>>),
+	crazierl:bcopy_to(CommonMap, ?QUEUE_DEVICE, <<(Physical + ?VIRTQ_USED_START):64/little>>),
+	crazierl:bcopy_to(CommonMap, ?QUEUE_ENABLE, <<1:16/little>>),
+	<<NotifyOffset:16/little>> = crazierl:bcopy_from(CommonMap, ?QUEUE_NOTIFY_OFF, 2),
+	#virtq{map = Map, avail_idx = 0, used = Used, used_idx = 0, notify= {NotifyMap, NotifyOffset * NotifyMult, QueueNum}}.
+
+virtq_descriptors(_, _, ?VIRTQ_LEN, Acc) -> Acc;
+virtq_descriptors(Physical, Flags, Index, Acc) ->
+	Acc0 = <<Acc/binary, Physical:64/little, ?VIRTQ_BUFFER_SIZE:32/little, Flags:16/little, 0:16>>,
+	virtq_descriptors(Physical + ?VIRTQ_BUFFER_SIZE, Flags, Index + 1, Acc0).
+
+offer_desc(Queue, {N, N}) -> offer_desc(Queue, N);
+offer_desc(Queue, {N, T}) ->
+	Out = offer_desc_impl(Queue, N),
+	offer_desc(Out, {N + 1, T});
+offer_desc(Queue, N) ->
+	Out = offer_desc_impl(Queue, N),
+	write_avail_idx(Out),
+	Out.
+
+offer_desc_impl(Queue = #virtq{map = Map, avail_idx = Idx}, N) ->
+	crazierl:bcopy_to(Map, ?VIRTQ_AVAIL_START + 4 + (2 * (Idx band (?VIRTQ_LEN - 1))), <<N:16/little>>),
+	update_used(Queue#virtq{avail_idx = Idx + 1}, N).
+
+update_used(Queue = #virtq{used = ignore}, _N) -> Queue;
+update_used(Queue = #virtq{used = Used}, N) ->
+	Queue#virtq{used = Used bxor (1 bsl N)}.
+
+write_avail_idx(#virtq{map = Map, avail_idx = Idx, notify = {NotifyMap, Offset, QueueNum}}) ->
+	crazierl:bcopy_to(Map, ?VIRTQ_AVAIL_START + 2, <<Idx:16/little>>),
+	<<Flags:16/little>> = crazierl:bcopy_from(Map, ?VIRTQ_USED_START, 2),
+	case Flags band 1 of
+		1 -> ok;
+		0 -> crazierl:bcopy_to(NotifyMap, Offset, <<QueueNum:16/little>>)
+	end.
+
+check_queue(Queue = #virtq{map = Map, used_idx = Idx}, Type) ->
+	case crazierl:bcopy_from(Map, ?VIRTQ_USED_START + 2, 2) of
+		<<Idx:16/little>> -> Queue;
+		<<NewIdx:16/little>> ->
+			process_packet(Queue, Type, NewIdx)
+	end.
+
+process_packet(Queue = #virtq{used_idx = Idx}, read, Idx) -> Queue;
+process_packet(Queue = #virtq{map = Map, used = _Used, used_idx = Idx}, read, NewIndex) ->
+	io:format("reading used ring item ~B~n", [Idx]),
+	<<Id:32/little, Len:32/little>> = crazierl:bcopy_from(Map, ?VIRTQ_USED_START + 4 + (8 * (Idx band (?VIRTQ_LEN -1 ))), 8),
+	io:format("descriptor ~B, length ~B~n", [Id, Len]),
+	<<_Flags:8, _GsoType:8, _HdrLen:16/little, _GsoSize:16/little,
+	  _CsumStart:16/little, _CSumOffset:16/little, _NumBuffers:16/little,
+	  Data/binary>> = crazierl:bcopy_from(Map, ?VIRTQ_BUFFER_START + Id * ?VIRTQ_BUFFER_SIZE, Len),
+	%io:format("Flags ~.16B, GSO ~.16B, HDR Len ~B, GSO size ~B, Csum ~B @ ~B, Buffs ~B~n",
+	%	[Flags, GsoType, HdrLen, GsoSize, CsumStart, CSumOffset, NumBuffers]),
+	io:format("~w~n", [Data]),
+	process_packet(offer_desc(Queue#virtq{used_idx = (Idx + 1) band ((1 bsl 16) - 1)}, Id), read, NewIndex).
