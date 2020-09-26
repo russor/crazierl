@@ -72,6 +72,9 @@ attach(Device, _Args) ->
 
 	<<3>> = crazierl:bcopy_from(CommonMap, ?DEVICE_STATUS, 1), % confirm
 	crazierl:bcopy_to(CommonMap, ?DEVICE_STATUS, <<11>>), % features_OK
+	{ok, DeviceMap} = map_structure(device_cfg, Device, Capabilities),
+	<<MacAddr:48>> = crazierl:bcopy_from(DeviceMap, 0, 6),
+
 	{ok, NotifyMap} = map_structure(notify_cfg, Device, Capabilities),
 
 	<<NotifyOffsetMult:32/little>> = (maps:get(notify_cfg, Capabilities))#virtio_pci_cap.data,
@@ -82,7 +85,7 @@ attach(Device, _Args) ->
 	crazierl:bcopy_to(CommonMap, ?DEVICE_STATUS, <<15>>), % features_OK
 
 	NewRxQ = offer_desc(RxQ, {0, ?VIRTQ_LEN - 1}),
-	loop(Device, NotifyMap, NewRxQ, TxQ).
+	loop(Device, MacAddr, NewRxQ, TxQ).
 
 parse_capabilities([{vendor_specific, <<RawType:8, Bar:8, _:3/binary, Offset:32/little, Length:32/little, Data/binary>>}|T], Map) ->
 	Type = virtio_cfg_type(RawType),
@@ -99,16 +102,16 @@ map_structure(Key, #pci_device{bars = Bars}, Caps) ->
 	true = (Bar#pci_mem_bar.size >= (Cap#virtio_pci_cap.offset + Cap#virtio_pci_cap.length)),
 	crazierl:map(Bar#pci_mem_bar.base + Cap#virtio_pci_cap.offset, Cap#virtio_pci_cap.length).
 
-loop(Device, NotifyMap, RxQ, TxQ) ->
+loop(Device, MacAddr, RxQ, TxQ) ->
 	receive
-		{send, Binary} ->
+		{send, _Binary} ->
 			io:format("don't know how to send yet~n")
 	after 1000 ->
 		ok
 	end,
 	NewRx = check_queue(RxQ, read),
 	NewTx = check_queue(TxQ, write),
-	loop(Device, NotifyMap, NewRx, NewTx).
+	loop(Device, MacAddr, NewRx, NewTx).
 
 
 virtio_cfg_type(1) -> common_cfg;
@@ -264,6 +267,8 @@ check_queue(Queue = #virtq{map = Map, used_idx = Idx}, Type) ->
 			process_packet(Queue, Type, NewIdx)
 	end.
 
+binary_to_tuple(Bin) -> list_to_tuple(binary_to_list(Bin)).
+
 process_packet(Queue = #virtq{used_idx = Idx}, read, Idx) -> Queue;
 process_packet(Queue = #virtq{map = Map, used = _Used, used_idx = Idx}, read, NewIndex) ->
 	io:format("reading used ring item ~B~n", [Idx]),
@@ -274,5 +279,21 @@ process_packet(Queue = #virtq{map = Map, used = _Used, used_idx = Idx}, read, Ne
 	  Data/binary>> = crazierl:bcopy_from(Map, ?VIRTQ_BUFFER_START + Id * ?VIRTQ_BUFFER_SIZE, Len),
 	%io:format("Flags ~.16B, GSO ~.16B, HDR Len ~B, GSO size ~B, Csum ~B @ ~B, Buffs ~B~n",
 	%	[Flags, GsoType, HdrLen, GsoSize, CsumStart, CSumOffset, NumBuffers]),
-	io:format("~w~n", [Data]),
+
+	% move this somewhere else later
+	<<DestMac:48, SourceMac:48, EtherType:16, Payload/binary>> = Data,
+	case EtherType of
+		16#0806 -> % ARP
+			<<_HType:16, _PType:16, HLen:8, PLen:8, Oper:16,
+				_SenderHardwareAddress:(HLen*8), SenderProtocolAddress:PLen/binary,
+				_TargetHardwareAddress:(HLen*8), TargetProtocolAddress:PLen/binary>> = Payload,
+			case Oper of
+				1 -> io:format("~12.16.0B > ~12.16.0B arp Request who-has ~p tell ~p~n",
+					[SourceMac, DestMac, binary_to_tuple(TargetProtocolAddress), binary_to_tuple(SenderProtocolAddress)]);
+				_ ->
+					io:format("~12.16.0B > ~12.16.0B, EtherType ~4.16.0B, ~w~n", [SourceMac, DestMac, EtherType, Payload])
+			end;
+		_ ->
+			io:format("~12.16.0B > ~12.16.0B, EtherType ~4.16.0B, ~w~n", [SourceMac, DestMac, EtherType, Payload])
+	end,
 	process_packet(offer_desc(Queue#virtq{used_idx = (Idx + 1) band ((1 bsl 16) - 1)}, Id), read, NewIndex).
