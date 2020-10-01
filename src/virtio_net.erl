@@ -83,9 +83,10 @@ attach(Device, _Args) ->
 
 	<<11>> = crazierl:bcopy_from(CommonMap, ?DEVICE_STATUS, 1), % confirm
 	crazierl:bcopy_to(CommonMap, ?DEVICE_STATUS, <<15>>), % features_OK
-
-	NewRxQ = offer_desc(RxQ, {0, ?VIRTQ_LEN - 1}),
-	loop(Device, MacAddr, NewRxQ, TxQ).
+	<<15>> = crazierl:bcopy_from(CommonMap, ?DEVICE_STATUS, 1), % confirm
+	arp:register(self(), {10,0,2,15}, MacAddr),
+	RxQ2 = offer_desc(RxQ, {0, ?VIRTQ_LEN - 1}),
+	loop(Device, MacAddr, RxQ2, TxQ).
 
 parse_capabilities([{vendor_specific, <<RawType:8, Bar:8, _:3/binary, Offset:32/little, Length:32/little, Data/binary>>}|T], Map) ->
 	Type = virtio_cfg_type(RawType),
@@ -103,15 +104,18 @@ map_structure(Key, #pci_device{bars = Bars}, Caps) ->
 	crazierl:map(Bar#pci_mem_bar.base + Cap#virtio_pci_cap.offset, Cap#virtio_pci_cap.length).
 
 loop(Device, MacAddr, RxQ, TxQ) ->
-	receive
-		{send, _Binary} ->
-			io:format("don't know how to send yet~n")
+	TxQ1 = receive
+		{'$gen_call', From, {send, {DestMac, EtherType}, Payload}} ->
+			Packet = <<DestMac:48, MacAddr:48, EtherType:16, Payload/binary>>,
+			io:format("sending ... ~w~n", [Packet]),
+			gen:reply(From, ok),
+			add_to_queue(TxQ, Packet)
 	after 1000 ->
-		ok
+		TxQ
 	end,
 	NewRx = check_queue(RxQ, read),
-	NewTx = check_queue(TxQ, write),
-	loop(Device, MacAddr, NewRx, NewTx).
+	TxQ2 = check_queue(TxQ1, write),
+	loop(Device, MacAddr, NewRx, TxQ2).
 
 
 virtio_cfg_type(1) -> common_cfg;
@@ -219,7 +223,7 @@ setup_virtq(CommonMap, Type, QueueNum, NotifyMult, NotifyMap) ->
 	crazierl:bcopy_to(Map, 0, <<DescriptorTable/binary, 1:16/little>>), % available ring has notifications disabled and nothing available
 	Used = case Type of
 		read -> ignore;
-		write -> (1 bsl ?VIRTQ_LEN) - 1
+		write -> [{0, ?VIRTQ_LEN - 1}]
 	end,
 	crazierl:bcopy_to(CommonMap, ?QUEUE_SELECT, <<QueueNum:16/little>>),
 	crazierl:bcopy_to(CommonMap, ?QUEUE_SIZE, <<?VIRTQ_LEN:16/little>>),
@@ -246,11 +250,7 @@ offer_desc(Queue, N) ->
 
 offer_desc_impl(Queue = #virtq{map = Map, avail_idx = Idx}, N) ->
 	crazierl:bcopy_to(Map, ?VIRTQ_AVAIL_START + 4 + (2 * (Idx band (?VIRTQ_LEN - 1))), <<N:16/little>>),
-	update_used(Queue#virtq{avail_idx = Idx + 1}, N).
-
-update_used(Queue = #virtq{used = ignore}, _N) -> Queue;
-update_used(Queue = #virtq{used = Used}, N) ->
-	Queue#virtq{used = Used bxor (1 bsl N)}.
+	Queue#virtq{avail_idx = Idx + 1}.
 
 write_avail_idx(#virtq{map = Map, avail_idx = Idx, notify = {NotifyMap, Offset, QueueNum}}) ->
 	crazierl:bcopy_to(Map, ?VIRTQ_AVAIL_START + 2, <<Idx:16/little>>),
@@ -260,6 +260,25 @@ write_avail_idx(#virtq{map = Map, avail_idx = Idx, notify = {NotifyMap, Offset, 
 		0 -> crazierl:bcopy_to(NotifyMap, Offset, <<QueueNum:16/little>>)
 	end.
 
+add_to_queue(Queue = #virtq{used = []}, Packet) ->
+	io:format("virtq full, dropping ~w~n", [Packet]),
+	Queue;
+add_to_queue(Queue = #virtq{map = Map, used = Used}, Packet) ->
+	{Descriptor, NewUsed} = get_descriptor(Used),
+	io:format("got ~p~n", [{Descriptor, NewUsed}]),
+	crazierl:bcopy_to(Map, ?VIRTQ_BUFFER_START + Descriptor * ?VIRTQ_BUFFER_SIZE,
+		<<0, 0, 0:16, 0:16, 0:16, 0:16, 0:16, Packet/binary>>),
+	crazierl:bcopy_to(Map, Descriptor * ?VIRTQ_DESC_SIZE + 8,
+		<<(size(Packet) + 12):32/little>>),
+	offer_desc(Queue#virtq{used = NewUsed}, Descriptor).
+
+get_descriptor([{A, B} | T]) when B == A + 1 -> {A, [B | T]};
+get_descriptor([{A, B} | T]) -> {A, [{A + 1, B} | T]};
+get_descriptor([H | T]) -> {H, T}.
+add_to_used([B|T], H) when B == H + 1 -> [{H, B} | T];
+add_to_used([{A, B}|T], H) when A == H + 1 -> [{H, B} | T];
+add_to_used(T, H) -> [H | T].
+
 check_queue(Queue = #virtq{map = Map, used_idx = Idx}, Type) ->
 	case crazierl:bcopy_from(Map, ?VIRTQ_USED_START + 2, 2) of
 		<<Idx:16/little>> -> Queue;
@@ -267,11 +286,9 @@ check_queue(Queue = #virtq{map = Map, used_idx = Idx}, Type) ->
 			process_packet(Queue, Type, NewIdx)
 	end.
 
-binary_to_tuple(Bin) -> list_to_tuple(binary_to_list(Bin)).
-
-process_packet(Queue = #virtq{used_idx = Idx}, read, Idx) -> Queue;
-process_packet(Queue = #virtq{map = Map, used = _Used, used_idx = Idx}, read, NewIndex) ->
-	io:format("reading used ring item ~B~n", [Idx]),
+process_packet(Queue = #virtq{used_idx = Idx}, _, Idx) -> Queue;
+process_packet(Queue = #virtq{map = Map, used_idx = Idx}, read, NewIndex) ->
+	io:format("reading used ring item (read) ~B~n", [Idx]),
 	<<Id:32/little, Len:32/little>> = crazierl:bcopy_from(Map, ?VIRTQ_USED_START + 4 + (8 * (Idx band (?VIRTQ_LEN -1 ))), 8),
 	io:format("descriptor ~B, length ~B~n", [Id, Len]),
 	<<_Flags:8, _GsoType:8, _HdrLen:16/little, _GsoSize:16/little,
@@ -280,20 +297,18 @@ process_packet(Queue = #virtq{map = Map, used = _Used, used_idx = Idx}, read, Ne
 	%io:format("Flags ~.16B, GSO ~.16B, HDR Len ~B, GSO size ~B, Csum ~B @ ~B, Buffs ~B~n",
 	%	[Flags, GsoType, HdrLen, GsoSize, CsumStart, CSumOffset, NumBuffers]),
 
-	% move this somewhere else later
 	<<DestMac:48, SourceMac:48, EtherType:16, Payload/binary>> = Data,
 	case EtherType of
-		16#0806 -> % ARP
-			<<_HType:16, _PType:16, HLen:8, PLen:8, Oper:16,
-				_SenderHardwareAddress:(HLen*8), SenderProtocolAddress:PLen/binary,
-				_TargetHardwareAddress:(HLen*8), TargetProtocolAddress:PLen/binary>> = Payload,
-			case Oper of
-				1 -> io:format("~12.16.0B > ~12.16.0B arp Request who-has ~p tell ~p~n",
-					[SourceMac, DestMac, binary_to_tuple(TargetProtocolAddress), binary_to_tuple(SenderProtocolAddress)]);
-				_ ->
-					io:format("~12.16.0B > ~12.16.0B, EtherType ~4.16.0B, ~w~n", [SourceMac, DestMac, EtherType, Payload])
-			end;
+		16#0806 -> arp:process(?MODULE, Payload);
 		_ ->
 			io:format("~12.16.0B > ~12.16.0B, EtherType ~4.16.0B, ~w~n", [SourceMac, DestMac, EtherType, Payload])
 	end,
-	process_packet(offer_desc(Queue#virtq{used_idx = (Idx + 1) band ((1 bsl 16) - 1)}, Id), read, NewIndex).
+	offer_desc(Queue, Id),
+	process_packet(Queue#virtq{used_idx = (Idx + 1) band ((1 bsl 16) - 1)}, read, NewIndex);
+
+process_packet(Queue = #virtq{map = Map, used = Used, used_idx = Idx}, write, NewIndex) ->
+	io:format("reading used ring item (write) ~B~n", [Idx]),
+	<<Id:32/little, Len:32/little>> = crazierl:bcopy_from(Map, ?VIRTQ_USED_START + 4 + (8 * (Idx band (?VIRTQ_LEN -1 ))), 8),
+	io:format("descriptor ~B, length ~B~n", [Id, Len]),
+	NewUsed = add_to_used(Used, Id),
+	process_packet(Queue#virtq{used = NewUsed, used_idx = (Idx + 1) band ((1 bsl 16) - 1)}, write, NewIndex).

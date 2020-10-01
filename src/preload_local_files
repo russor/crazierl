@@ -9,4 +9,5 @@ obj/pci.beam
 obj/vgakb.beam
 obj/acpi.beam
 obj/virtio_net.beam
+obj/arp.beam
 pci.hrl

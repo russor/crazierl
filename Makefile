@@ -140,6 +140,10 @@ obj/virtio_net.beam: virtio_net.erl pci.hrl
 	$(OTPDIR)/bin/erlc $<
 	mv virtio_net.beam obj/
 
+obj/arp.beam: arp.erl
+	$(OTPDIR)/bin/erlc $<
+	mv arp.beam obj/
+
 obj/vgakb.beam: vgakb.erl
 	$(OTPDIR)/bin/erlc $<
 	mv vgakb.beam obj/
