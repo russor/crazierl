@@ -144,6 +144,14 @@ obj/arp.beam: arp.erl
 	$(OTPDIR)/bin/erlc $<
 	mv arp.beam obj/
 
+obj/ip.beam: ip.erl
+	$(OTPDIR)/bin/erlc $<
+	mv ip.beam obj/
+
+obj/tcp.beam: tcp.erl
+	$(OTPDIR)/bin/erlc $<
+	mv tcp.beam obj/
+
 obj/vgakb.beam: vgakb.erl
 	$(OTPDIR)/bin/erlc $<
 	mv vgakb.beam obj/

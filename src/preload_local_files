@@ -10,4 +10,6 @@ obj/vgakb.beam
 obj/acpi.beam
 obj/virtio_net.beam
 obj/arp.beam
+obj/ip.beam
+obj/tcp.beam
 pci.hrl

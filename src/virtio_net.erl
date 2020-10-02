@@ -300,6 +300,7 @@ process_packet(Queue = #virtq{map = Map, used_idx = Idx}, read, NewIndex) ->
 	<<DestMac:48, SourceMac:48, EtherType:16, Payload/binary>> = Data,
 	case EtherType of
 		16#0806 -> arp:process(?MODULE, Payload);
+		16#0800 -> ip:process(?MODULE, Payload);
 		_ ->
 			io:format("~12.16.0B > ~12.16.0B, EtherType ~4.16.0B, ~w~n", [SourceMac, DestMac, EtherType, Payload])
 	end,
