@@ -304,8 +304,8 @@ process_packet(Queue = #virtq{map = Map, used_idx = Idx}, read, NewIndex) ->
 		_ ->
 			io:format("~12.16.0B > ~12.16.0B, EtherType ~4.16.0B, ~w~n", [SourceMac, DestMac, EtherType, Payload])
 	end,
-	offer_desc(Queue, Id),
-	process_packet(Queue#virtq{used_idx = (Idx + 1) band ((1 bsl 16) - 1)}, read, NewIndex);
+	Offered = offer_desc(Queue, Id),
+	process_packet(Offered#virtq{used_idx = (Idx + 1) band ((1 bsl 16) - 1)}, read, NewIndex);
 
 process_packet(Queue = #virtq{map = Map, used = Used, used_idx = Idx}, write, NewIndex) ->
 	io:format("reading used ring item (write) ~B~n", [Idx]),
