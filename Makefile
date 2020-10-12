@@ -152,6 +152,10 @@ obj/tcp.beam: tcp.erl
 	$(OTPDIR)/bin/erlc $<
 	mv tcp.beam obj/
 
+obj/example_host.beam: example_host.erl
+	$(OTPDIR)/bin/erlc $<
+	mv example_host.beam obj/
+
 obj/vgakb.beam: vgakb.erl
 	$(OTPDIR)/bin/erlc $<
 	mv vgakb.beam obj/

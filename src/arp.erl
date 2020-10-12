@@ -5,6 +5,7 @@
 
 -export ([init/1, handle_cast/2, handle_call/3]).
 -export ([process/2, register/3]).
+-export ([send/3]).
 
 % int32/u32 borrowed from dist_util.erl/inet_int.hrl
 -define(int32(X),
@@ -27,17 +28,29 @@ init ([]) ->
 
 handle_cast({request, Interface, TargetIP, SenderMac, SenderIP}, State) ->
 	case ets:lookup(?MODULE, TargetIP) of
-		[{TargetIP, #{mac := Mac, public := true}}] ->
+		[{_, #{mac := Mac, public := true}}] ->
 			gen_server:call(Interface, {send, {SenderMac, 16#0806}, <<1:16, 16#0800:16, 6, 4, 2:16, Mac:48, TargetIP:32, SenderMac:48, SenderIP:32>>});
 		Other ->
 			io:format("arp lookup ~p~n", [Other]);
 		_ -> ok
 	end,
+	{noreply, State};
+handle_cast({send, Interface, SourceIP, SourceMac, DestIP, Packet}, State) ->
+	case ets:lookup(?MODULE, DestIP) of % relookup, avoid race condition
+		[{_, #{mac := DestMac}}] ->
+			gen_server:call(Interface, {send, {DestMac, 16#0800}, Packet});
+		[] ->
+			gen_server:call(Interface, {send, {16#FFFFFF_FFFFFF, 16#0806}, <<1:16, 16#0800:16, 6, 4, 1:16, SourceMac:48, SourceIP:32, 0:48, DestIP:32>>}),
+			io:format("dropping packet from ~p to ~p, no arping buffer~n", [?int32(SourceIP), ?int32(DestIP)])
+	end,
+	{noreply, State};
+handle_cast({reply, _Interface, SourceMac, SourceIP}, State) ->
+	ets:insert_new(?MODULE, {SourceIP, #{mac => SourceMac}}),
 	{noreply, State}.
 
 process(Interface, <<HType:16, PType:16, HLen:8, PLen:8, Oper:16,
 		SenderHardwareAddress:(HLen*8), SenderProtocolAddress:(PLen*8),
-		_TargetHardwareAddress:(HLen*8), TargetProtocolAddress:(PLen*8)>> = Packet) ->
+		_TargetHardwareAddress:(HLen*8), TargetProtocolAddress:(PLen*8), Padding/binary>> = Packet) ->
 
 	case {HType, PType, HLen, PLen} of
 		{1, 16#800, 6, 4} ->
@@ -65,3 +78,15 @@ handle_call({register, Pid, {A, B, C, D}, Mac}, _From, State) ->
 
 register(Pid, IP, Mac) ->
 	gen_server:call(start(), {register, Pid, IP, Mac}).
+
+send(Source, Dest, Packet) ->
+	case ets:lookup(?MODULE, Source) of
+		[{_, #{mac := SourceMac, pid := Interface}}] ->
+			case ets:lookup(?MODULE, Dest) of
+				[{_, #{mac := DestMac}}] ->
+					gen_server:call(Interface, {send, {DestMac, 16#0800}, Packet});
+				[] ->
+					gen_server:cast(?MODULE, {send, Interface, Source, SourceMac, Dest, Packet})
+			end;
+		_ -> io:format("can't send packet from ~p to ~p, no source mac on file~n", [?int32(Source), ?int32(Dest)])
+	end.
