@@ -11,6 +11,7 @@
 	(((X3) bsl 24) bor ((X2) bsl 16) bor ((X1) bsl 8) bor (X0))).
 
 ip_checksum(<<H:16, T/binary>>, Acc) -> ip_checksum(T, Acc + H);
+ip_checksum(<<H:8>>, Acc) -> ip_checksum(<<>>, Acc + (H bsl 8));
 ip_checksum(<<>>, Acc) when Acc > 16#FFFF ->
 	ip_checksum(<<>>, (Acc bsr 16) + (Acc band 16#FFFF));
 ip_checksum(<<>>, Acc) -> (bnot Acc) band 16#FFFF.

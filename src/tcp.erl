@@ -8,6 +8,7 @@
 -export ([listen/2]).
 -export ([process/4]).
 -export ([format_packet/4]).
+-export ([controlling_process/2, send/2, close/1]).
 
 % int32/u32 borrowed from dist_util.erl/inet_int.hrl
 -define(int32(X),
@@ -23,6 +24,11 @@
 -define (PSH, 8).
 -define (ACK, 16).
 -define (URG, 32).
+-define (SEQACK_MASK, ((1 bsl 32) - 1)).
+-define (MAX_ACK, (1 bsl 31)).
+
+-record (established, {pid, snd_una, rcv_next, buf}).
+-record (fin_wait1, {pid, snd_una, rcv_next, buf}).
 
 start() ->
 	case gen_server:start({local, ?MODULE}, ?MODULE, [], []) of
@@ -44,6 +50,7 @@ process(Source, Dest, TTL, <<SourcePort:16, DestPort:16, Seq:32, Ack:32,
 			     %NS:1, CWR:1, ECE:1, URG:1, ACK:1, PSH:1, RST:1, SYN:1, FIN:1,
 			     Window:16, CheckSum:16, UrgPtr:16,
 			     Options:(Data * 4 - 20)/binary, Payload/binary>> = Packet) ->
+
 	format_packet(Source, Dest, TTL, Packet),
 	PacketSize = size(Packet),
 
@@ -79,12 +86,41 @@ format_flags(<<>>, <<>>, Acc) -> Acc.
 
 handle_call({listen, Port, Pid}, _From, State) ->
 	Reply = ets:insert_new(?MODULE, {Port, listen, Pid}),
+	{reply, Reply, State};
+handle_call({controlling_process, Socket, NewPid}, _From, State) ->
+	Reply = case ets:lookup(?MODULE, Socket) of
+		[{_, #established{} = TcpState}] ->
+			ets:insert(?MODULE, {Socket, TcpState#established{pid = NewPid}});
+		_ ->
+			{error, badarg}
+	end,
 	{reply, Reply, State}.
 
 % check ack only first
-handle_cast({in, {Source, Dest, SourcePort, DestPort, Seq, Ack, ?ACK, Window, UrgPtr, Options, Payload}}, State) ->
-	case ets:lookup(?MODULE, {Source, Dest, SourcePort, DestPort}) of
-		%[{_, established, ....] -> % fast path established, ACK only, right sequence, same window
+handle_cast({in, {Source, Dest, SourcePort, DestPort, Seq, Ack, Flags, Window, UrgPtr, Options, Payload}}, State)
+	when Flags == ?ACK; Flags == ?ACK bor ?PSH ->
+	Key = {Source, Dest, SourcePort, DestPort},
+	case ets:lookup(?MODULE, Key) of
+		[{_, #established{pid = Pid, rcv_next = Seq, snd_una = Una, buf = Buf} = TcpState}] -> % fast path established, ACK only, right sequence
+			Next = case Payload of
+				<<>> -> Seq;
+				_ ->
+					Pid ! {tcp, Key, Payload},
+					N = (Seq + size(Payload)) band ?SEQACK_MASK,
+					reply(Key, Una + size(Buf), N, ?ACK, 65535, <<>>, <<>>),
+					N
+			end,
+			ets:insert(?MODULE, {Key, process_ack(Ack, TcpState#established{rcv_next = Next})});
+		[{_, syn_received, Seq, Ack}] ->
+			case ets:lookup(?MODULE, DestPort) of
+				[{_, listen, Pid}] ->
+					ets:insert(?MODULE, {Key, #established{pid = Pid, rcv_next = Seq + size(Payload), snd_una = Ack, buf = <<>>}}),
+					Pid ! {tcp_open, Key, Payload},
+					reply(Key, Ack, Seq, ?ACK, 65535, <<>>, <<>>);
+				_ ->
+					ets:delete(Key),
+					reply(Key, Ack, Seq, ?RST, 0, <<>>, <<>>)
+			end;
 		[] -> io:format("should send reset for ACK~n")
 	end,
 	{noreply, State};
@@ -93,21 +129,54 @@ handle_cast({in, {Source, Dest, SourcePort, DestPort, Seq, Ack, ?ACK, Window, Ur
 handle_cast({in, {Source, Dest, SourcePort, DestPort, Seq, 0 = Ack, ?SYN, Window, UrgPtr, Options, Payload}}, State) ->
 	Key = {Source, Dest, SourcePort, DestPort},
 	case ets:lookup(?MODULE, Key) of
-		[{_, syn_received, Seq, MyISS}] ->
-			reply(Key, MyISS, Seq + 1, ?SYN bor ?ACK, 65535, <<>>, <<>>);
+		[{_, syn_received, S, MyISS}] when S == Seq + 1 ->
+			reply(Key, MyISS - 1, Seq + 1, ?SYN bor ?ACK, 65535, <<>>, <<>>);
 		[Other] ->
 			io:format("ignoring syn on connection ~w~n", [Other]);
 		[] ->
 			case ets:lookup(?MODULE, DestPort) of
 				[{_, listen, Pid}] ->
 					MyISS = rand:uniform(1000), % FIXME should be crypto random
-					ets:insert(?MODULE, {Key, syn_received, Seq, MyISS}),
-					reply(Key, MyISS, Seq + 1, ?SYN bor ?ACK, 65535, <<>>, <<>>);
+					ets:insert(?MODULE, {Key, syn_received, Seq +1, MyISS}),
+					reply(Key, MyISS - 1, Seq + 1, ?SYN bor ?ACK, 65535, <<>>, <<>>);
 				[] ->
 					reply(Key, 0, Seq + 1, ?RST bor ?ACK, 0, <<>>, <<>>)
 			end
 	end,
+	{noreply, State};
+
+handle_cast({out, Socket, Payload}, State) ->
+	case ets:lookup(?MODULE, Socket) of
+		[{_, #established {rcv_next = Ack, snd_una = Una, buf = Buf} = TcpState}] ->
+			reply(Socket, Una + size(Buf), Ack, ?ACK, 65535, <<>>, Payload),
+			ets:insert(?MODULE, {Socket, TcpState#established{buf = <<Buf/binary, Payload/binary>>}});
+		_ -> ok
+	end,
+	{noreply, State};
+handle_cast({close, Socket}, State) ->
+	case ets:lookup(?MODULE, Socket) of
+		[{_, #established {pid = Pid, rcv_next = Ack, snd_una = Una, buf = Buf} = TcpState}] ->
+			reply(Socket, Una + size(Buf) + 1, Ack, ?FIN bor ?ACK, 65535, <<>>, <<>>),
+			ets:insert(?MODULE, {Socket, #fin_wait1{pid = Pid, rcv_next = Ack, snd_una = Una, buf = Buf}});
+		_ -> ok
+	end,
 	{noreply, State}.
+
+process_ack(Ack, #established{snd_una = Una, buf = Buf} = TcpState) ->
+	AckDist = (Ack - Una) band ?SEQACK_MASK,
+	if
+		AckDist >= ?MAX_ACK -> TcpState; % old ACK
+		AckDist =< size(Buf) -> TcpState#established{snd_una = Ack, buf = binary:part(Buf, AckDist, size(Buf) - AckDist)};
+		true ->
+			io:format("Ack past end of sendbuffer? snd_una = ~B, ack = ~b, buf size = ~b~n",
+			          [Una, Ack, size(Buf)]),
+			TcpState
+	end.
+
+reply(Socket, Seq, Ack, Flags, Window, Options, Payload) when size(Payload) > 576 - 40 - size(Options) ->
+	{Part1, Rest} = split_binary(Payload, 576 - 40 - size(Options)),
+	reply(Socket, Seq, Ack, Flags, Window, Options, Part1),
+	reply(Socket, Seq + size(Part1), Ack, Flags, Window, Options, Rest);
 
 reply({Source, Dest, SourcePort, DestPort}, Seq, Ack, Flags, Window, Options, Payload) when size(Options) band 3 == 0 ->
 	Data = (size(Options) div 4) + 5,
@@ -122,3 +191,28 @@ reply({Source, Dest, SourcePort, DestPort}, Seq, Ack, Flags, Window, Options, Pa
 		Data:4, 0:3, Flags:9, Window:16,
 		Checksum:16, 0:16, Options/binary, Payload/binary>>,
 	ip:send(Dest, Source, ?TCP_PROTO, Packet).
+
+controlling_process(Socket, Pid) ->
+	case gen_server:call(?MODULE, {controlling_process, Socket, Pid}) of
+		ok -> redirect(Socket, Pid);
+		Other -> Other
+	end.
+
+redirect(Socket, Pid) ->
+	Msg = receive
+		{tcp_open, Socket, _Payload} = M -> M;
+		{tcp, Socket, _Payload} = M -> M;
+		{tcp_closed, Socket} = M -> M
+	after 0 -> none
+	end,
+	case Msg of
+		none -> ok;
+		_ ->
+			Pid ! Msg,
+			redirect(Socket, Pid)
+	end.
+
+send(Socket, Data) ->
+	gen_server:cast(?MODULE, {out, Socket, Data}).
+close(Socket) ->
+	gen_server:cast(?MODULE, {close, Socket}).

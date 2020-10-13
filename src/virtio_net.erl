@@ -30,7 +30,8 @@
 -define (VIRTQ_AVAIL_USED_PADDING, 2). % will always need to pad 2 bytes for alignment
 -define (VIRTQ_USED_SIZE, 8).
 -define (VIRTQ_USED_RING_LEN, (6 + (?VIRTQ_USED_SIZE * ?VIRTQ_LEN))).
--define (VIRTQ_BUFFER_SIZE, (1514 + 12)). % 1514 max packet + 12 byte header
+-define (VIRTQ_MAX_PACKET, 1514). % 6 byte dest mac, 6 byte source mac, 2 byte protocol, 1500 payload
+-define (VIRTQ_BUFFER_SIZE, (?VIRTQ_MAX_PACKET + 12)). % max packet + 12 byte header
 -define (VIRTQ_BUFFER_LEN, (?VIRTQ_BUFFER_SIZE * ?VIRTQ_LEN)).
 
 -define (VIRTQ_AVAIL_START, ?VIRTQ_DESC_TABLE_LEN).
@@ -263,14 +264,17 @@ write_avail_idx(#virtq{map = Map, avail_idx = Idx, notify = {NotifyMap, Offset, 
 add_to_queue(Queue = #virtq{used = []}, Packet) ->
 	io:format("virtq full, dropping ~w~n", [Packet]),
 	Queue;
-add_to_queue(Queue = #virtq{map = Map, used = Used}, Packet) ->
+add_to_queue(Queue = #virtq{map = Map, used = Used}, Packet) when size(Packet) =< ?VIRTQ_MAX_PACKET ->
 	{Descriptor, NewUsed} = get_descriptor(Used),
 	io:format("got ~p~n", [{Descriptor, NewUsed}]),
 	crazierl:bcopy_to(Map, ?VIRTQ_BUFFER_START + Descriptor * ?VIRTQ_BUFFER_SIZE,
 		<<0, 0, 0:16, 0:16, 0:16, 0:16, 0:16, Packet/binary>>),
 	crazierl:bcopy_to(Map, Descriptor * ?VIRTQ_DESC_SIZE + 8,
 		<<(size(Packet) + 12):32/little>>),
-	offer_desc(Queue#virtq{used = NewUsed}, Descriptor).
+	offer_desc(Queue#virtq{used = NewUsed}, Descriptor);
+add_to_queue(Queue, Packet) ->
+	io:format("packet too big (~B > ~B), dropping ~w~n", [size(Packet), ?VIRTQ_MAX_PACKET, Packet]),
+	Queue.
 
 get_descriptor([{A, B} | T]) when B == A + 1 -> {A, [B | T]};
 get_descriptor([{A, B} | T]) -> {A, [{A + 1, B} | T]};
