@@ -29,6 +29,7 @@
 
 -record (established, {pid, snd_una, rcv_next, buf}).
 -record (fin_wait1, {pid, snd_una, rcv_next, buf}).
+-record (fin_wait2, {pid, snd_una, rcv_next}).
 
 start() ->
 	case gen_server:start({local, ?MODULE}, ?MODULE, [], []) of
@@ -73,9 +74,9 @@ format_packet(Source, Dest, TTL, <<SourcePort:16, DestPort:16, Seq:32, Ack:32,
 	end,
 	FlagField = format_flags(<<Flags:9>>, <<"NWEU.PRSF">>, []),
 	io:format("tcp ~w:~B -> ~w:~B: Flags [~s], seq ~B, ack ~B, win ~B, urg ~B, ttl ~B, "
-	          "checksum ~.16B (~p), options (~w) ~w, payload ~w~n",
+	          "checksum ~.16B (~p), options (~w) ~w, length ~B~n",
 		[?int32(Source), SourcePort, ?int32(Dest), DestPort, FlagField, Seq, Ack, Window, UrgPtr,
-		TTL, CheckSum, ChecksumStatus, Options, Data * 4 - 20, Payload]).
+		TTL, CheckSum, ChecksumStatus, Options, Data * 4 - 20, size(Payload)]).
 
 format_flags(<<1:1, Flags/bitstring>>, <<C, Chars/binary>>, Acc) ->
 	format_flags(Flags, Chars, [C|Acc]);
@@ -111,6 +112,16 @@ handle_cast({in, {Source, Dest, SourcePort, DestPort, Seq, Ack, Flags, Window, U
 					N
 			end,
 			ets:insert(?MODULE, {Key, process_ack(Ack, TcpState#established{rcv_next = Next})});
+		[{_, #fin_wait1{pid = Pid, rcv_next = Seq, snd_una = Una, buf = Buf} = TcpState}] ->
+			Next = case Payload of
+				<<>> -> Seq;
+				_ ->
+					Pid ! {tcp, Key, Payload},
+					N = (Seq + size(Payload)) band ?SEQACK_MASK,
+					reply(Key, Una + size(Buf) + 1, N, ?ACK, 65535, <<>>, <<>>),
+					N
+			end,
+			ets:insert(?MODULE, {Key, process_ack(Ack, TcpState#fin_wait1{rcv_next = Next})});
 		[{_, syn_received, Seq, Ack}] ->
 			case ets:lookup(?MODULE, DestPort) of
 				[{_, listen, Pid}] ->
@@ -145,6 +156,21 @@ handle_cast({in, {Source, Dest, SourcePort, DestPort, Seq, 0 = Ack, ?SYN, Window
 	end,
 	{noreply, State};
 
+handle_cast({in, {Source, Dest, SourcePort, DestPort, Seq, Ack, ?RST bor ?ACK, Window, UrgPtr, Options, Payload}}, State) ->
+	Key = {Source, Dest, SourcePort, DestPort},
+	case ets:lookup(?MODULE, Key) of
+		[{_, #fin_wait1{pid = Pid, rcv_next = Seq} = TcpState}] ->
+			Pid ! {tcp_close, Key},
+			ets:delete(?MODULE, Key);
+		[{_, #fin_wait2{pid = Pid, rcv_next = Seq} = TcpState}] ->
+			Pid ! {tcp_close, Key},
+			ets:delete(?MODULE, Key);
+		[{_, #established{pid = Pid, rcv_next = Seq} = TcpState}] ->
+			Pid ! {tcp_close, Key},
+			ets:delete(?MODULE, Key)
+	end,
+	{noreply, State};
+
 handle_cast({out, Socket, Payload}, State) ->
 	case ets:lookup(?MODULE, Socket) of
 		[{_, #established {rcv_next = Ack, snd_una = Una, buf = Buf} = TcpState}] ->
@@ -156,7 +182,7 @@ handle_cast({out, Socket, Payload}, State) ->
 handle_cast({close, Socket}, State) ->
 	case ets:lookup(?MODULE, Socket) of
 		[{_, #established {pid = Pid, rcv_next = Ack, snd_una = Una, buf = Buf} = TcpState}] ->
-			reply(Socket, Una + size(Buf) + 1, Ack, ?FIN bor ?ACK, 65535, <<>>, <<>>),
+			reply(Socket, Una + size(Buf), Ack, ?FIN bor ?ACK, 65535, <<>>, <<>>),
 			ets:insert(?MODULE, {Socket, #fin_wait1{pid = Pid, rcv_next = Ack, snd_una = Una, buf = Buf}});
 		_ -> ok
 	end,
@@ -167,6 +193,18 @@ process_ack(Ack, #established{snd_una = Una, buf = Buf} = TcpState) ->
 	if
 		AckDist >= ?MAX_ACK -> TcpState; % old ACK
 		AckDist =< size(Buf) -> TcpState#established{snd_una = Ack, buf = binary:part(Buf, AckDist, size(Buf) - AckDist)};
+		true ->
+			io:format("Ack past end of sendbuffer? snd_una = ~B, ack = ~b, buf size = ~b~n",
+			          [Una, Ack, size(Buf)]),
+			TcpState
+	end;
+
+process_ack(Ack, #fin_wait1{snd_una = Una, buf = Buf, pid = Pid, rcv_next = Next} = TcpState) ->
+	AckDist = (Ack - Una) band ?SEQACK_MASK,
+	if
+		AckDist >= ?MAX_ACK -> TcpState; % old ACK
+		AckDist == size(Buf) + 1 -> #fin_wait2{pid = Pid, snd_una = Ack, rcv_next = Next};
+		AckDist =< size(Buf) -> TcpState#fin_wait1{snd_una = Ack, buf = binary:part(Buf, AckDist, size(Buf) - AckDist)};
 		true ->
 			io:format("Ack past end of sendbuffer? snd_una = ~B, ack = ~b, buf size = ~b~n",
 			          [Una, Ack, size(Buf)]),
@@ -194,8 +232,10 @@ reply({Source, Dest, SourcePort, DestPort}, Seq, Ack, Flags, Window, Options, Pa
 
 controlling_process(Socket, Pid) ->
 	case gen_server:call(?MODULE, {controlling_process, Socket, Pid}) of
-		ok -> redirect(Socket, Pid);
-		Other -> Other
+		true -> redirect(Socket, Pid);
+		Other ->
+			io:format("tcp:controlling_process got ~w~n", [Other]),
+			Other
 	end.
 
 redirect(Socket, Pid) ->
