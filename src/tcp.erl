@@ -151,7 +151,7 @@ handle_cast({in, {Source, Dest, SourcePort, DestPort, Seq, 0 = Ack, ?SYN, Window
 					ets:insert(?MODULE, {Key, syn_received, Seq +1, MyISS}),
 					reply(Key, MyISS - 1, Seq + 1, ?SYN bor ?ACK, 65535, <<>>, <<>>);
 				[] ->
-					reply(Key, 0, Seq + 1, ?RST bor ?ACK, 0, <<>>, <<>>)
+					reply(Key, 0, Seq + 1, ?RST, 0, <<>>, <<>>)
 			end
 	end,
 	{noreply, State};
@@ -178,10 +178,16 @@ handle_cast({in, {Source, Dest, SourcePort, DestPort, Seq, Ack, ?FIN bor ?ACK, W
 			reply(Key, Una, Seq + 1, ?ACK, 0, <<>>, <<>>),
 			Pid ! {tcp_close, Key},
 			ets:delete(?MODULE, Key); % should time_wait
+		[{_, #fin_wait1{pid = Pid, snd_una = Una, rcv_next = Seq} = TcpState}] ->
+			reply(Key, Una, Seq + 1, ?ACK, 0, <<>>, <<>>),
+			Pid ! {tcp_close, Key},
+			ets:delete(?MODULE, Key); % should time_wait
 		[{_, #fin_wait2{pid = Pid, snd_una = Una, rcv_next = Seq} = TcpState}] ->
 			reply(Key, Una, Seq + 1, ?ACK, 0, <<>>, <<>>),
 			Pid ! {tcp_close, Key},
-			ets:delete(?MODULE, Key) % should time_wait
+			ets:delete(?MODULE, Key); % should time_wait
+		[] ->
+			reply(Key, 0, Seq + 1, ?RST bor ?ACK, 0, <<>>, <<>>)
 	end,
 	{noreply, State};
 
