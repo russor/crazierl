@@ -108,7 +108,7 @@ loop(Device, MacAddr, RxQ, TxQ) ->
 	TxQ1 = receive
 		{'$gen_call', From, {send, {DestMac, EtherType}, Payload}} ->
 			Packet = <<DestMac:48, MacAddr:48, EtherType:16, Payload/binary>>,
-			io:format("sending ... ~w~n", [Packet]),
+			%io:format("sending ... ~w~n", [Packet]),
 			gen:reply(From, ok),
 			add_to_queue(TxQ, Packet)
 	after 1000 ->
@@ -266,7 +266,7 @@ add_to_queue(Queue = #virtq{used = []}, Packet) ->
 	Queue;
 add_to_queue(Queue = #virtq{map = Map, used = Used}, Packet) when size(Packet) =< ?VIRTQ_MAX_PACKET ->
 	{Descriptor, NewUsed} = get_descriptor(Used),
-	io:format("got ~p~n", [{Descriptor, NewUsed}]),
+	%io:format("got ~p~n", [{Descriptor, NewUsed}]),
 	crazierl:bcopy_to(Map, ?VIRTQ_BUFFER_START + Descriptor * ?VIRTQ_BUFFER_SIZE,
 		<<0, 0, 0:16, 0:16, 0:16, 0:16, 0:16, Packet/binary>>),
 	crazierl:bcopy_to(Map, Descriptor * ?VIRTQ_DESC_SIZE + 8,
@@ -280,7 +280,9 @@ get_descriptor([{A, B} | T]) when B == A + 1 -> {A, [B | T]};
 get_descriptor([{A, B} | T]) -> {A, [{A + 1, B} | T]};
 get_descriptor([H | T]) -> {H, T}.
 add_to_used([B|T], H) when B == H + 1 -> [{H, B} | T];
+add_to_used([B|T], H) when B == H - 1 -> [{B, H} | T];
 add_to_used([{A, B}|T], H) when A == H + 1 -> [{H, B} | T];
+add_to_used([{A, B}|T], H) when B == H - 1 -> [{A, H} | T];
 add_to_used(T, H) -> [H | T].
 
 check_queue(Queue = #virtq{map = Map, used_idx = Idx}, Type) ->
@@ -292,9 +294,9 @@ check_queue(Queue = #virtq{map = Map, used_idx = Idx}, Type) ->
 
 process_packet(Queue = #virtq{used_idx = Idx}, _, Idx) -> Queue;
 process_packet(Queue = #virtq{map = Map, used_idx = Idx}, read, NewIndex) ->
-	io:format("reading used ring item (read) ~B~n", [Idx]),
+	%io:format("reading used ring item (read) ~B~n", [Idx]),
 	<<Id:32/little, Len:32/little>> = crazierl:bcopy_from(Map, ?VIRTQ_USED_START + 4 + (8 * (Idx band (?VIRTQ_LEN -1 ))), 8),
-	io:format("descriptor ~B, length ~B~n", [Id, Len]),
+	%io:format("descriptor ~B, length ~B~n", [Id, Len]),
 	<<_Flags:8, _GsoType:8, _HdrLen:16/little, _GsoSize:16/little,
 	  _CsumStart:16/little, _CSumOffset:16/little, _NumBuffers:16/little,
 	  Data/binary>> = crazierl:bcopy_from(Map, ?VIRTQ_BUFFER_START + Id * ?VIRTQ_BUFFER_SIZE, Len),
@@ -312,8 +314,8 @@ process_packet(Queue = #virtq{map = Map, used_idx = Idx}, read, NewIndex) ->
 	process_packet(Offered#virtq{used_idx = (Idx + 1) band ((1 bsl 16) - 1)}, read, NewIndex);
 
 process_packet(Queue = #virtq{map = Map, used = Used, used_idx = Idx}, write, NewIndex) ->
-	io:format("reading used ring item (write) ~B~n", [Idx]),
+	%io:format("reading used ring item (write) ~B~n", [Idx]),
 	<<Id:32/little, Len:32/little>> = crazierl:bcopy_from(Map, ?VIRTQ_USED_START + 4 + (8 * (Idx band (?VIRTQ_LEN -1 ))), 8),
-	io:format("descriptor ~B, length ~B~n", [Id, Len]),
+	%io:format("descriptor ~B, length ~B~n", [Id, Len]),
 	NewUsed = add_to_used(Used, Id),
 	process_packet(Queue#virtq{used = NewUsed, used_idx = (Idx + 1) band ((1 bsl 16) - 1)}, write, NewIndex).
