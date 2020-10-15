@@ -4,7 +4,7 @@
 -behavior(gen_server).
 
 -export ([init/1, handle_cast/2, handle_call/3]).
--export ([process/2, register/3]).
+-export ([process/2, register/5]).
 -export ([send/3]).
 
 % int32/u32 borrowed from dist_util.erl/inet_int.hrl
@@ -70,23 +70,30 @@ process(Interface, <<HType:16, PType:16, HLen:8, PLen:8, Oper:16,
 			io:format("unexpected arp types, ~w on ~w ~n", [Packet, Interface])
 	end.
 
-handle_call({register, Pid, {A, B, C, D}, Mac}, _From, State) ->
+handle_call({register, Pid, {A, B, C, D}, Mask, {E, F, G, H}, Mac}, _From, State) ->
 	Ref = monitor(process, Pid),
 	IP = ?u32(A, B, C, D),
-	ets:insert(?MODULE, {IP, #{mac => Mac, public => true, pid => Pid}}),
+	RouterIP = ?u32(E, F, G, H),
+	RealMask = (1 bsl (32 - Mask)) - 1,
+	ets:insert(?MODULE, {IP, #{mac => Mac, public => true, pid => Pid, mask => RealMask, router => RouterIP}}),
 	{reply, ok, State#{Ref => IP}}.
 
-register(Pid, IP, Mac) ->
-	gen_server:call(start(), {register, Pid, IP, Mac}).
+register(Pid, IP, Mask, Router, Mac) ->
+	gen_server:call(start(), {register, Pid, IP, Mask, Router, Mac}).
 
 send(Source, Dest, Packet) ->
 	case ets:lookup(?MODULE, Source) of
-		[{_, #{mac := SourceMac, pid := Interface}}] ->
-			case ets:lookup(?MODULE, Dest) of
+		[{_, #{mac := SourceMac, pid := Interface, mask := Mask, router := Router}}] ->
+			EtherDest = if
+				Source band Mask == Dest band Mask -> Dest;
+				true -> Router
+			end,
+
+			case ets:lookup(?MODULE, EtherDest) of
 				[{_, #{mac := DestMac}}] ->
 					gen_server:call(Interface, {send, {DestMac, 16#0800}, Packet});
 				[] ->
-					gen_server:cast(?MODULE, {send, Interface, Source, SourceMac, Dest, Packet})
+					gen_server:cast(?MODULE, {send, Interface, Source, SourceMac, EtherDest, Packet})
 			end;
 		_ -> io:format("can't send packet from ~p to ~p, no source mac on file~n", [?int32(Source), ?int32(Dest)])
 	end.
