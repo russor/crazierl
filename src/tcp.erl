@@ -159,15 +159,29 @@ handle_cast({in, {Source, Dest, SourcePort, DestPort, Seq, 0 = Ack, ?SYN, Window
 handle_cast({in, {Source, Dest, SourcePort, DestPort, Seq, Ack, ?RST bor ?ACK, Window, UrgPtr, Options, Payload}}, State) ->
 	Key = {Source, Dest, SourcePort, DestPort},
 	case ets:lookup(?MODULE, Key) of
+		[{_, #established{pid = Pid, rcv_next = Seq} = TcpState}] ->
+			Pid ! {tcp_close, Key},
+			ets:delete(?MODULE, Key);
 		[{_, #fin_wait1{pid = Pid, rcv_next = Seq} = TcpState}] ->
 			Pid ! {tcp_close, Key},
 			ets:delete(?MODULE, Key);
 		[{_, #fin_wait2{pid = Pid, rcv_next = Seq} = TcpState}] ->
 			Pid ! {tcp_close, Key},
-			ets:delete(?MODULE, Key);
-		[{_, #established{pid = Pid, rcv_next = Seq} = TcpState}] ->
-			Pid ! {tcp_close, Key},
 			ets:delete(?MODULE, Key)
+	end,
+	{noreply, State};
+
+handle_cast({in, {Source, Dest, SourcePort, DestPort, Seq, Ack, ?FIN bor ?ACK, Window, UrgPtr, Options, Payload}}, State) ->
+	Key = {Source, Dest, SourcePort, DestPort},
+	case ets:lookup(?MODULE, Key) of
+		[{_, #established{pid = Pid, snd_una = Una, rcv_next = Seq} = TcpState}] ->
+			reply(Key, Una, Seq + 1, ?ACK, 0, <<>>, <<>>),
+			Pid ! {tcp_close, Key},
+			ets:delete(?MODULE, Key); % should time_wait
+		[{_, #fin_wait2{pid = Pid, snd_una = Una, rcv_next = Seq} = TcpState}] ->
+			reply(Key, Una, Seq + 1, ?ACK, 0, <<>>, <<>>),
+			Pid ! {tcp_close, Key},
+			ets:delete(?MODULE, Key) % should time_wait
 	end,
 	{noreply, State};
 
