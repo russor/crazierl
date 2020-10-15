@@ -46,10 +46,26 @@ header_loop(Socket, Request, Headers, Bin) ->
 	end.
 
 output(Socket, {Method, Uri, Version}, Headers) ->
-	Response = iolist_to_binary(io_lib:format(
+	Response = iolist_to_binary([io_lib:format(
 		"HTTP/1.0 200 OK\r\nConnection: close\r\nContent-Type: text/plain\r\n\r\n"
 		"Your method: ~s\r\n"
-	        "Your URI: ~w\r\n"
-	        "Your version: ~w\r\n", [Method, Uri, Version])),
+	        "Your URI: ~s\r\n"
+	        "Your version: ~w\r\n", [Method, clean(Uri), Version]),
+	        "\r\n",
+	        lists:map(fun({_, _, K, V}) -> [K, ": ", V, "\r\n"] end, Headers),
+	        io_lib:format("~w", [erlang:memory()]), "\r\n"
+	        ]),
+
 	tcp:send(Socket, Response),
 	tcp:close(Socket).
+
+clean('*') -> '*';
+clean({absoluteURI, Scheme, Host, Port, Path}) ->
+	P = case Port of
+		undefined -> "";
+		_ -> io_lib:format(":~B", [Port])
+	end,
+	io_lib:format("~s://~s~s~s", [Scheme, Host, P, Path]);
+clean({scheme, Scheme, String}) ->
+	io_lib:format("~s:~s", [Scheme, String]);
+clean({abs_path, Path}) -> Path.
