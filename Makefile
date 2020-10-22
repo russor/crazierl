@@ -26,7 +26,7 @@ debugger:
 	gdb -ex "set confirm off" -ex "add-symbol-file obj/mykernel.elf" -ex "add-symbol-file $$(find $(OTPDIR) -name beam.smp)" -ex "target remote localhost:1234"
 
 clean:
-	rm -f obj/initrd obj/mykernel.elf obj/*.o obj/*.beam
+	rm -f obj/initrd obj/mykernel.elf obj/*.o obj/*.beam obj/*.so obj/initrd.tmp
 
 obj/mykernel.elf: obj/start.o obj/kernel.o obj/syscalls.o obj/files.o obj/kern_mmap.o obj/acpi.o \
 		obj/rtld_printf.o obj/bcmp.o obj/bzero.o obj/ffsl.o obj/memcpy.o obj/memmove.o \
@@ -121,45 +121,34 @@ obj/files_userland.o: files.c
 obj/crazierl_nif.so: crazierl_nif.c
 	$(NIF_COMPILER) $< -o $@
 obj/crazierl.beam: crazierl.erl
-	$(OTPDIR)/bin/erlc $<
-	mv crazierl.beam obj/
+	$(OTPDIR)/bin/erlc -o obj/ $<
 
 obj/comport.beam: comport.erl
-	$(OTPDIR)/bin/erlc $<
-	mv comport.beam obj/
+	$(OTPDIR)/bin/erlc -o obj/ $<
 
 obj/console.beam: console.erl
-	$(OTPDIR)/bin/erlc $<
-	mv console.beam obj/
+	$(OTPDIR)/bin/erlc -o obj/ $<
 
 obj/pci.beam: pci.erl pci.hrl
-	$(OTPDIR)/bin/erlc $<
-	mv pci.beam obj/
+	$(OTPDIR)/bin/erlc -o obj/ $<
 
 obj/virtio_net.beam: virtio_net.erl pci.hrl
-	$(OTPDIR)/bin/erlc $<
-	mv virtio_net.beam obj/
+	$(OTPDIR)/bin/erlc -o obj/ $<
 
 obj/arp.beam: arp.erl
-	$(OTPDIR)/bin/erlc $<
-	mv arp.beam obj/
+	$(OTPDIR)/bin/erlc -o obj/ $<
 
 obj/ip.beam: ip.erl
-	$(OTPDIR)/bin/erlc $<
-	mv ip.beam obj/
+	$(OTPDIR)/bin/erlc -o obj/ $<
 
 obj/tcp.beam: tcp.erl
-	$(OTPDIR)/bin/erlc $<
-	mv tcp.beam obj/
+	$(OTPDIR)/bin/erlc -o obj/ $<
 
 obj/example_host.beam: example_host.erl
-	$(OTPDIR)/bin/erlc $<
-	mv example_host.beam obj/
+	$(OTPDIR)/bin/erlc -o obj/ $<
 
 obj/vgakb.beam: vgakb.erl
-	$(OTPDIR)/bin/erlc $<
-	mv vgakb.beam obj/
+	$(OTPDIR)/bin/erlc -o obj/ $<
 
 obj/acpi.beam: acpi.erl
-	$(OTPDIR)/bin/erlc $<
-	mv acpi.beam obj/
+	$(OTPDIR)/bin/erlc -o obj/ $<
