@@ -3,6 +3,7 @@ DEPDIR := $(OBJDIR)/.deps
 DEPFLAGS = -MT $@ -MMD -MP
 
 ERLANG_SRCS = $(wildcard *.erl)
+ERLANG_OBJS = $(ERLANG_SRCS:%.erl=$(OBJDIR)/%.beam)
 KERNEL_SRCS = kernel.c files.c kern_mmap.c acpi.c strtol.c
 KERNEL_OBJS = $(KERNEL_SRCS:%.c=$(OBJDIR)/%.o)
 
@@ -23,6 +24,8 @@ FBSD_KERNEL_OBJS = $(FBSD_KERNEL_SRCS:%.c=$(OBJDIR)/%.o)
 USER_SRCS = userland.c files.c
 USER_OBJS = $(USER_SRCS:%.c=$(OBJDIR)/user.%.o)
 
+TCPIP_SRCS = $(filter-out %eth_port.erl,$(wildcard ../erlang-tcpip/src/*.erl))
+TCPIP_OBJS = $(TCPIP_SRCS:../erlang-tcpip/src/%.erl=$(OBJDIR)/%.beam)
 
 ifeq ($(wildcard /libexec/ld-elf32.so.1),)
 	RTLD=/libexec/ld-elf.so.1
@@ -64,7 +67,7 @@ obj/start.o: start.s | $(DEPDIR)
 debugnative:
 	BINDIR=`pwd`/../otp_src_R12B-5/bin/ gdb $(RTLD) -ex 'break _start' -ex 'run -- -root `pwd`/../otp_src_R12B-5 -progname erl -- -home /home/toast'
 
-obj/initrd: hardcode_files.pl preload_local_files $(shell cat preload_local_files) Makefile
+obj/initrd: hardcode_files.pl preload_local_files $(filter-out OTPDIR%,$(shell cat preload_local_files)) Makefile
 	./hardcode_files.pl $(RTLD) $(OTPDIR) > obj/initrd.tmp
 	mv obj/initrd.tmp obj/initrd
 
@@ -74,7 +77,13 @@ obj/libuserland.so: $(USER_OBJS)
 obj/crazierl_nif.so: crazierl_nif.c
 	$(NIF_COMPILER) $< -o $@
 
-$(OBJDIR)/%.beam : %.erl $(DEPDIR)/%.d | $(DEPDIR)
+obj/checksum.so: ../erlang-tcpip/c_src/checksum.c
+	$(NIF_COMPILER) $< -o $@
+
+$(ERLANG_OBJS): $(OBJDIR)/%.beam : %.erl $(DEPDIR)/%.d | $(DEPDIR)
+	$(OTPDIR)/bin/erlc -o $(OBJDIR)/ -MMD -MF $(DEPDIR)/$*.d $<
+
+$(TCPIP_OBJS): $(OBJDIR)/%.beam : ../erlang-tcpip/src/%.erl $(DEPDIR)/%.d | $(DEPDIR)
 	$(OTPDIR)/bin/erlc -o $(OBJDIR)/ -MMD -MF $(DEPDIR)/$*.d $<
 
 $(KERNEL_OBJS): $(OBJDIR)/%.o: %.c $(DEPDIR)/%.c.d | $(DEPDIR)
@@ -85,11 +94,11 @@ $(FBSD_KERNEL_OBJS): $(OBJDIR)/%.o: $(DEPDIR)/%.c.d | $(DEPDIR)
 	$(KERNEL_COMPILER) $(DEPFLAGS) -MF $(DEPDIR)/$*.c.d.T $(subst __,/,/usr/src/$*.c) -o $@
 	mv -f $(DEPDIR)/$*.c.d.T $(DEPDIR)/$*.c.d && touch $@
 
-$(USER_OBJS) : obj/user.%.o: %.c $(DEPDIR)/user.%.c.d | $(DEPDIR)
+$(USER_OBJS) : $(OBJDIR)/user.%.o: %.c $(DEPDIR)/user.%.c.d | $(DEPDIR)
 	$(USER_COMPILER) $(DEPFLAGS)  -MF $(DEPDIR)/user.$*.c.d.T $< -o $@
 	mv -f $(DEPDIR)/user.$*.c.d.T $(DEPDIR)/user.$*.c.d && touch $@
 
 $(DEPDIR): ; @mkdir -p $@
-DEPFILES := $(ERLANG_SRCS:%.erl=$(DEPDIR)/%.d) $(KERNEL_SRCS:%.c=$(DEPDIR)/%.c.d) $(FBSD_KERNEL_SRCS:%.c=$(DEPDIR)/%.c.d) $(USER_SRCS:%.c=$(DEPDIR)/user.%.c.d) $(NIF_SRCS:%.c=$(DEPDIR)/nif.%.d)
+DEPFILES := $(ERLANG_OBJS:$(OBJDIR)/%.beam=$(DEPDIR)/%.d) $(TCPIP_OBJS:$(OBJDIR)/%.beam=$(DEPDIR)/%.d) $(KERNEL_SRCS:%.c=$(DEPDIR)/%.c.d) $(FBSD_KERNEL_SRCS:%.c=$(DEPDIR)/%.c.d) $(USER_SRCS:%.c=$(DEPDIR)/user.%.c.d) $(NIF_SRCS:%.c=$(DEPDIR)/nif.%.d)
 $(DEPFILES):
 include $(wildcard $(DEPFILES))

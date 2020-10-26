@@ -98,7 +98,13 @@ foreach my $element (@{$statement->elems()->[2]->elems()}) {
 
 foreach my $f (@LOCAL_FILES) {
 	next unless $f;
-	open my $file, '<', "$f" or die "can't open $f: $!";
+	my $file;
+	if ($f =~ m@^OTPDIR/(.*)$@) {
+		$f = $1;
+		open $file, '<', "$OTP_DIR/$f" or die "can't open $OTP_DIR/$f: $!";
+	} else {
+		open $file, '<', "$f" or die "can't open $f: $!";
+	}
 	$f =~ s@^/@@;
 	{
 		local $/ = undef;

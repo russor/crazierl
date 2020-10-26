@@ -2,6 +2,7 @@ cfg/inetrc
 /usr/share/misc/termcap.db
 obj/libuserland.so
 obj/crazierl_nif.so
+obj/checksum.so
 obj/crazierl.beam
 obj/comport.beam
 obj/console.beam
@@ -14,3 +15,7 @@ obj/ip.beam
 obj/tcp.beam
 obj/example_host.beam
 pci.hrl
+
+obj/checksum.beam
+
+OTPDIR/lib/kernel-7.0/ebin/erl_ddll.beam

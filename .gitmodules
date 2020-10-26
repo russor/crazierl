@@ -1,0 +1,3 @@
+[submodule "erlang-tcpip"]
+	path = erlang-tcpip
+	url = https://github.com/russor/erlang-tcpip
