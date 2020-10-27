@@ -10,11 +10,21 @@
 -define(u32(X3,X2,X1,X0),
 	(((X3) bsl 24) bor ((X2) bsl 16) bor ((X1) bsl 8) bor (X0))).
 
-ip_checksum(<<H:16, T/binary>>, Acc) -> ip_checksum(T, Acc + H);
-ip_checksum(<<H:8>>, Acc) -> ip_checksum(<<>>, Acc + (H bsl 8));
-ip_checksum(<<>>, Acc) when Acc > 16#FFFF ->
-	ip_checksum(<<>>, (Acc bsr 16) + (Acc band 16#FFFF));
-ip_checksum(<<>>, Acc) -> (bnot Acc) band 16#FFFF.
+ip_checksum(Bin, Acc) ->
+	Theirs = checksum:checksum(Bin),
+	Ours = ip_checksum_impl(Bin, Acc),
+	if
+		Theirs == Ours -> Ours;
+		true ->
+			io:format("checksum mismatch theirs ~B, ours ~B~n", [Theirs, Ours]),
+			Ours
+	end.
+
+ip_checksum_impl(<<H:16, T/binary>>, Acc) -> ip_checksum_impl(T, Acc + H);
+ip_checksum_impl(<<H:8>>, Acc) -> ip_checksum_impl(<<>>, Acc + (H bsl 8));
+ip_checksum_impl(<<>>, Acc) when Acc > 16#FFFF ->
+	ip_checksum_impl(<<>>, (Acc bsr 16) + (Acc band 16#FFFF));
+ip_checksum_impl(<<>>, Acc) -> (bnot Acc) band 16#FFFF.
 
 process(_Interface, <<4:4, IHL:4, DSCP:6, ECN:2, TotalLength:16, Id:16,
 		     _Evil:1, DF:1, MF:1, FragmentOffset:13,
