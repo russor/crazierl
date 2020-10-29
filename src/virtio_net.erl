@@ -85,7 +85,7 @@ attach(Device, _Args) ->
 	<<11>> = crazierl:bcopy_from(CommonMap, ?DEVICE_STATUS, 1), % confirm
 	crazierl:bcopy_to(CommonMap, ?DEVICE_STATUS, <<15>>), % features_OK
 	<<15>> = crazierl:bcopy_from(CommonMap, ?DEVICE_STATUS, 1), % confirm
-	arp:register(self(), {10,0,2,15}, 24, {10,0,2,2}, MacAddr),
+	%arp:register(self(), {10,0,2,15}, 24, {10,0,2,2}, MacAddr),
 	RxQ2 = offer_desc(RxQ, {0, ?VIRTQ_LEN - 1}),
 	loop(Device, MacAddr, RxQ2, TxQ).
 
