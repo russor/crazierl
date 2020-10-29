@@ -30,11 +30,10 @@ sub slurp
 	return $data;
 }
 
-my ($RTLD, $OTP_DIR) = @ARGV;
+my ($RTLD, $OTP_DIR, @LOCAL_FILES) = @ARGV;
 
 my %FILES;
 
-my @LOCAL_FILES=`cat preload_local_files`; chomp (@LOCAL_FILES);
 push @LOCAL_FILES, $RTLD;
 
 open my $erl, '<', "$OTP_DIR/bin/erl" or die "can't open erl: $!";

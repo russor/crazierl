@@ -67,8 +67,10 @@ obj/start.o: start.s | $(DEPDIR)
 debugnative:
 	BINDIR=`pwd`/../otp_src_R12B-5/bin/ gdb $(RTLD) -ex 'break _start' -ex 'run -- -root `pwd`/../otp_src_R12B-5 -progname erl -- -home /home/toast'
 
-obj/initrd: hardcode_files.pl preload_local_files $(filter-out OTPDIR%,$(shell cat preload_local_files)) Makefile
-	./hardcode_files.pl $(RTLD) $(OTPDIR) > obj/initrd.tmp
+INITRD_FILES := cfg/inetrc /usr/share/misc/termcap.db obj/libuserland.so obj/crazierl_nif.so obj/checksum.so $(TCPIP_OBJS) $(ERLANG_OBJS)
+
+obj/initrd: hardcode_files.pl $(INITRD_FILES) Makefile
+	./hardcode_files.pl $(RTLD) $(OTPDIR) OTPDIR/lib/kernel-7.0/ebin/erl_ddll.beam $(INITRD_FILES) > obj/initrd.tmp
 	mv obj/initrd.tmp obj/initrd
 
 obj/libuserland.so: $(USER_OBJS)
