@@ -2,43 +2,36 @@
 
 % example tcp listener
 
--export([start/0, init/1]).
--export([handle_info/2]).
+-export([start/0]).
 -export([worker_loop/2]).
--behavior(gen_server).
 
 start() ->
-	tcp:start(),
-	case gen_server:start({local, ?MODULE}, ?MODULE, [], []) of
-		{ok, Pid} -> Pid;
-		{error, {already_started, Pid}} -> Pid;
-		Other -> Other
-	end.
+	spawn(fun init/0).
 
-init([]) ->
-	true = tcp:listen(80, self()),
-	{ok, {}}.
+init() ->
+	Sock = etcpip_socket:listen(80),
+	io:format("Sock ~w~n", [Sock]),
+	accept_loop(Sock).
 
-
-handle_info({tcp_open, Socket, Bin}, State) ->
-	Worker = spawn(example_host, worker_loop, [Socket, Bin]),
-	tcp:controlling_process(Socket, Worker),
-	{noreply, State}.
+accept_loop(ListenSock) ->
+	Socket = etcpip_socket:accept(ListenSock),
+	Worker = spawn(example_host, worker_loop, [Socket, <<>>]),
+	accept_loop(ListenSock).
 
 worker_loop(Socket, Bin) ->
 	case erlang:decode_packet(http_bin, Bin, []) of
-		{more, _} -> receive {tcp, Socket, Data} ->
-				worker_loop(Socket, <<Bin/binary, Data/binary>>)
-			end;
+		{more, _} -> 
+			Data = etcpip_socket:recv(Socket, 4096),
+			worker_loop(Socket, <<Bin/binary, Data/binary>>);
 		{ok, {http_request, Method, Uri, Version}, Rest} ->
 			header_loop(Socket, {Method, Uri, Version}, [], Rest)
 	end.
 
 header_loop(Socket, Request, Headers, Bin) ->
 	case erlang:decode_packet(httph_bin, Bin, []) of
-		{more, _} -> receive {tcp, Socket, Data} ->
-				header_loop(Socket, Request, Headers, <<Bin/binary, Data/binary>>)
-			end;
+		{more, _} -> 
+			Data = etcpip_socket:recv(Socket, 4096),
+			header_loop(Socket, Request, Headers, <<Bin/binary, Data/binary>>);
 		{ok, http_eoh, _Rest} ->
 			output(Socket, Request, lists:reverse(Headers));
 		{ok, {http_header, Int, Field, OrigField, Val}, Rest} ->
@@ -56,8 +49,8 @@ output(Socket, {Method, Uri, Version}, Headers) ->
 	        io_lib:format("~w", [erlang:memory()]), "\r\n"
 	        ]),
 
-	tcp:send(Socket, Response),
-	tcp:close(Socket).
+	etcpip_socket:send(Socket, Response),
+	etcpip_socket:close(Socket).
 
 clean('*') -> '*';
 clean({absoluteURI, Scheme, Host, Port, Path}) ->

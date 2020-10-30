@@ -67,7 +67,7 @@ obj/start.o: start.s | $(DEPDIR)
 debugnative:
 	BINDIR=`pwd`/../otp_src_R12B-5/bin/ gdb $(RTLD) -ex 'break _start' -ex 'run -- -root `pwd`/../otp_src_R12B-5 -progname erl -- -home /home/toast'
 
-INITRD_FILES := cfg/inetrc /usr/share/misc/termcap.db obj/libuserland.so obj/crazierl_nif.so obj/checksum.so $(TCPIP_OBJS) $(ERLANG_OBJS)
+INITRD_FILES := cfg/inetrc obj/etcpip.app /usr/share/misc/termcap.db obj/libuserland.so obj/crazierl_nif.so obj/checksum.so $(TCPIP_OBJS) $(ERLANG_OBJS)
 
 obj/initrd: hardcode_files.pl $(INITRD_FILES) Makefile
 	./hardcode_files.pl $(RTLD) $(OTPDIR) OTPDIR/lib/kernel-7.0/ebin/erl_ddll.beam $(INITRD_FILES) > obj/initrd.tmp
@@ -81,6 +81,9 @@ obj/crazierl_nif.so: crazierl_nif.c
 
 obj/checksum.so: ../erlang-tcpip/c_src/checksum.c
 	$(NIF_COMPILER) $< -o $@
+
+obj/etcpip.app: etcpip.app
+	cp $< $@
 
 $(TCPIP_OBJS): $(OBJDIR)/%.beam : ../erlang-tcpip/src/%.erl $(DEPDIR)/%.d | $(DEPDIR)
 	$(OTPDIR)/bin/erlc -o $(OBJDIR)/ -MMD -MF $(DEPDIR)/$*.d $<

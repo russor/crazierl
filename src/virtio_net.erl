@@ -74,7 +74,7 @@ attach(Device, _Args) ->
 	<<3>> = crazierl:bcopy_from(CommonMap, ?DEVICE_STATUS, 1), % confirm
 	crazierl:bcopy_to(CommonMap, ?DEVICE_STATUS, <<11>>), % features_OK
 	{ok, DeviceMap} = map_structure(device_cfg, Device, Capabilities),
-	<<MacAddr:48>> = crazierl:bcopy_from(DeviceMap, 0, 6),
+	MacAddr = crazierl:bcopy_from(DeviceMap, 0, 6),
 
 	{ok, NotifyMap} = map_structure(notify_cfg, Device, Capabilities),
 
@@ -85,6 +85,19 @@ attach(Device, _Args) ->
 	<<11>> = crazierl:bcopy_from(CommonMap, ?DEVICE_STATUS, 1), % confirm
 	crazierl:bcopy_to(CommonMap, ?DEVICE_STATUS, <<15>>), % features_OK
 	<<15>> = crazierl:bcopy_from(CommonMap, ?DEVICE_STATUS, 1), % confirm
+	application:set_env([
+		{etcpip, [
+			{ip,      {10,0,2,15}},
+			{netmask, {255,255,255,0}},
+			{gateway, {10,0,2,2}},
+			{mac,     MacAddr},
+			{iface,   "vtnet0"},
+			{ip6, [
+				{addr, "fe80::216:3eff:fe00:1234"}
+			]}
+		]}
+	], [{persistent, true}]),
+	
 	%arp:register(self(), {10,0,2,15}, 24, {10,0,2,2}, MacAddr),
 	RxQ2 = offer_desc(RxQ, {0, ?VIRTQ_LEN - 1}),
 	loop(Device, MacAddr, RxQ2, TxQ).
@@ -108,6 +121,11 @@ loop(Device, MacAddr, RxQ, TxQ) ->
 	TxQ1 = receive
 		{'$gen_call', From, {send, {DestMac, EtherType}, Payload}} ->
 			Packet = <<DestMac:48, MacAddr:48, EtherType:16, Payload/binary>>,
+			%io:format("sending ... ~w~n", [Packet]),
+			gen:reply(From, ok),
+			add_to_queue(TxQ, Packet);
+		{'$gen_call', From, {send, Data}} ->
+			Packet = iolist_to_binary(Data),
 			%io:format("sending ... ~w~n", [Packet]),
 			gen:reply(From, ok),
 			add_to_queue(TxQ, Packet)
@@ -303,13 +321,14 @@ process_packet(Queue = #virtq{map = Map, used_idx = Idx}, read, NewIndex) ->
 	%io:format("Flags ~.16B, GSO ~.16B, HDR Len ~B, GSO size ~B, Csum ~B @ ~B, Buffs ~B~n",
 	%	[Flags, GsoType, HdrLen, GsoSize, CsumStart, CSumOffset, NumBuffers]),
 
-	<<DestMac:48, SourceMac:48, EtherType:16, Payload/binary>> = Data,
-	case EtherType of
-		16#0806 -> arp:process(?MODULE, Payload);
-		16#0800 -> ip:process(?MODULE, Payload);
-		_ ->
-			io:format("~12.16.0B > ~12.16.0B, EtherType ~4.16.0B, ~w~n", [SourceMac, DestMac, EtherType, Payload])
-	end,
+	%<<DestMac:48, SourceMac:48, EtherType:16, Payload/binary>> = Data,
+	%case EtherType of
+	%	16#0806 -> arp:process(?MODULE, Payload);
+	%	16#0800 -> ip:process(?MODULE, Payload);
+	%	_ ->
+	%		io:format("~12.16.0B > ~12.16.0B, EtherType ~4.16.0B, ~w~n", [SourceMac, DestMac, EtherType, Payload])
+	%end,
+	eth:recv(Data),
 	Offered = offer_desc(Queue, Id),
 	process_packet(Offered#virtq{used_idx = (Idx + 1) band ((1 bsl 16) - 1)}, read, NewIndex);
 
