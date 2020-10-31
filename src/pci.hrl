@@ -21,3 +21,7 @@
 -record (pci_io_bar, {
 	base, size
 }).
+
+-record (pci_msi_x, {
+	enabled, mask, size, table, pending
+}).

@@ -153,6 +153,12 @@ parse_capability(9, Config, Offset) ->
 	<<Length:8>> = binary:part(Config, {Offset + 2, 1}),
 	Data = binary:part(Config, {Offset + 3, Length - 3}),
 	{vendor_specific, Data};
+parse_capability(16#11, Config, Offset) ->
+	<<MessageControl:16/little, TableOffset:32/little, PendingBit:32/little>> = binary:part(Config, {Offset + 2, 10}),
+	<<Enable:1, FunctionMask:1, _:3, Size:11>> = <<MessageControl:16>>,
+	#pci_msi_x{enabled = Enable, mask = FunctionMask, size = Size + 1,
+		table = {TableOffset band 7, TableOffset band 16#FFFFFFF8},
+		pending = {PendingBit band 7, PendingBit band 16#FFFFFFF8}};
 parse_capability(Type, _Config, Offset) ->
 	{Type, Offset}.
 
