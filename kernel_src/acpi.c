@@ -33,19 +33,19 @@ int acpi_check_table(void * c) {
 
 void * acpi_find_table(void * name, void * rsdt) {
 	ACPI_TABLE_HEADER *t = (ACPI_TABLE_HEADER *)rsdt;
-	if (bcmp(t->Signature, ACPI_SIG_XSDT, ACPI_NAME_SIZE) == 0) {
+	if (bcmp(t->Signature, ACPI_SIG_XSDT, ACPI_NAMESEG_SIZE) == 0) {
 		ACPI_TABLE_XSDT * table = (ACPI_TABLE_XSDT *)rsdt;
 		for (int i = 0; (i * sizeof(table->TableOffsetEntry[0])) + sizeof(table->Header) < table->Header.Length; ++i) {
-			if (bcmp(((ACPI_TABLE_HEADER*)table->TableOffsetEntry[i])->Signature, name, ACPI_NAME_SIZE) == 0) {
+			if (bcmp(((ACPI_TABLE_HEADER*)table->TableOffsetEntry[i])->Signature, name, ACPI_NAMESEG_SIZE) == 0) {
 				return  (void *)table->TableOffsetEntry[i];
 			}
 		}
 		DEBUG_PRINTF("couldn't find %s in XSDT\n", name);
 		return NULL;
-	} else if (bcmp(t->Signature, ACPI_SIG_RSDT, ACPI_NAME_SIZE) == 0) {
+	} else if (bcmp(t->Signature, ACPI_SIG_RSDT, ACPI_NAMESEG_SIZE) == 0) {
 		ACPI_TABLE_RSDT * table = (ACPI_TABLE_RSDT *)rsdt;
 		for (int i = 0; (i * sizeof(table->TableOffsetEntry[0])) + sizeof(table->Header) < table->Header.Length; ++i) {
-			if (bcmp(((ACPI_TABLE_HEADER*)table->TableOffsetEntry[i])->Signature, name, ACPI_NAME_SIZE) == 0) {
+			if (bcmp(((ACPI_TABLE_HEADER*)table->TableOffsetEntry[i])->Signature, name, ACPI_NAMESEG_SIZE) == 0) {
 				return  (void *)table->TableOffsetEntry[i];
 			}
 		}
