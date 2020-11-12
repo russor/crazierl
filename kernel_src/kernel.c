@@ -2036,6 +2036,12 @@ void load_file(void *start, char *name, size_t size)
 	}
 
 	ERROR_PRINTF("load offsets %08x - %08x; virt %08x - %08x\n", first_addr, last_addr, first_virtual, last_virtual);
+	ERROR_PRINTF("file space %08x; virt space %08x\n", last_addr - first_addr, last_virtual - first_virtual);
+	if (last_addr > size) {
+		halt("load beyond file, halting", 1);
+	}
+	uintptr_t virtual_space = last_virtual - first_virtual;
+	uintptr_t space = max (last_addr - first_addr, last_virtual - first_virtual);
 	load_addr = 0;
 /*	if (0) { // kern_mmap_could_map(first_virtual, last_virtual)) {
 
@@ -2044,10 +2050,10 @@ void load_file(void *start, char *name, size_t size)
 		DEBUG_PRINTF("using existing file memory to load\n");
 		load_addr = (uintptr_t) start;
 	} else { */
-		if (!kern_mmap(&load_addr, 0, last_addr - first_addr, PROT_KERNEL | PROT_READ | PROT_WRITE, 0)){
+		if (!kern_mmap(&load_addr, 0, space, PROT_KERNEL | PROT_READ | PROT_WRITE, 0)){
 			ERROR_PRINTF("couldn't map to load initial executable\n");
 		}
-		explicit_bzero((void *) load_addr, last_addr - first_addr);
+		explicit_bzero((void *) load_addr, space);
 //	}
 	if (load_addr != first_virtual) {
 		entrypoint = entrypoint - first_virtual + load_addr;
@@ -2057,20 +2063,21 @@ void load_file(void *start, char *name, size_t size)
 	ERROR_PRINTF("add-symbol-file %s -o 0x%08x\n", name, load_addr);
 
 	phead = phead_start;
-	size_t lastoffset = 0;
+	size_t last_vaddr = 0;
 	for (int i = 0; i < head->e_phnum; ++i) {
 		if (phead->p_type == PT_LOAD) {
 			DEBUG_PRINTF( "  %d: PT_LOAD offset %08x, virt %08x, filesize 0x%08x, memsize 0x%08x\n",
-				i, phead->p_type, phead->p_offset, phead->p_vaddr,
+				i, phead->p_offset, phead->p_vaddr,
 				phead->p_filesz, phead->p_memsz);
-			if (phead->p_offset < lastoffset) {
-				ERROR_PRINTF("elf header %d has p_offset > last_offset; halting\n", i);
+			DEBUG_PRINTF( "      load address %08x - %08x\n", phead->p_vaddr + (load_addr - first_virtual), phead->p_memsz + phead->p_vaddr + (load_addr - first_virtual));
+			if (phead->p_vaddr < last_vaddr) {
+				ERROR_PRINTF("elf header %d has p_vaddr < last_vaddr; halting\n", i);
 				halt(NULL, 1);
 			}
-			if (phead->p_offset > lastoffset) {
-				size_t count = phead->p_offset - lastoffset;
-				ERROR_PRINTF("zeroing %d bytes from %08x to %08x\n", count, load_addr + lastoffset, load_addr + lastoffset + count);
-				explicit_bzero((uint8_t *)(load_addr + lastoffset), count);
+			if (phead->p_vaddr > last_vaddr) {
+				size_t count = phead->p_vaddr - last_vaddr;
+				ERROR_PRINTF("zeroing %d bytes from %08x to %08x\n", count, load_addr + last_vaddr, load_addr + last_vaddr + count);
+				explicit_bzero((uint8_t *)(load_addr + last_vaddr), count);
 			}
 
 			if (phead->p_filesz > phead->p_memsz) {
@@ -2083,20 +2090,24 @@ void load_file(void *start, char *name, size_t size)
 				ERROR_PRINTF("copying %d bytes from %08x to %08x\n", phead->p_filesz, src, dst);
 				memcpy(dst, src, phead->p_filesz);
 			}
-			lastoffset = phead->p_offset + phead->p_filesz;
+			last_vaddr = phead->p_vaddr + phead->p_filesz;
 			uint32_t scratch;
-			if (!kern_mmap(&scratch, (void *)(load_addr + phead->p_vaddr), phead->p_memsz, PROT_READ|PROT_WRITE|PROT_FORCE, 0)) {
+			// TODO match permissions to load flags
+			if (!kern_mmap(&scratch, (void *)(load_addr + phead->p_vaddr), phead->p_memsz + ((load_addr + phead->p_vaddr) & (PAGE_SIZE -1)), PROT_READ|PROT_WRITE|PROT_FORCE, 0)) {
 				ERROR_PRINTF("couldn't map ELF load section %08x\n", load_addr + phead->p_vaddr);
 			}
 		}
 		++phead;
 	}
-	size_t count = size - lastoffset;
-	if (count) {
-		ERROR_PRINTF("zeroing final %d bytes from %08x to %08x\n", count, lastoffset + start, start + size);
-		explicit_bzero((uint8_t*) (start + lastoffset), count);
+	if (virtual_space & (PAGE_SIZE - 1)) {
+		virtual_space = (virtual_space & ~(PAGE_SIZE - 1)) + PAGE_SIZE;
 	}
-	kern_munmap(PROT_KERNEL, load_addr, last_virtual - first_virtual);
+	size_t count = virtual_space - last_vaddr;
+	if (count) {
+		ERROR_PRINTF("zeroing final %d bytes from %08x to %08x\n", count, load_addr + last_vaddr, load_addr + last_vaddr + count);
+		explicit_bzero((uint8_t*) (load_addr + last_vaddr), count);
+	}
+	kern_munmap(PROT_KERNEL, load_addr, virtual_space);
 }
 
 void enable_sse() {
@@ -2249,16 +2260,16 @@ void setup_entrypoint()
 	if (!kern_mmap(&user_stack, NULL, USER_STACK_SIZE, PROT_WRITE | PROT_READ, MAP_STACK | MAP_ANON)) {
 		halt("couldn't get map for user stack\n", 0);
 	}
-	ERROR_PRINTF("%p\n", user_stack);
+	//ERROR_PRINTF("%p\n", user_stack);
 	user_stack += USER_STACK_SIZE; // we actually want to keep track of the top of the stack
 
 	void* new_top = (void*) user_stack;
 
 	// list of page sizes
-	new_top -= sizeof(int);
-	*(int *)new_top = 0;
-	new_top -= sizeof(int);
-	*(int *)new_top = 0x1000;
+	new_top -= sizeof(size_t);
+	*(size_t *)new_top = 0;
+	new_top -= sizeof(size_t);
+	*(size_t *)new_top = 0x1000;
 	void * page_sizes = new_top;
 
 	// set up environment
