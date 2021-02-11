@@ -13,19 +13,19 @@ SECTIONS
  
 	/* First put the multiboot header, as it's required to be near the start of the executable otherwise the bootloader won't find it */
 	/* The Multiboot header is Read-Only data, so we can put it in a '.rodata' section. */
-	.rodata BLOCK(4K) : ALIGN(4K)
+	.rodata ALIGN(4K) : ALIGN(4K)
 	{
 		*(.multiboot)
 	}
  
 	/* Read-only data. */
-	.rodata BLOCK(4K) : ALIGN(4K)
+	.rodata ALIGN(4K) : ALIGN(4K)
 	{
 		*(.rodata)
 	}
 
 	/* Executable code */
-	.text BLOCK(4K) : ALIGN(4K)
+	.text ALIGN(4K) : ALIGN(4K)
 	{
 		*(.text)
 	}
@@ -36,16 +36,20 @@ SECTIONS
 	PROVIDE (__data_start = .);
  
 	/* Read-write data (initialized) */
-	.data BLOCK(4K) : ALIGN(4K)
+	.data ALIGN(4K) : ALIGN(4K)
 	{
 		*(.data)
+	}
+
+	.tdata ALIGN(4K) : ALIGN(4K)
+	{
 		PROVIDE (__tdata_start = .);
 		*(.tdata)
 		*(.tbss)
 	}
 
 	/* Read-write data (uninitialized) and stack */
-	.bss BLOCK(4K) : ALIGN(4K)
+	.bss ALIGN(4K) : ALIGN(4K)
 	{
 		PROVIDE (__tdata_end = .);
 		*(COMMON)

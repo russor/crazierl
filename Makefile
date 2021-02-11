@@ -58,7 +58,7 @@ clean:
 	rm -f obj/initrd obj/mykernel.elf obj/*.o obj/*.beam obj/*.so obj/initrd.tmp obj/.deps/*.d
 
 obj/mykernel.elf: obj/start.o $(KERNEL_OBJS) $(FBSD_KERNEL_OBJS)
-	clang -m32 -fuse-ld=bfd -g -static -ffreestanding -nostdlib -T linker.ld $^ -o obj/mykernel.elf -gdwarf-2
+	clang -m32 -g -static -ffreestanding -nostdlib -T linker.ld $^ -o obj/mykernel.elf -gdwarf-2
 
 obj/start.o: start.s | $(DEPDIR)
 	clang -m32 -g -gdwarf-2 -c $^ -o $@
