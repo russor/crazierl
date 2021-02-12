@@ -1464,6 +1464,16 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			}
 			break;
 		}
+		case SYS___sysctlbyname: {
+			struct __sysctlbyname_args *a = argp;
+			if (strncmp("kern.smp.cpus", a->name, a->namelen) == 0) {
+				*(u_int *)a->old = numcpu;
+				*a->oldlenp = sizeof(u_int);
+				SYSCALL_SUCCESS(0);
+			}
+			ERROR_PRINTF("sysctlbyname (\"%s\" ...)\n", a->name);
+			SYSCALL_FAILURE(ENOENT);
+		}
 		case SYS___sysctl: {
 			struct sysctl_args *a = argp;
 			if (a->namelen == 2) {
@@ -1473,10 +1483,10 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 							strlcpy(a->old, "FreeBSD", *a->oldlenp);
 							SYSCALL_SUCCESS(0);
 						case KERN_OSRELEASE:
-							strlcpy(a->old, "12.1-RELEASE-p1", *a->oldlenp);
+							strlcpy(a->old, "12.2-RELEASE-p3", *a->oldlenp);
 							SYSCALL_SUCCESS(0);
 						case KERN_VERSION:
-							strlcpy(a->old, "FreeBSD 12.1-RELEASE-p1 GENERIC", *a->oldlenp);
+							strlcpy(a->old, "FreeBSD 12.2-RELEASE-p3 GENERIC", *a->oldlenp);
 							SYSCALL_SUCCESS(0);
 						case KERN_HOSTNAME:
 							strlcpy(a->old, "node0.crazierl.org", *a->oldlenp);
@@ -1496,7 +1506,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 							SYSCALL_SUCCESS(0);
 						}
 						case KERN_OSRELDATE:
-							*(u_int *)a->old = 1201000; // pretend to be freebsd 12.1 for now
+							*(u_int *)a->old = 1202000; // pretend to be freebsd 12.2 for now
 							*a->oldlenp = sizeof(uint);
 							SYSCALL_SUCCESS(0);
 						case KERN_USRSTACK:
