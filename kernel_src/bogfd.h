@@ -9,7 +9,7 @@
 #define BOGFD_NULL 6
 #define BOGFD_IOAPIC 7
 #define BOGFD_UNIX 8
-
+#define BOGFD_KQUEUE 9
 #define BOGFD_STATUS_SIZE sizeof(int)
 
 struct pipe_buffer {

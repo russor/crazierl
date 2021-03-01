@@ -82,6 +82,8 @@ typedef uint32_t u_int32_t;
 #include <cpuid.h>
 #include <sys/socket.h>
 #include <sys/thr.h>
+#include <sys/event.h>
+
 #include "threads.h"
 
 // include this last; use _KERNEL to avoid conflicting but unused definition
@@ -1102,6 +1104,9 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				UNLOCK(all_fds);
 				SYSCALL_FAILURE(EMFILE);
 			}
+			size_t the_fd = next_fd;
+			++next_fd;
+			UNLOCK(all_fds);
 
 			char path[256];
 			strlcpy (path, a->path, sizeof(path));
@@ -1114,36 +1119,41 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				size_t len = strlen(path);
 				file = find_dir(path, len, 0);
 				if (file) {
-					FDS[next_fd].type = BOGFD_DIR;
-					FDS[next_fd].file = file;
-					FDS[next_fd].namelen = len;
-					DEBUG_PRINTF("open (%s, ...) = %d\n", path, next_fd);
-					UNLOCK(all_fds);
-					SYSCALL_SUCCESS(next_fd++);
+					FDS[the_fd].type = BOGFD_DIR;
+					FDS[the_fd].file = file;
+					FDS[the_fd].namelen = len;
+					DEBUG_PRINTF("open (%s, ...) = %d\n", path, the_fd);
+					SYSCALL_SUCCESS(the_fd);
 				}
 			} else {
 				file = find_file(path);
 				if (file != NULL) {
-					FDS[next_fd].type = BOGFD_FILE;
-					FDS[next_fd].file = file;
-					FDS[next_fd].pos = file->start;
-					DEBUG_PRINTF("open (%s, ...) = %d\n", path, next_fd);
-					UNLOCK(all_fds);
-					SYSCALL_SUCCESS(next_fd++);
+					FDS[the_fd].type = BOGFD_FILE;
+					FDS[the_fd].file = file;
+					FDS[the_fd].pos = file->start;
+					DEBUG_PRINTF("open (%s, ...) = %d\n", path, the_fd);
+					SYSCALL_SUCCESS(the_fd);
 				}
 			}
 			if (strcmp("/dev/null", path) == 0) {
-				FDS[next_fd].type = BOGFD_NULL;
-				DEBUG_PRINTF("open (%s, ...) = %d\n", path, next_fd);
-				UNLOCK(all_fds);
-				SYSCALL_SUCCESS(next_fd++);
+				FDS[the_fd].type = BOGFD_NULL;
+				DEBUG_PRINTF("open (%s, ...) = %d\n", path, the_fd);
+				SYSCALL_SUCCESS(the_fd);
 			}
+			LOCK(all_fds);
 			DEBUG_PRINTF ("open (%s, %08x) = ENOENT\n", path, a->flags);
+			if (the_fd < next_fd) {
+				next_fd = the_fd;
+			}
 			UNLOCK(all_fds);
 			SYSCALL_FAILURE(ENOENT);
 		}
 		case SYS_close: {
 			struct close_args *a = argp;
+			if (a->fd < 0 || a->fd >= BOGFD_MAX) {
+				ERROR_PRINTF("close (...) = EBADF\n");
+				SYSCALL_FAILURE(EBADF);
+			}
 			LOCK(FDS[a->fd].lock);
 			if (FDS[a->fd].type == BOGFD_PIPE) {
 				if (FDS[a->fd].pipe == &FDS[0]) {
@@ -1180,12 +1190,14 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 						FDS[a->fd].pipe->pipe = NULL;
 					}
 				}
+			} else if (FDS[a->fd].type == BOGFD_KQUEUE) {
+				halt("kqueue cleanup unimplemented\n", 0);
 			}
 
 			LOCK(all_fds);
 			if (FDS[a->fd].type != BOGFD_CLOSED) {
 				DEBUG_PRINTF("close (%d)\n", a->fd);
-				FDS[next_fd].flags = 0;
+				FDS[a->fd].flags = 0;
 				FDS[a->fd].file = NULL;
 				FDS[a->fd].buffer = NULL;
 				FDS[a->fd].type = BOGFD_CLOSED;
@@ -1251,7 +1263,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			int ret = -1;
 			switch (a->com) {
 				case TIOCGETA: {
-					if (a->fd >= BOGFD_MAX || (FDS[a->fd].type != BOGFD_TERMIN && FDS[a->fd].type != BOGFD_TERMOUT )) {
+					if (a->fd < 0 || a->fd >= BOGFD_MAX || (FDS[a->fd].type != BOGFD_TERMIN && FDS[a->fd].type != BOGFD_TERMOUT )) {
 						SYSCALL_FAILURE(ENOTTY);
 					}
 					struct termios *t = (struct termios *)a->data;
@@ -1268,7 +1280,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					SYSCALL_SUCCESS(0);
 				}
 				case TIOCGWINSZ: {
-					if (a->fd >= BOGFD_MAX || (FDS[a->fd].type != BOGFD_TERMIN && FDS[a->fd].type != BOGFD_TERMOUT )) {
+					if (a->fd < 0 || a->fd >= BOGFD_MAX || (FDS[a->fd].type != BOGFD_TERMIN && FDS[a->fd].type != BOGFD_TERMOUT )) {
 						SYSCALL_FAILURE(ENOTTY);
 					}
 					struct winsize *w = (struct winsize *)a->data;
@@ -1464,7 +1476,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			}
 			break;
 		}
-		case SYS___sysctlbyname: {
+		case SYS___sysctlbyname: { // probably need to check buffer addresses and lengths
 			struct __sysctlbyname_args *a = argp;
 			if (strncmp("kern.smp.cpus", a->name, a->namelen) == 0) {
 				*(u_int *)a->old = numcpu;
@@ -1474,7 +1486,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			ERROR_PRINTF("sysctlbyname (\"%s\" ...)\n", a->name);
 			SYSCALL_FAILURE(ENOENT);
 		}
-		case SYS___sysctl: {
+		case SYS___sysctl: { // probably need to check buffer addresses and lengths
 			struct sysctl_args *a = argp;
 			if (a->namelen == 2) {
 				switch (a->name[0]) {
@@ -1612,6 +1624,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 		case SYS_mmap: {
 			struct mmap_args *a = argp;
 			uintptr_t ret_addr;
+
 			if (kern_mmap(&ret_addr, a->addr, a->len, a->prot, a->flags)) {
 				if (a->fd != -1 && a->fd < BOGFD_MAX && FDS[a->fd].type == BOGFD_FILE) {
 					if (a->pos == 0 && a->addr != NULL) { // && a->len > PAGE_SIZE) {
@@ -1835,6 +1848,49 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			SYSCALL_SUCCESS(0);
 		}
 		case SYS_clock_getres: SYSCALL_FAILURE(EINVAL); // TODO clock stuff
+		case SYS_kqueue: {
+			LOCK(all_fds);
+			while (next_fd < BOGFD_MAX && FDS[next_fd].type != BOGFD_CLOSED) {
+				++next_fd;
+			}
+			if (next_fd >= BOGFD_MAX) {
+				ERROR_PRINTF("kqueue (...) = EMFILE\n");
+				UNLOCK(all_fds);
+				SYSCALL_FAILURE(EMFILE);
+			}
+
+			if (!kern_mmap((uintptr_t*)&FDS[next_fd].buffer, NULL, PAGE_SIZE, PROT_READ | PROT_WRITE | PROT_KERNEL, 0)) {
+				ERROR_PRINTF("kqueue (...) = ENOMEM\n");
+				UNLOCK(all_fds);
+				SYSCALL_FAILURE(ENOMEM);
+			}
+			size_t the_fd = next_fd;
+			++next_fd;
+			UNLOCK(all_fds);
+			FDS[the_fd].type = BOGFD_KQUEUE;
+			SYSCALL_SUCCESS(the_fd);
+		}
+		case SYS_kevent: {
+			struct kevent_args *a = argp;
+			if (a->fd < 0 || a->fd >= BOGFD_MAX) {
+				ERROR_PRINTF("kqueue (...) = EBADF\n");
+				SYSCALL_FAILURE(EBADF);
+			}
+			LOCK(FDS[a->fd].lock);
+			if (FDS[a->fd].type != BOGFD_KQUEUE) {
+				ERROR_PRINTF("kqueue (...) = EBADF\n");
+				UNLOCK(FDS[a->fd].lock);
+				SYSCALL_FAILURE(EBADF);
+			}
+			UNLOCK(FDS[a->fd].lock);
+			ERROR_PRINTF("kqueue %d changes, waiting for %d events\n", a->nchanges, a->nevents);
+			for (size_t i = 0; i < a->nchanges; ++i) {
+				ERROR_PRINTF(" kevent id %p, filter %d, flags %x, fflags %x\n",
+					a->changelist[i].ident, a->changelist[i].filter,
+					a->changelist[i].flags, a->changelist[i].fflags);
+			}
+			halt("kqueue unfinished\n", 0);
+		}
 	}
 				
 	if (call < SYS_MAXSYSCALL) {
