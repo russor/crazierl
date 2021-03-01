@@ -1106,6 +1106,8 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			}
 			size_t the_fd = next_fd;
 			++next_fd;
+			LOCK(FDS[the_fd].lock);
+			FDS[the_fd].type = BOGFD_PENDING;
 			UNLOCK(all_fds);
 
 			char path[256];
@@ -1123,6 +1125,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					FDS[the_fd].file = file;
 					FDS[the_fd].namelen = len;
 					DEBUG_PRINTF("open (%s, ...) = %d\n", path, the_fd);
+					UNLOCK(FDS[the_fd].lock);
 					SYSCALL_SUCCESS(the_fd);
 				}
 			} else {
@@ -1132,16 +1135,20 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					FDS[the_fd].file = file;
 					FDS[the_fd].pos = file->start;
 					DEBUG_PRINTF("open (%s, ...) = %d\n", path, the_fd);
+					UNLOCK(FDS[the_fd].lock);
 					SYSCALL_SUCCESS(the_fd);
 				}
 			}
 			if (strcmp("/dev/null", path) == 0) {
 				FDS[the_fd].type = BOGFD_NULL;
 				DEBUG_PRINTF("open (%s, ...) = %d\n", path, the_fd);
+				UNLOCK(FDS[the_fd].lock);
 				SYSCALL_SUCCESS(the_fd);
 			}
-			LOCK(all_fds);
 			DEBUG_PRINTF ("open (%s, %08x) = ENOENT\n", path, a->flags);
+			LOCK(all_fds);
+			FDS[the_fd].type = BOGFD_CLOSED;
+			UNLOCK(FDS[the_fd].lock);
 			if (the_fd < next_fd) {
 				next_fd = the_fd;
 			}
@@ -1194,12 +1201,12 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				halt("kqueue cleanup unimplemented\n", 0);
 			}
 
-			LOCK(all_fds);
 			if (FDS[a->fd].type != BOGFD_CLOSED) {
 				DEBUG_PRINTF("close (%d)\n", a->fd);
 				FDS[a->fd].flags = 0;
 				FDS[a->fd].file = NULL;
 				FDS[a->fd].buffer = NULL;
+				LOCK(all_fds);
 				FDS[a->fd].type = BOGFD_CLOSED;
 				UNLOCK(FDS[a->fd].lock);
 				if (a->fd < next_fd) {
@@ -1210,7 +1217,6 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			} else {
 				ERROR_PRINTF("close (%d) = EBADF\n", a->fd);
 				UNLOCK(FDS[a->fd].lock);
-				UNLOCK(all_fds);
 				SYSCALL_FAILURE(EBADF);
 			}
 		}
@@ -1309,13 +1315,16 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					++next_fd;
 				}
 				if (next_fd >= BOGFD_MAX) {
+					UNLOCK(all_fds);
 					ERROR_PRINTF("socket (..) = EMFILE\n");
 					SYSCALL_FAILURE(EMFILE);
 				}
+				LOCK(FDS[the_fd].lock);
 				FDS[next_fd].type = BOGFD_UNIX;
 				size_t ret = next_fd;
 				++next_fd;
 				UNLOCK(all_fds);
+				UNLOCK(FDS[the_fd].lock);
 				SYSCALL_SUCCESS(ret);
 			}
 			SYSCALL_FAILURE(EACCES);
@@ -1679,8 +1688,11 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				UNLOCK(all_fds);
 				SYSCALL_FAILURE(ENOMEM);
 			}
+			LOCK(FDS[pipe1].lock);
+			LOCK(FDS[pipe2].lock);
 			FDS[pipe1].type = BOGFD_PIPE;
 			FDS[pipe2].type = BOGFD_PIPE;
+			UNLOCK(all_fds);
 			FDS[pipe1].pipe = &(FDS[pipe2]);
 			FDS[pipe2].pipe = &(FDS[pipe1]);
 			FDS[pipe1].pb->length = 0;
@@ -1689,7 +1701,8 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			a->fildes[0] = pipe1;
 			a->fildes[1] = pipe2;
 			ERROR_PRINTF("pipe2 -> %d <-> %d\n", pipe1, pipe2);
-			UNLOCK(all_fds);
+			UNLOCK(FDS[pipe1].lock);
+			UNLOCK(FDS[pipe2].lock);
 			SYSCALL_SUCCESS(0);
 		}
 		case SYS_ppoll: {
@@ -1859,15 +1872,12 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				SYSCALL_FAILURE(EMFILE);
 			}
 
-			if (!kern_mmap((uintptr_t*)&FDS[next_fd].buffer, NULL, PAGE_SIZE, PROT_READ | PROT_WRITE | PROT_KERNEL, 0)) {
-				ERROR_PRINTF("kqueue (...) = ENOMEM\n");
-				UNLOCK(all_fds);
-				SYSCALL_FAILURE(ENOMEM);
-			}
 			size_t the_fd = next_fd;
 			++next_fd;
-			UNLOCK(all_fds);
+			LOCK(FDS[the_fd].lock);
 			FDS[the_fd].type = BOGFD_KQUEUE;
+			UNLOCK(all_fds);
+			UNLOCK(FDS[the_fd].lock);
 			SYSCALL_SUCCESS(the_fd);
 		}
 		case SYS_kevent: {
