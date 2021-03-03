@@ -96,7 +96,10 @@ typedef uint32_t u_int32_t;
 
 DECLARE_LOCK(all_fds);
 struct BogusFD FDS[BOGFD_MAX];
+DECLARE_LOCK(all_bnotes);
+struct bnote BNOTES[BNOTE_MAX];
 size_t next_fd;
+size_t next_bnote;
 uint8_t next_irq_vector = FIRST_IRQ_VECTOR;
 volatile int cpus_initing = 1;
 
@@ -200,6 +203,9 @@ uint64_t fixed_point_time;
 uintptr_t user_stack;
 
 #define IOAPIC_PATH "/kern/ioapic/"
+
+int check_bnote(size_t, struct BogusFD *);
+
 
 static inline void outb(uint16_t port, uint8_t val)
 {
@@ -735,11 +741,26 @@ ssize_t write(int fd, const void * buf, size_t nbyte) {
 			UNLOCK(FDS[fd].lock);
 			return -EPIPE;
 		} else {
+			if (&FDS[fd] > FDS[fd].pipe) {
+				// lock smallest FD first, so we have to relock
+				UNLOCK(FDS[fd].lock);
+				LOCK(FDS[fd].pipe->lock);
+				LOCK(FDS[fd].lock);
+			} else {
+				LOCK(FDS[fd].pipe->lock);
+			}
+
 			written = min(nbyte, BOGFD_PB_LEN - FDS[fd].pipe->pb->length);
 			//ERROR_PRINTF("write (%d, \"%s\", %d) = %d\n", fd, buf, nbyte, written);
 			memcpy(&FDS[fd].pipe->pb->data[FDS[fd].pipe->pb->length], buf, written);
 			FDS[fd].pipe->pb->length += written;
 			wait_target = FDS[fd].pipe;
+			for (int bnote = FDS[fd].pipe->bnote; bnote < BNOTE_MAX; bnote = BNOTES[bnote].selnext) {
+				LOCK(BNOTES[bnote].lock);
+				check_bnote(bnote, FDS[fd].pipe);
+				UNLOCK(BNOTES[bnote].lock);
+			}
+			UNLOCK(FDS[fd].pipe->lock);
 		}
 	} else if (FDS[fd].type == BOGFD_IOAPIC) {
 		FDS[fd].status[1] = 1;
@@ -750,6 +771,12 @@ ssize_t write(int fd, const void * buf, size_t nbyte) {
 		UNLOCK(FDS[fd].lock);
 		return -EBADF;
 	}
+	for (int bnote = FDS[fd].bnote; bnote < BNOTE_MAX; bnote = BNOTES[bnote].selnext) {
+		LOCK(BNOTES[bnote].lock);
+		check_bnote(bnote, &FDS[fd]);
+		UNLOCK(BNOTES[bnote].lock);
+	}
+	UNLOCK(FDS[fd].lock);
 	LOCK(thread_state);
 	if (wait_target != NULL && wait_target->flags & BOGFD_BLOCKED_READ) {
 		//TODO avoid thundering herd, maybe
@@ -763,16 +790,14 @@ ssize_t write(int fd, const void * buf, size_t nbyte) {
 			}
 		}
 		FDS[fd].flags &= ~BOGFD_BLOCKED_READ;
-	} else {
-		for (int thread = 0; thread < MAX_THREADS; ++thread) {
-			if (threads[thread].state == THREAD_POLL) {
-				threads[thread].state = THREAD_RUNNABLE;
-				wake_cpu_for_thread(thread);
-			}
+	}
+	for (int thread = 0; thread < MAX_THREADS; ++thread) {
+		if (threads[thread].state == THREAD_POLL) {
+			threads[thread].state = THREAD_RUNNABLE;
+			wake_cpu_for_thread(thread);
 		}
 	}
 	UNLOCK(thread_state);
-	UNLOCK(FDS[fd].lock);
 	return written;
 }
 
@@ -780,6 +805,7 @@ size_t kern_read(int fd, void * buf, size_t nbyte, int async) {
 	if (fd < 0 || fd >= BOGFD_MAX) {
 		return -EBADF;
 	}
+	LOCK(FDS[fd].lock);
 	while (1) {
 		size_t read = 0;
 		if (FDS[fd].type == BOGFD_PIPE) {
@@ -790,7 +816,24 @@ size_t kern_read(int fd, void * buf, size_t nbyte, int async) {
 				if (FDS[fd].pb->length) {
 					memmove(&FDS[fd].pb->data, &FDS[fd].pb->data[read], FDS[fd].pb->length);
 				}
+				if (FDS[fd].pipe != NULL) {
+					if (&FDS[fd] > FDS[fd].pipe) {
+						// lock smallest FD first, so we have to relock
+						UNLOCK(FDS[fd].lock);
+						LOCK(FDS[fd].pipe->lock);
+						LOCK(FDS[fd].lock);
+					} else {
+						LOCK(FDS[fd].pipe->lock);
+					}
+					for (int bnote = FDS[fd].pipe->bnote; bnote < BNOTE_MAX; bnote = BNOTES[bnote].selnext) {
+						LOCK(BNOTES[bnote].lock);
+						check_bnote(bnote, FDS[fd].pipe);
+						UNLOCK(BNOTES[bnote].lock);
+					}
+					UNLOCK(FDS[fd].pipe->lock);
+				}
 			} else if (FDS[fd].pipe == NULL) {
+				UNLOCK(FDS[fd].lock);
 				return 0;
 			}
 		} else if (FDS[fd].type == BOGFD_FILE) {
@@ -798,17 +841,25 @@ size_t kern_read(int fd, void * buf, size_t nbyte, int async) {
 			read = min(nbyte, FDS[fd].file->end - FDS[fd].pos);
 			memcpy(buf, FDS[fd].pos, read);
 			FDS[fd].pos += read;
-			return read;
 		} else {
+			UNLOCK(FDS[fd].lock);
 			return -EBADF;
 		}
 		if (read) {
+			for (int bnote = FDS[fd].bnote; bnote < BNOTE_MAX; bnote = BNOTES[bnote].selnext) {
+				LOCK(BNOTES[bnote].lock);
+				check_bnote(bnote, &FDS[fd]);
+				UNLOCK(BNOTES[bnote].lock);
+			}
+			UNLOCK(FDS[fd].lock);
 			return read;
 		} else if (async) {
+			UNLOCK(FDS[fd].lock);
 			return -EAGAIN;
 		} else {
 			FDS[fd].flags |= BOGFD_BLOCKED_READ;
 			threads[current_thread].wait_target = (uintptr_t) &FDS[fd];
+			UNLOCK(FDS[fd].lock);
 			switch_thread(THREAD_IO_READ, 0, 0);
 		}
 	}
@@ -916,6 +967,7 @@ int kern_umtx_op(struct _umtx_op_args *a) {
 
 // separate function, because uint64_t breaks stack setup for thr_new otherwise
 int kern_ppoll(struct ppoll_args *a) {
+	//ERROR_PRINTF("ppoll nfds=%d!\n", a->nfds);
 	uint64_t timeout = 0;
 	if (a->ts != NULL) {
 		timeout = fixed_point_time + FIXED_POINT_TIME_NANOSECOND(a->ts->tv_sec, a->ts->tv_nsec);
@@ -961,6 +1013,174 @@ int kern_ppoll(struct ppoll_args *a) {
 	}
 }
 
+// assume kq and fd locked
+size_t find_bnote(kq, fd, filter) {
+	size_t i = FDS[fd].bnote;
+	while (i < BNOTE_MAX) {
+		if (BNOTES[i].kq == kq && BNOTES[i].filter == filter) {
+			break;
+		}
+		i = BNOTES[i].selnext;
+	}
+	return i;
+}
+
+size_t new_bnote() {
+	LOCK(all_bnotes);
+	while (next_bnote < BNOTE_MAX && BNOTES[next_bnote].filter != 0) {
+		++next_bnote;
+	}
+	size_t ret = next_bnote;
+	if (ret < BNOTE_MAX) {
+		BNOTES[ret].filter = BNOTE_PENDING;
+	}
+	UNLOCK(all_bnotes);
+	return ret;
+}
+
+// assumed fd is locked
+int check_bnote(size_t i, struct BogusFD * fd) {
+	switch (BNOTES[i].filter) {
+		case EVFILT_READ: {
+			switch(fd->type) {
+				case BOGFD_PIPE: {
+					BNOTES[i].data = fd->pb->length;
+					if (BNOTES[i].data > 0) {
+						BNOTES[i].status = 1;
+						return !(BNOTES[i].flags & EV_DISABLE);
+					} else {
+						BNOTES[i].status = 0;
+						return 0;
+					}
+				}
+				default:
+					ERROR_PRINTF("fdtype %d\n", fd->type);
+					halt("unexpected FD type in check_bnote EVFILT_READ\n", 0);
+			}
+		}
+		case EVFILT_WRITE: {
+			switch(fd->type) {
+				case BOGFD_PIPE: {
+					if (fd->pipe == NULL) {
+						BNOTES[i].data = -1;
+						BNOTES[i].status = -1;
+						return !(BNOTES[i].flags & EV_DISABLE);
+					}
+					BNOTES[i].data = BOGFD_PB_LEN - fd->pipe->pb->length;
+					if (BNOTES[i].data > 0) {
+						BNOTES[i].status = 1;
+						return !(BNOTES[i].flags & EV_DISABLE);
+					} else {
+						BNOTES[i].status = 0;
+						return 0;
+					}
+				}
+				default:
+					ERROR_PRINTF("fdtype %d\n", fd->type);
+					halt("unexpected FD type in check_bnote EVFILT_WRITE\n", 0);
+			}
+		}
+		default:
+			ERROR_PRINTF("filter %d\n", BNOTES[i].filter);
+			halt("unexpected filter type in check_bnote\n", 0);
+	}
+	return 0;
+}
+int kern_kevent(struct kevent_args *a) {
+	size_t kq = a->fd;
+	if (kq < 0 || kq >= BOGFD_MAX) {
+		ERROR_PRINTF("kqueue (...) = EBADF\n");
+		return -EBADF;
+	}
+	LOCK(FDS[kq].lock);
+	if (FDS[kq].type != BOGFD_KQUEUE) {
+		ERROR_PRINTF("kqueue (...) = EBADF\n");
+		UNLOCK(FDS[kq].lock);
+		return -EBADF;
+	}
+	uint64_t timeout = 0;
+	if (a->timeout != NULL) {
+		timeout = fixed_point_time + FIXED_POINT_TIME_NANOSECOND(a->timeout->tv_sec, a->timeout->tv_nsec);
+		ERROR_PRINTF("kqueue %d, %d changes, waiting for %d events, timeout %d.%06d\n", kq, a->nchanges, a->nevents, a->timeout->tv_sec, a->timeout->tv_nsec);
+	} else {
+		ERROR_PRINTF("kqueue %d, %d changes, waiting for %d events, timeout 0\n", kq, a->nchanges, a->nevents);
+	}
+
+	int nevents = 0;
+	for (size_t i = 0; i < a->nchanges; ++i) {
+		// kevent id 0x6, filter -1, flags 1, fflags 0
+		// kevent id 0x6, filter -2, flags 9, fflags 0
+		short filter = a->changelist[i].filter;
+		if (filter == EVFILT_READ || filter == EVFILT_WRITE) {
+			if (a->changelist[i].fflags) {
+				halt("unexpected fflags in kevent", 0);
+			}
+			size_t fd = (size_t) a->changelist[i].ident;
+			u_short flags = a->changelist[i].flags;
+			LOCK(FDS[fd].lock);
+			if (FDS[fd].type == BOGFD_KQUEUE) {
+				halt("can't kevent a kqueue, that's madness!", 0);
+			}
+			if (FDS[fd].type != BOGFD_CLOSED) {
+				if (flags & EV_ADD) {
+					size_t x = find_bnote(kq, fd, filter);
+					if (x == BNOTE_MAX) {
+						x = new_bnote();
+						BNOTES[x].link = FDS[kq].bnote;
+						FDS[kq].bnote = x;
+						BNOTES[x].selnext = FDS[fd].bnote;
+						FDS[fd].bnote = x;
+						BNOTES[x].kq = kq;
+						BNOTES[x].fd = fd;
+					}
+					if (x == BNOTE_MAX) {
+						halt("kqueue needs ENOMEM, out of bnotes", 0);
+					}
+					// no need to lock bnote, because we hold fd and kq lock
+					BNOTES[x].flags = flags;
+					BNOTES[x].filter = filter;
+					BNOTES[x].udata = a->changelist[i].udata;
+					check_bnote(x, &FDS[fd]);
+				}
+				if (flags & EV_RECEIPT) {
+					halt("kqueue EV_RECEIPT handling unimplemented", 0);
+				}
+			}
+			UNLOCK(FDS[fd].lock);
+		}
+	}
+
+	while (a->nevents) {
+		size_t i = FDS[kq].bnote;
+		size_t checked = 0;
+		while (nevents < a->nevents && i != BNOTE_MAX) {
+			if (BNOTES[i].status && !(BNOTES[i].flags & EV_DISABLE)) {
+				ERROR_PRINTF("got event fd %d, filter %d\n", BNOTES[i].fd, BNOTES[i].filter);
+				EV_SET(&(a->eventlist[nevents]), BNOTES[i].fd, BNOTES[i].filter, BNOTES[i].flags,
+				       BNOTES[i].fflags, BNOTES[i].data, BNOTES[i].udata);
+				++nevents;
+			}
+			size_t nexti = BNOTES[i].link;
+			UNLOCK(BNOTES[i].lock);
+			i = nexti;
+			++checked;
+		}
+
+		if (nevents) {
+			break;
+		}
+		ERROR_PRINTF("kq %d sleeping until %lld (currently %lld, checked %d notes\n", kq, timeout, fixed_point_time, checked);
+		//UNLOCK(FDS[kq].lock);
+		if (switch_thread(THREAD_POLL, timeout, 0)) {
+			break;
+		}
+		//LOCK(FDS[kq].lock);
+
+	}
+	ERROR_PRINTF("leaving kqueue %d (%d events)\n", kq, nevents);
+	UNLOCK(FDS[kq].lock);
+	return nevents;
+}
 
 #define CARRY 1
 #define SYSCALL_SUCCESS(ret) { iframe->flags &= ~CARRY; return ret; }
@@ -1201,6 +1421,10 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				halt("kqueue cleanup unimplemented\n", 0);
 			}
 
+			if (FDS[a->fd].bnote != BNOTE_MAX) {
+				halt("bnote cleanup unimplemented\n", 0);
+			}
+
 			if (FDS[a->fd].type != BOGFD_CLOSED) {
 				DEBUG_PRINTF("close (%d)\n", a->fd);
 				FDS[a->fd].flags = 0;
@@ -1221,6 +1445,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			}
 		}
 		case SYS_getpid: SYSCALL_SUCCESS(2);
+		case SYS_geteuid: SYSCALL_SUCCESS(0);
 		case SYS_recvfrom: {
 			struct recvfrom_args *a = argp;
 			if (a->s < 0 || a->s > BOGFD_MAX) {
@@ -1319,13 +1544,13 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					ERROR_PRINTF("socket (..) = EMFILE\n");
 					SYSCALL_FAILURE(EMFILE);
 				}
+				size_t the_fd = next_fd;
 				LOCK(FDS[the_fd].lock);
-				FDS[next_fd].type = BOGFD_UNIX;
-				size_t ret = next_fd;
+				FDS[the_fd].type = BOGFD_UNIX;
 				++next_fd;
 				UNLOCK(all_fds);
 				UNLOCK(FDS[the_fd].lock);
-				SYSCALL_SUCCESS(ret);
+				SYSCALL_SUCCESS(the_fd);
 			}
 			SYSCALL_FAILURE(EACCES);
 		}
@@ -1881,25 +2106,17 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			SYSCALL_SUCCESS(the_fd);
 		}
 		case SYS_kevent: {
-			struct kevent_args *a = argp;
-			if (a->fd < 0 || a->fd >= BOGFD_MAX) {
-				ERROR_PRINTF("kqueue (...) = EBADF\n");
-				SYSCALL_FAILURE(EBADF);
+			int ret = kern_kevent((struct kevent_args *) argp);
+			if (ret >= 0) {
+				SYSCALL_SUCCESS(ret);
+			} else {
+				SYSCALL_FAILURE(-ret);
 			}
-			LOCK(FDS[a->fd].lock);
-			if (FDS[a->fd].type != BOGFD_KQUEUE) {
-				ERROR_PRINTF("kqueue (...) = EBADF\n");
-				UNLOCK(FDS[a->fd].lock);
-				SYSCALL_FAILURE(EBADF);
-			}
-			UNLOCK(FDS[a->fd].lock);
-			ERROR_PRINTF("kqueue %d changes, waiting for %d events\n", a->nchanges, a->nevents);
-			for (size_t i = 0; i < a->nchanges; ++i) {
-				ERROR_PRINTF(" kevent id %p, filter %d, flags %x, fflags %x\n",
-					a->changelist[i].ident, a->changelist[i].filter,
-					a->changelist[i].flags, a->changelist[i].fflags);
-			}
-			halt("kqueue unfinished\n", 0);
+		}
+		case SYS_thr_set_name: {
+			struct thr_set_name_args *a = argp;
+			ERROR_PRINTF("ignoring thr_set_name(%d, %s)\n", a->id, a->name);
+			SYSCALL_SUCCESS(0);
 		}
 	}
 				
@@ -2206,6 +2423,12 @@ void setup_fds()
 	next_fd = 3;
 	for (int i = next_fd; i < BOGFD_MAX; ++i) {
 		FDS[i].type = BOGFD_CLOSED;
+		FDS[i].bnote = BNOTE_MAX;
+	}
+	next_bnote = 0;
+	for (int i = 0; i < BNOTE_MAX; ++i) {
+		BNOTES[i].kq = BNOTES[i].fd = BOGFD_MAX;
+		BNOTES[i].link = BNOTES[i].selnext = BNOTE_MAX;
 	}
 }
 

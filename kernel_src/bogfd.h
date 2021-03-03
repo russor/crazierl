@@ -1,4 +1,5 @@
 #define BOGFD_MAX 1024
+#define BNOTE_MAX (BOGFD_MAX * 4)
 
 #define BOGFD_CLOSED 0
 #define BOGFD_TERMIN 1
@@ -10,6 +11,7 @@
 #define BOGFD_IOAPIC 7
 #define BOGFD_UNIX 8
 #define BOGFD_KQUEUE 9
+#define BOGFD_PENDING 10
 #define BOGFD_STATUS_SIZE sizeof(int)
 
 struct pipe_buffer {
@@ -39,6 +41,23 @@ struct BogusFD {
 		size_t namelen;
 		char * buffer;
 	};
+	size_t bnote;
 	
 };
 
+struct bnote { // like a FreeBSD knote, but Bogus
+	DECLARE_LOCK(lock);
+	size_t link; // list of knotes for a kqueue
+	size_t selnext; // list of knotes for a watched object
+	short filter;
+	unsigned short flags;
+	unsigned int fflags;
+	__int64_t data;
+	void *udata;
+	int status;
+	size_t kq; // FD index of the kqueue
+	size_t fd; // FD index of the FD (which is all we support for now)
+};
+
+// real FreeBSD filters are all negative
+#define BNOTE_PENDING 1
