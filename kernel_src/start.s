@@ -646,7 +646,7 @@
 
 		call handle_irq
 
-		testl $0x3, 0x24(%esp)  // set GS to user segment, if pushed CS is user segment
+		testl $0x3, 0x18(%esp)  // set GS to user segment, if pushed CS is user segment
 		je gen_int_done
 		mov %gs, %dx
 		orl $0xB, %edx
