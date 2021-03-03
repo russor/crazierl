@@ -49,7 +49,7 @@ if (!$bindir) {
 	die "couldn't find BINDIR\n";
 }
 
-$OTP_DIR .= '/lib/erlang';
+#$OTP_DIR .= '/lib/erlang';
 my $BEAM = "$OTP_DIR/$bindir/beam.smp";
 my @LDD = `/usr/bin/ldd $BEAM`;
 foreach my $l (@LDD) {

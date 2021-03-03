@@ -1,3 +1,5 @@
+ERLANG_VERSION=23
+
 OBJDIR := obj
 DEPDIR := $(OBJDIR)/.deps
 DEPFLAGS = -MT $@ -MMD -MP
@@ -32,14 +34,16 @@ ifeq ($(wildcard /libexec/ld-elf32.so.1),)
 else
 	RTLD=/libexec/ld-elf32.so.1
 endif
-OTPDIR=../installed
+#OTPDIR=../installed
+OTPDIR=../erlang-runtime$(ERLANG_VERSION)/usr/local/lib/erlang$(ERLANG_VERSION)
 
 KERNEL_COMPILER=clang -m32 -mno-sse -g -ffreestanding -gdwarf-2 -c -DCRAZIERL_KERNEL
 USER_COMPILER=clang -m32 -fpic -g -gdwarf-2 -c -DCRAZIERL_USER
-NIF_COMPILER=clang -m32 -fpic -g -gdwarf-2 -shared -I$(OTPDIR)/lib/erlang/usr/include/
+NIF_COMPILER=clang -m32 -fpic -g -gdwarf-2 -shared -I$(OTPDIR)/usr/include/
+
 
 run: obj/mykernel.elf obj/initrd
-	qemu-system-i386 -display none -smp 4 -s -m 512 -serial mon:stdio -kernel obj/mykernel.elf -append $(RTLD) -initrd obj/initrd \
+	qemu-system-i386 -display none -smp 4 -s -m 2048 -serial mon:stdio -kernel obj/mykernel.elf -append $(RTLD) -initrd obj/initrd \
 		-netdev user,id=mynet0,hostfwd=tcp:127.0.0.1:7780-:80 -device virtio-net,netdev=mynet0
 
 netboot: obj/mykernel.elf obj/initrd
@@ -57,6 +61,10 @@ debugger:
 clean:
 	rm -f obj/initrd obj/mykernel.elf obj/*.o obj/*.beam obj/*.so obj/initrd.tmp obj/.deps/*.d
 
+$(OTPDIR)/bin/erlc:
+	mkdir -p ../erlang-runtime$(ERLANG_VERSION)
+	INSTALL_AS_USER=1 pkg --root ../erlang-runtime$(ERLANG_VERSION) -o ABI=FreeBSD:12:i386 install -y erlang-runtime$(ERLANG_VERSION)
+
 obj/mykernel.elf: obj/start.o $(KERNEL_OBJS) $(FBSD_KERNEL_OBJS)
 	clang -m32 -g -static -ffreestanding -nostdlib -T linker.ld $^ -o obj/mykernel.elf -gdwarf-2
 
@@ -70,13 +78,13 @@ debugnative:
 INITRD_FILES := cfg/inetrc obj/etcpip.app /usr/share/misc/termcap.db obj/libuserland.so obj/crazierl_nif.so obj/checksum.so $(TCPIP_OBJS) $(ERLANG_OBJS)
 
 obj/initrd: hardcode_files.pl $(INITRD_FILES) Makefile
-	./hardcode_files.pl $(RTLD) $(OTPDIR) OTPDIR/lib/kernel-7.0/ebin/erl_ddll.beam $(INITRD_FILES) > obj/initrd.tmp
+	./hardcode_files.pl $(RTLD) $(OTPDIR) OTPDIR/lib/kernel-7.2/ebin/erl_ddll.beam $(INITRD_FILES) > obj/initrd.tmp
 	mv obj/initrd.tmp obj/initrd
 
 obj/libuserland.so: $(USER_OBJS)
 	clang -m32 -fpic -shared -Wl,-soname,libuserland.so -o obj/libuserland.so $^
 
-obj/crazierl_nif.so: crazierl_nif.c
+obj/crazierl_nif.so: crazierl_nif.c $(OTPDIR)/bin/erlc
 	$(NIF_COMPILER) $< -o $@
 
 obj/checksum.so: ../erlang-tcpip/c_src/checksum.c
@@ -85,10 +93,10 @@ obj/checksum.so: ../erlang-tcpip/c_src/checksum.c
 obj/etcpip.app: etcpip.app
 	cp $< $@
 
-$(TCPIP_OBJS): $(OBJDIR)/%.beam : ../erlang-tcpip/src/%.erl $(DEPDIR)/%.d | $(DEPDIR)
+$(TCPIP_OBJS): $(OBJDIR)/%.beam : ../erlang-tcpip/src/%.erl $(DEPDIR)/%.d | $(DEPDIR) $(OTPDIR)/bin/erlc
 	$(OTPDIR)/bin/erlc -o $(OBJDIR)/ -MMD -MF $(DEPDIR)/$*.d $<
 
-$(ERLANG_OBJS): $(OBJDIR)/%.beam : %.erl $(DEPDIR)/%.d | $(DEPDIR)
+$(ERLANG_OBJS): $(OBJDIR)/%.beam : %.erl $(DEPDIR)/%.d | $(DEPDIR) $(OTPDIR)/bin/erlc
 	$(OTPDIR)/bin/erlc -o $(OBJDIR)/ -MMD -MF $(DEPDIR)/$*.d $<
 
 $(KERNEL_OBJS): $(OBJDIR)/%.o: %.c $(DEPDIR)/%.c.d | $(DEPDIR)
