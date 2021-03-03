@@ -12,11 +12,15 @@
 
 
 #define DECLARE_LOCK(name) volatile int name ## Locked
-#define LOCK(name) \
-	while (!__sync_bool_compare_and_swap(& name ## Locked, 0, 1)); \
+#define LOCK(name, thread) \
+	while (!__sync_bool_compare_and_swap(& name ## Locked, 0, thread + 1)); \
 	__sync_synchronize();
-#define UNLOCK(name) \
+#define UNLOCK(name, thread) \
 	__sync_synchronize(); \
+	if (thread >= 0 && thread + 1 != name ## Locked) { \
+		ERROR_PRINTF("lock unlocked by wrong thread %p %d != %d\n", &(name ## Locked), thread, name ## Locked - 1); \
+		halt("halting\n", 0); \
+	} \
 	name ## Locked = 0;
 #endif
 
