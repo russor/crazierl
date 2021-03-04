@@ -12,17 +12,26 @@
 
 
 #define DECLARE_LOCK(name) volatile int name ## Locked
+#define RELOCK(name, oldthread, newthread) \
+	__sync_synchronize(); \
+	if (oldthread + 1 != name ## Locked) { \
+		ERROR_PRINTF("lock relocked by wrong thread %p %d != %d -> %d\n", &(name ## Locked), oldthread, name ## Locked - 1, newthread); \
+		halt("halting\n", 0); \
+	} \
+	name ## Locked = newthread + 1;
 #define LOCK(name, thread) \
 	while (!__sync_bool_compare_and_swap(& name ## Locked, 0, thread + 1)); \
 	__sync_synchronize();
 #define UNLOCK(name, thread) \
 	__sync_synchronize(); \
-	if (thread >= 0 && thread + 1 != name ## Locked) { \
+	if (thread + 1 != name ## Locked) { \
 		ERROR_PRINTF("lock unlocked by wrong thread %p %d != %d\n", &(name ## Locked), thread, name ## Locked - 1); \
 		halt("halting\n", 0); \
 	} \
 	name ## Locked = 0;
 #endif
+
+_Noreturn void halt(char * message, int dontpropagate);
 
 #ifdef CRAZIERL_USER
 //#define DEBUG_PRINTF(...) printf(__VA_ARGS__);

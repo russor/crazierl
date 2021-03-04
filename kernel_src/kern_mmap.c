@@ -68,8 +68,7 @@ void add_page_mapping (uint16_t flags, uintptr_t logical, uintptr_t physical) {
 		if (unlikely(!PAGE_SETUP_FINISHED || (flags & PAGE_FORCE))) {
 			*directory_entry = (PAGE_TABLE_BASE + ((logical >> PAGE_DIRECTORY_BITS) * PAGE_SIZE)) | (flags & (PAGE_SIZE -1));
 		} else {
-			ERROR_PRINTF("Trying to setup a mapping without a directory entry\n");
-			while (1) {}
+			halt("Trying to setup a mapping without a directory entry\n", 0);
 		}
 	}
 	
@@ -97,8 +96,7 @@ void add_page_mapping (uint16_t flags, uintptr_t logical, uintptr_t physical) {
 		} else {
 			DEBUG_PRINTF("table_entry %p (%x), directory_entry %p (%x), logical %p\n",
 				table_entry, *table_entry, directory_entry, *directory_entry, logical);
-			ERROR_PRINTF("Trying to setup a mapping without a page table entry\n");
-			while (1) {}
+			halt("Trying to setup a mapping without a page table entry\n", 0);
 		}
 	}
 	// update flags

@@ -205,7 +205,7 @@ uintptr_t user_stack;
 #define IOAPIC_PATH "/kern/ioapic/"
 
 int check_bnote(size_t, struct BogusFD *);
-
+void check_bnotes_fd(struct BogusFD *);
 
 static inline void outb(uint16_t port, uint8_t val)
 {
@@ -622,9 +622,10 @@ int switch_thread(unsigned int new_state, uint64_t timeout, int locked) {
 	} else {
 		cpus[current_cpu].flags |= CPU_IDLE;
 	}
+	RELOCK(thread_state, old_thread, target);
 	int we_timed_out = switch_thread_impl(&threads[old_thread].kern_stack_cur, threads[target].kern_stack_cur);
 	threads[current_thread].timeout = 0;
-	UNLOCK(thread_state, -1);
+	UNLOCK(thread_state, current_thread);
 	asm volatile ( "fxrstor (%0)" :: "a"(&threads[current_thread].savearea) :);
 	return we_timed_out;
 }
@@ -755,11 +756,7 @@ ssize_t write(int fd, const void * buf, size_t nbyte) {
 			memcpy(&FDS[fd].pipe->pb->data[FDS[fd].pipe->pb->length], buf, written);
 			FDS[fd].pipe->pb->length += written;
 			wait_target = FDS[fd].pipe;
-			for (int bnote = FDS[fd].pipe->bnote; bnote < BNOTE_MAX; bnote = BNOTES[bnote].selnext) {
-				LOCK(BNOTES[bnote].lock, current_thread);
-				check_bnote(bnote, FDS[fd].pipe);
-				UNLOCK(BNOTES[bnote].lock, current_thread);
-			}
+			check_bnotes_fd(FDS[fd].pipe);
 			UNLOCK(FDS[fd].pipe->lock, current_thread);
 		}
 	} else if (FDS[fd].type == BOGFD_IOAPIC) {
@@ -771,11 +768,7 @@ ssize_t write(int fd, const void * buf, size_t nbyte) {
 		UNLOCK(FDS[fd].lock, current_thread);
 		return -EBADF;
 	}
-	for (int bnote = FDS[fd].bnote; bnote < BNOTE_MAX; bnote = BNOTES[bnote].selnext) {
-		LOCK(BNOTES[bnote].lock, current_thread);
-		check_bnote(bnote, &FDS[fd]);
-		UNLOCK(BNOTES[bnote].lock, current_thread);
-	}
+	check_bnotes_fd(&FDS[fd]);
 	UNLOCK(FDS[fd].lock, current_thread);
 	LOCK(thread_state, current_thread);
 	if (wait_target != NULL && wait_target->flags & BOGFD_BLOCKED_READ) {
@@ -790,11 +783,12 @@ ssize_t write(int fd, const void * buf, size_t nbyte) {
 			}
 		}
 		FDS[fd].flags &= ~BOGFD_BLOCKED_READ;
-	}
-	for (int thread = 0; thread < MAX_THREADS; ++thread) {
-		if (threads[thread].state == THREAD_POLL) {
-			threads[thread].state = THREAD_RUNNABLE;
-			wake_cpu_for_thread(thread);
+	} else {
+		for (int thread = 0; thread < MAX_THREADS; ++thread) {
+			if (threads[thread].state == THREAD_POLL) {
+				threads[thread].state = THREAD_RUNNABLE;
+				wake_cpu_for_thread(thread);
+			}
 		}
 	}
 	UNLOCK(thread_state, current_thread);
@@ -825,11 +819,7 @@ size_t kern_read(int fd, void * buf, size_t nbyte, int async) {
 					} else {
 						LOCK(FDS[fd].pipe->lock, current_thread);
 					}
-					for (int bnote = FDS[fd].pipe->bnote; bnote < BNOTE_MAX; bnote = BNOTES[bnote].selnext) {
-						LOCK(BNOTES[bnote].lock, current_thread);
-						check_bnote(bnote, FDS[fd].pipe);
-						UNLOCK(BNOTES[bnote].lock, current_thread);
-					}
+					check_bnotes_fd(FDS[fd].pipe);
 					UNLOCK(FDS[fd].pipe->lock, current_thread);
 				}
 			} else if (FDS[fd].pipe == NULL) {
@@ -846,11 +836,7 @@ size_t kern_read(int fd, void * buf, size_t nbyte, int async) {
 			return -EBADF;
 		}
 		if (read) {
-			for (int bnote = FDS[fd].bnote; bnote < BNOTE_MAX; bnote = BNOTES[bnote].selnext) {
-				LOCK(BNOTES[bnote].lock, current_thread);
-				check_bnote(bnote, &FDS[fd]);
-				UNLOCK(BNOTES[bnote].lock, current_thread);
-			}
+			check_bnotes_fd(&FDS[fd]);
 			UNLOCK(FDS[fd].lock, current_thread);
 			return read;
 		} else if (async) {
@@ -1047,16 +1033,31 @@ int check_bnote(size_t i, struct BogusFD * fd) {
 					BNOTES[i].data = fd->pb->length;
 					if (BNOTES[i].data > 0) {
 						BNOTES[i].status = 1;
-						return !(BNOTES[i].flags & EV_DISABLE);
 					} else {
 						BNOTES[i].status = 0;
-						return 0;
 					}
+					break;
+				}
+				case BOGFD_UNIX: { // not yet bound, can't read
+					BNOTES[i].data = 0;
+					BNOTES[i].status = 0;
+					break;
+				}
+				case BOGFD_IOAPIC: {
+					if (fd->status[1]) {
+						BNOTES[i].data = 1;
+						BNOTES[i].status = 1;
+					} else {
+						BNOTES[i].data = 0;
+						BNOTES[i].status = 0;
+					}
+					break;
 				}
 				default:
 					ERROR_PRINTF("fdtype %d\n", fd->type);
 					halt("unexpected FD type in check_bnote EVFILT_READ\n", 0);
 			}
+			break;
 		}
 		case EVFILT_WRITE: {
 			switch(fd->type) {
@@ -1064,28 +1065,71 @@ int check_bnote(size_t i, struct BogusFD * fd) {
 					if (fd->pipe == NULL) {
 						BNOTES[i].data = -1;
 						BNOTES[i].status = -1;
-						return !(BNOTES[i].flags & EV_DISABLE);
+						break;
 					}
 					BNOTES[i].data = BOGFD_PB_LEN - fd->pipe->pb->length;
 					if (BNOTES[i].data > 0) {
 						BNOTES[i].status = 1;
-						return !(BNOTES[i].flags & EV_DISABLE);
+						break;
 					} else {
 						BNOTES[i].status = 0;
-						return 0;
+						break;
 					}
+				}
+				case BOGFD_UNIX: { // not yet bound, can't write
+					BNOTES[i].data = 0;
+					BNOTES[i].status = 0;
+					break;
+				}
+				case BOGFD_IOAPIC: { // can't write to an interrupt vector
+					BNOTES[i].data = 0;
+					BNOTES[i].status = 0;
+					break;
 				}
 				default:
 					ERROR_PRINTF("fdtype %d\n", fd->type);
 					halt("unexpected FD type in check_bnote EVFILT_WRITE\n", 0);
 			}
+			break;
 		}
 		default:
 			ERROR_PRINTF("filter %d\n", BNOTES[i].filter);
 			halt("unexpected filter type in check_bnote\n", 0);
 	}
+	if (BNOTES[i].status != 0) {
+		return !(BNOTES[i].flags & EV_DISABLE);
+	}
 	return 0;
 }
+void wake_kq(int kq) {
+	if (kq != BOGFD_MAX) {
+		LOCK(thread_state, current_thread);
+		if (FDS[kq].flags & BOGFD_BLOCKED_READ) {
+			for (int thread = 0; thread < MAX_THREADS; ++thread) {
+				if (threads[thread].state == THREAD_IO_READ && (struct BogusFD *) threads[thread].wait_target == &FDS[kq]) {
+					threads[thread].state = THREAD_RUNNABLE;
+					wake_cpu_for_thread(thread);
+				}
+			}
+			FDS[kq].flags &= ~BOGFD_BLOCKED_READ;
+		}
+		UNLOCK(thread_state, current_thread);
+	}
+}
+
+void check_bnotes_fd(struct BogusFD * fd) {
+	size_t kq = BOGFD_MAX;
+	for (int bnote = fd->bnote; bnote < BNOTE_MAX; bnote = BNOTES[bnote].selnext) {
+		LOCK(BNOTES[bnote].lock, current_thread);
+		if (check_bnote(bnote, fd) && BNOTES[bnote].kq != kq) {
+			wake_kq(kq);
+			kq = BNOTES[bnote].kq;
+		}
+		UNLOCK(BNOTES[bnote].lock, current_thread);
+	}
+	wake_kq(kq);
+}
+
 int kern_kevent(struct kevent_args *a) {
 	size_t kq = a->fd;
 	if (kq < 0 || kq >= BOGFD_MAX) {
@@ -1121,6 +1165,10 @@ int kern_kevent(struct kevent_args *a) {
 			}
 			if (FDS[fd].type != BOGFD_CLOSED) {
 				if (flags & EV_ADD) {
+					if (flags & ~ (EV_ADD  | EV_DISABLE | EV_DISPATCH)) {
+						ERROR_PRINTF("unexpected flags 0x%x\n", flags);
+						halt("halting\n", 0);
+					}
 					size_t x = find_bnote(kq, fd, filter);
 					if (x == BNOTE_MAX) {
 						x = new_bnote();
@@ -1147,6 +1195,9 @@ int kern_kevent(struct kevent_args *a) {
 			UNLOCK(FDS[fd].lock, current_thread);
 		}
 	}
+	if (a->nchanges) {
+		wake_kq(kq); // in case there are other threades waiting on this kq, which can happen!
+	}
 
 	while (a->nevents) {
 		size_t i = FDS[kq].bnote;
@@ -1158,6 +1209,9 @@ int kern_kevent(struct kevent_args *a) {
 				EV_SET(&(a->eventlist[nevents]), BNOTES[i].fd, BNOTES[i].filter, BNOTES[i].flags,
 				       BNOTES[i].fflags, BNOTES[i].data, BNOTES[i].udata);
 				++nevents;
+				if (BNOTES[i].flags & EV_DISPATCH) {
+					BNOTES[i].flags = (BNOTES[i].flags & ~EV_DISPATCH) | EV_DISABLE;
+				}
 			}
 			size_t nexti = BNOTES[i].link;
 			UNLOCK(BNOTES[i].lock, current_thread);
@@ -1171,7 +1225,10 @@ int kern_kevent(struct kevent_args *a) {
 		}
 		//ERROR_PRINTF("kq %d sleeping until %lld (currently %lld, checked %d notes\n", kq, timeout, fixed_point_time, checked);
 		UNLOCK(FDS[kq].lock, current_thread);
-		if (switch_thread(THREAD_POLL, timeout, 0)) {
+		LOCK(thread_state, current_thread);
+		FDS[kq].flags |= BOGFD_BLOCKED_READ;
+		threads[current_thread].wait_target = (uintptr_t) &FDS[kq];
+		if (switch_thread(THREAD_IO_READ, timeout, 1)) {
 			break;
 		}
 		LOCK(FDS[kq].lock, current_thread);
@@ -1179,7 +1236,7 @@ int kern_kevent(struct kevent_args *a) {
 	if (!a->nevents) {
 		UNLOCK(FDS[kq].lock, current_thread);
 	}
-	ERROR_PRINTF("leaving kqueue %d (%d events)\n", kq, nevents);
+	ERROR_PRINTF("thread %d leaving kqueue %d (%d events)\n", current_thread, kq, nevents);
 	return nevents;
 }
 
@@ -1561,6 +1618,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				ERROR_PRINTF("bind (%d, %08x, %d) = EBADF\n", a->s, a->name, a->namelen);
 				SYSCALL_FAILURE(EBADF);
 			}
+			LOCK(FDS[a->s].lock, current_thread);
 			if (FDS[a->s].type == BOGFD_UNIX) {
 				char const* name = ((const struct sockaddr *)a->name)->sa_data;
 				if (strncmp(IOAPIC_PATH, name, strlen(IOAPIC_PATH)) == 0) {
@@ -1593,11 +1651,14 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					ioapic_set_gsi_vector(global_irq, flags, my_vector, current_cpu);
 
 					UNCLAIMED_IOAPIC_INT = 0;
+					check_bnotes_fd(&FDS[a->s]);
+					UNLOCK(FDS[a->s].lock, current_thread);
 					SYSCALL_SUCCESS(0);
 				} else if (strncmp("/kern/fd/", name, 9) == 0) {
 					int fd = name[9] - '0';
 					if (fd >= 0 && fd <= 2) {
 						ERROR_PRINTF("fd %d requested by %d\n", fd, a->s);
+						LOCK(FDS[fd].lock, current_thread);
 						if (FDS[fd].type == BOGFD_TERMIN || FDS[fd].type == BOGFD_TERMOUT) {
 							FDS[a->s].type = BOGFD_PIPE;
 							FDS[a->s].pipe = &FDS[fd];
@@ -1610,10 +1671,16 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 							FDS[fd].pipe = &FDS[a->s];
 							FDS[fd].pb = (struct pipe_buffer *)((uintptr_t)FDS[a->s].pb + (PAGE_SIZE >> 1));
 							FDS[a->s].pb->length = 0;
-
+							check_bnotes_fd(&FDS[a->s]);
+							check_bnotes_fd(&FDS[fd]);
+							UNLOCK(FDS[fd].lock, current_thread);
+							UNLOCK(FDS[a->s].lock, current_thread);
 							SYSCALL_SUCCESS(0);
 						}
+						UNLOCK(FDS[fd].lock, current_thread);
 					}
+					UNLOCK(FDS[a->s].lock, current_thread);
+
 				}
 				SYSCALL_FAILURE(EACCES);
 			}
@@ -2133,7 +2200,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 
 int thr_new_new_thread()
 {
-	UNLOCK(thread_state, -1);
+	UNLOCK(thread_state, current_thread);
 	DEBUG_PRINTF("thr_new return on new thread (%d), cpu %d\n", current_thread, current_cpu);
 	asm volatile ( "finit" :: ); // clear fpu/sse state
 	return 0;
@@ -2441,7 +2508,7 @@ void start_cpus();
 
 void idle() {
 	asm volatile ( "finit" :: ); // clear fpu/sse state
-	UNLOCK(thread_state, -1);
+	UNLOCK(thread_state, current_thread);
 	start_cpus();
 	while (1) {
 		asm volatile( "sti; hlt; cli" :: );
