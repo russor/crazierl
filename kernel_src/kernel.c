@@ -832,6 +832,9 @@ size_t kern_read(int fd, void * buf, size_t nbyte, int async) {
 			read = min(nbyte, FDS[fd].file->end - FDS[fd].pos);
 			memcpy(buf, FDS[fd].pos, read);
 			FDS[fd].pos += read;
+			// return here, because we don't want to block on a file!
+			UNLOCK(FDS[fd].lock, current_thread);
+			return read;
 		} else {
 			UNLOCK(FDS[fd].lock, current_thread);
 			return -EBADF;
