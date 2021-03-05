@@ -68,7 +68,7 @@ $(OTPDIR)/bin/erl:
 
 
 $(OTPDIR)/bin/erl.patched: $(OTPDIR)/bin/erl
-	#sed -e 's@"/usr/local/lib/erlang$(ERLANG_VERSION)"@"$(shell pwd)/$(OTPDIR)"@' -i backup $(OTPDIR)/bin/erl
+	sed -e 's@"/usr/local/lib/erlang$(ERLANG_VERSION)"@"$(shell pwd)/$(OTPDIR)"@' -i backup $(OTPDIR)/bin/erl
 	touch $(OTPDIR)/bin/erl.patched
 
 $(OTPDIR)/bin/erlc: $(OTPDIR)/bin/erl.patched
