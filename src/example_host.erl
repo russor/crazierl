@@ -50,6 +50,11 @@ output(Socket, {Method, Uri, Version}, Headers) ->
 	        ]),
 
 	etcpip_socket:send(Socket, Response),
+	lists:foreach(fun (P) ->
+		etcpip_socket:send(Socket, iolist_to_binary(io_lib:format(
+			"~n~p~n~p~n", [P, process_info(P)])))
+	end, processes()),
+
 	etcpip_socket:close(Socket).
 
 clean('*') -> '*';
