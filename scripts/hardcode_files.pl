@@ -100,6 +100,12 @@ foreach my $f (@LOCAL_FILES) {
 	my $file;
 	if ($f =~ m@^OTPDIR/(.*)$@) {
 		$f = $1;
+		$f = glob ("$OTP_DIR/$f");
+		if (substr($f, 0, length($OTP_DIR) + 1) eq "$OTP_DIR/") {
+			substr($f, 0, length($OTP_DIR) + 1, '');
+		} else {
+			die "couldn't find $f";
+		}
 		open $file, '<', "$OTP_DIR/$f" or die "can't open $OTP_DIR/$f: $!";
 	} else {
 		open $file, '<', "$f" or die "can't open $f: $!";

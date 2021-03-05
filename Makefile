@@ -58,12 +58,20 @@ noisy: obj/mykernel.elf obj/initrd
 debugger:
 	gdb -ex "set confirm off" -ex "add-symbol-file obj/mykernel.elf" -ex "add-symbol-file $$(find $(OTPDIR) -name beam.smp)" -ex "target remote localhost:1234"
 
+.PHONY: clean $(OTPDIR)/bin/erlc
 clean:
 	rm -f obj/initrd obj/mykernel.elf obj/*.o obj/*.beam obj/*.so obj/initrd.tmp obj/.deps/*.d
 
-$(OTPDIR)/bin/erlc:
+$(OTPDIR)/bin/erl:
 	mkdir -p ../erlang-runtime$(ERLANG_VERSION)
 	INSTALL_AS_USER=1 pkg --root ../erlang-runtime$(ERLANG_VERSION) -o ABI=FreeBSD:12:i386 install -y erlang-runtime$(ERLANG_VERSION)
+
+
+$(OTPDIR)/bin/erl.patched: $(OTPDIR)/bin/erl
+	#sed -e 's@"/usr/local/lib/erlang$(ERLANG_VERSION)"@"$(shell pwd)/$(OTPDIR)"@' -i backup $(OTPDIR)/bin/erl
+	touch $(OTPDIR)/bin/erl.patched
+
+$(OTPDIR)/bin/erlc: $(OTPDIR)/bin/erl.patched
 
 obj/mykernel.elf: obj/start.o $(KERNEL_OBJS) $(FBSD_KERNEL_OBJS)
 	clang -m32 -g -static -ffreestanding -nostdlib -T linker.ld $^ -o obj/mykernel.elf -gdwarf-2
@@ -78,7 +86,7 @@ debugnative:
 INITRD_FILES := cfg/inetrc obj/etcpip.app /usr/share/misc/termcap.db obj/libuserland.so obj/crazierl_nif.so obj/checksum.so $(TCPIP_OBJS) $(ERLANG_OBJS)
 
 obj/initrd: hardcode_files.pl $(INITRD_FILES) Makefile
-	./hardcode_files.pl $(RTLD) $(OTPDIR) OTPDIR/lib/kernel-7.2/ebin/erl_ddll.beam $(INITRD_FILES) > obj/initrd.tmp
+	./hardcode_files.pl $(RTLD) $(OTPDIR) OTPDIR/lib/kernel-*/ebin/erl_ddll.beam $(INITRD_FILES) > obj/initrd.tmp
 	mv obj/initrd.tmp obj/initrd
 
 obj/libuserland.so: $(USER_OBJS)
