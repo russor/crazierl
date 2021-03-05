@@ -810,6 +810,7 @@ size_t kern_read(int fd, void * buf, size_t nbyte, int async) {
 				if (FDS[fd].pb->length) {
 					memmove(&FDS[fd].pb->data, &FDS[fd].pb->data[read], FDS[fd].pb->length);
 				}
+				FDS[fd].pb->data[FDS[fd].pb->length] = '\0'; // zero terminate to help with debugging
 				if (FDS[fd].pipe != NULL) {
 					if (&FDS[fd] > FDS[fd].pipe) {
 						// lock smallest FD first, so we have to relock
@@ -1139,9 +1140,9 @@ int kern_kevent(struct kevent_args *a) {
 	uint64_t timeout = 0;
 	if (a->timeout != NULL) {
 		timeout = fixed_point_time + FIXED_POINT_TIME_NANOSECOND(a->timeout->tv_sec, a->timeout->tv_nsec);
-		ERROR_PRINTF("thread %d kqueue %d, %d changes, waiting for %d events, timeout %d.%06d\n", current_thread, kq, a->nchanges, a->nevents, a->timeout->tv_sec, a->timeout->tv_nsec);
+		//ERROR_PRINTF("thread %d kqueue %d, %d changes, waiting for %d events, timeout %d.%06d\n", current_thread, kq, a->nchanges, a->nevents, a->timeout->tv_sec, a->timeout->tv_nsec);
 	} else {
-		ERROR_PRINTF("thread %d kqueue %d, %d changes, waiting for %d events, timeout 0\n", current_thread, kq, a->nchanges, a->nevents);
+		//ERROR_PRINTF("thread %d kqueue %d, %d changes, waiting for %d events, timeout 0\n", current_thread, kq, a->nchanges, a->nevents);
 	}
 	LOCK(FDS[kq].lock, current_thread);
 	if (FDS[kq].type != BOGFD_KQUEUE) {
@@ -1164,14 +1165,18 @@ int kern_kevent(struct kevent_args *a) {
 				halt("can't kevent a kqueue, that's madness!", 0);
 			}
 			if (FDS[fd].type != BOGFD_CLOSED) {
-				if (flags & EV_ADD) {
-					if (flags & ~ (EV_ADD  | EV_DISABLE | EV_DISPATCH)) {
+				if (flags & (EV_ADD | EV_ENABLE | EV_DISABLE)) {
+					if (flags & ~ (EV_ADD  | EV_ENABLE | EV_DISABLE | EV_DISPATCH)) {
+						UNLOCK(FDS[kq].lock, current_thread);
 						ERROR_PRINTF("unexpected flags 0x%x\n", flags);
 						halt("halting\n", 0);
 					}
 					size_t x = find_bnote(kq, fd, filter);
-					if (x == BNOTE_MAX) {
+					if (x == BNOTE_MAX && (flags & EV_ADD)) {
 						x = new_bnote();
+						if (x == BNOTE_MAX) {
+							halt("kq ENOMEM", 0);
+						}
 						BNOTES[x].link = FDS[kq].bnote;
 						FDS[kq].bnote = x;
 						BNOTES[x].selnext = FDS[fd].bnote;
@@ -1180,19 +1185,30 @@ int kern_kevent(struct kevent_args *a) {
 						BNOTES[x].fd = fd;
 					}
 					if (x == BNOTE_MAX) {
-						halt("kqueue needs ENOMEM, out of bnotes", 0);
+						halt("kq ENOENT", 0);
+					} else {
+						// no need to lock bnote, because we hold fd and kq lock
+						BNOTES[x].flags = flags;
+						BNOTES[x].filter = filter;
+						BNOTES[x].udata = a->changelist[i].udata;
+						check_bnote(x, &FDS[fd]);
 					}
-					// no need to lock bnote, because we hold fd and kq lock
-					BNOTES[x].flags = flags;
-					BNOTES[x].filter = filter;
-					BNOTES[x].udata = a->changelist[i].udata;
-					check_bnote(x, &FDS[fd]);
+				} else {
+					UNLOCK(FDS[kq].lock, current_thread);
+					ERROR_PRINTF("flags 0x%x\n", flags);
+					halt("flags", 0);
 				}
 				if (flags & EV_RECEIPT) {
 					halt("kqueue EV_RECEIPT handling unimplemented", 0);
 				}
+			} else {
+				halt("kevent EBADF", 0);
 			}
 			UNLOCK(FDS[fd].lock, current_thread);
+		} else {
+			UNLOCK(FDS[kq].lock, current_thread);
+			ERROR_PRINTF("filter %d\n", filter);
+			halt("filter", 0);
 		}
 	}
 	if (a->nchanges) {
@@ -1205,7 +1221,7 @@ int kern_kevent(struct kevent_args *a) {
 		while (nevents < a->nevents && i != BNOTE_MAX) {
 			LOCK(BNOTES[i].lock, current_thread);
 			if (BNOTES[i].status && !(BNOTES[i].flags & EV_DISABLE)) {
-				ERROR_PRINTF("got event fd %d, filter %d\n", BNOTES[i].fd, BNOTES[i].filter);
+				//ERROR_PRINTF("got event fd %d, filter %d\n", BNOTES[i].fd, BNOTES[i].filter);
 				EV_SET(&(a->eventlist[nevents]), BNOTES[i].fd, BNOTES[i].filter, BNOTES[i].flags,
 				       BNOTES[i].fflags, BNOTES[i].data, BNOTES[i].udata);
 				++nevents;
@@ -1223,7 +1239,7 @@ int kern_kevent(struct kevent_args *a) {
 			UNLOCK(FDS[kq].lock, current_thread);
 			break;
 		}
-		//ERROR_PRINTF("kq %d sleeping until %lld (currently %lld, checked %d notes\n", kq, timeout, fixed_point_time, checked);
+		//ERROR_PRINTF("thread %d kq %d sleeping until %lld (currently %lld, checked %d notes\n", current_thread, kq, timeout, fixed_point_time, checked);
 		UNLOCK(FDS[kq].lock, current_thread);
 		LOCK(thread_state, current_thread);
 		FDS[kq].flags |= BOGFD_BLOCKED_READ;
@@ -1236,7 +1252,7 @@ int kern_kevent(struct kevent_args *a) {
 	if (!a->nevents) {
 		UNLOCK(FDS[kq].lock, current_thread);
 	}
-	ERROR_PRINTF("thread %d leaving kqueue %d (%d events)\n", current_thread, kq, nevents);
+	//ERROR_PRINTF("thread %d leaving kqueue %d (%d events)\n", current_thread, kq, nevents);
 	return nevents;
 }
 
@@ -2486,14 +2502,14 @@ void enable_sse() {
 
 void setup_fds() 
 {
+	for (int i = 0; i < BOGFD_MAX; ++i) {
+		FDS[i].type = BOGFD_CLOSED;
+		FDS[i].bnote = BNOTE_MAX;
+	}
 	FDS[0].type = BOGFD_TERMIN;
 	FDS[1].type = BOGFD_TERMOUT;
 	FDS[2].type = BOGFD_TERMOUT;
 	next_fd = 3;
-	for (int i = next_fd; i < BOGFD_MAX; ++i) {
-		FDS[i].type = BOGFD_CLOSED;
-		FDS[i].bnote = BNOTE_MAX;
-	}
 	next_bnote = 0;
 	for (int i = 0; i < BNOTE_MAX; ++i) {
 		BNOTES[i].kq = BNOTES[i].fd = BOGFD_MAX;
