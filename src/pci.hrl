@@ -1,7 +1,7 @@
 -record (pci_common, {
 	bus, device, function, driver, pid,
 	vendor, device_id, class, sub_class,
-	revision, prog_if, capabilities
+	revision, prog_if, capabilities, msix_map
 }).
 
 -record (pci_device, {
@@ -23,5 +23,5 @@
 }).
 
 -record (pci_msi_x, {
-	enabled, mask, size, table, pending
+	enabled, mask, size, table, pending, offset
 }).

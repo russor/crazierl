@@ -1,6 +1,6 @@
 -module(pci).
 
--export([start/0, list/0, attach/2]).
+-export([start/0, list/0, attach/2, enable_msix/1]).
 -include("pci.hrl").
 -behavior(gen_server).
 
@@ -65,6 +65,9 @@ list() ->
 attach(Module, Args) ->
 	gen_server:call(?MODULE, {attach, Module, Args}).
 
+enable_msix(Device) ->
+	gen_server:call(?MODULE, {enable_msix, Device}).
+
 scan_bus(_, 32, _, Acc) -> Acc; % only 32 devices per Bus
 scan_bus(Bus, Device, Function, Acc) ->
 	{PCIFunction, HasMultiFunction} = probe_device(Bus, Device, Function, <<>>),
@@ -120,18 +123,21 @@ probe_device(Bus, Device, Function, Config) when size(Config) == 256 ->
 			  _:32,
 			  InterruptLine:8, InterruptPIN:8, _MinGrant:8, _MaxLatency:8, _/binary>> = TypeSpecific,
 			Bars = probe_bars(PCICommon, 16#10, [BAR0, BAR1, BAR2, BAR3, BAR4, BAR5], []),
-			#pci_device{common = PCICommon, chip_vendor = ChipVendor, chip_device_id = ChipDeviceId,
+			NewCommon = map_msix(PCICommon, Bars),
+			#pci_device{common = NewCommon, chip_vendor = ChipVendor, chip_device_id = ChipDeviceId,
 			            interrupt_line = InterruptLine, interrupt_pin = InterruptPIN,
 			            bars = Bars
 			            };
 		1 -> <<BAR0:4/binary, BAR1:4/binary,
 		       _PrimaryBus:8, SecondaryBus:8, _Rest/binary>> = TypeSpecific,
 		        Bars = probe_bars(PCICommon, 16#10, [BAR0, BAR1], []),
-			#pci_bridge{common = PCICommon,
+		        NewCommon = map_msix(PCICommon, Bars),
+			#pci_bridge{common = NewCommon,
 			            bars = Bars,
 			            secondary_bus = SecondaryBus}
 	end,
 	% FIXME: restore io/mem addressing
+	
 	{Return, MultiFunction};
 probe_device(Bus, Device, Function, Bin) ->
 	NextWord = pciConfigReadWord(Bus, Device, Function, size(Bin)),
@@ -158,7 +164,8 @@ parse_capability(16#11, Config, Offset) ->
 	<<Enable:1, FunctionMask:1, _:3, Size:11>> = <<MessageControl:16>>,
 	#pci_msi_x{enabled = Enable, mask = FunctionMask, size = Size + 1,
 		table = {TableOffset band 7, TableOffset band 16#FFFFFFF8},
-		pending = {PendingBit band 7, PendingBit band 16#FFFFFFF8}};
+		pending = {PendingBit band 7, PendingBit band 16#FFFFFFF8},
+		offset = Offset};
 parse_capability(Type, _Config, Offset) ->
 	{Type, Offset}.
 
@@ -265,3 +272,18 @@ print_bar(#pci_io_bar{base = Base, size = Size}, N) ->
 	io:format("    bar~B = I/O size ~B, base 0x~.16B~n", [N, Size, Base]);
 print_bar(#pci_mem_bar{base = Base, size = Size, prefetch = Prefetch, type = Type}, N) ->
 	io:format("    bar~B = mem size ~B, base 0x~.16B, prefetch ~p, type ~s~n", [N, Size, Base, Prefetch, Type]).
+
+map_msix(#pci_common{capabilities = Capabilities} = Common, Bars) ->
+	case get_msix(Capabilities) of
+		#pci_msi_x {size = Size, table = {BarNumber, BarOffset}} ->
+			Length = Size * 16,
+			Bar = element(BarNumber + 1, Bars),
+			true = (Bar#pci_mem_bar.size >= (BarOffset + Length)),
+			Map = crazierl:map(Bar#pci_mem_bar.base + BarOffset, Length),
+			Common#pci_common{msix_map = Map};
+		false -> Common
+	end.
+
+get_msix([#pci_msi_x{} = X | _]) -> X;
+get_msix([_ | T]) -> get_msix(T);
+get_msix([]) -> false.

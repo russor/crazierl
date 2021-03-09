@@ -8,7 +8,7 @@
 #define BOGFD_FILE 4
 #define BOGFD_DIR 5
 #define BOGFD_NULL 6
-#define BOGFD_IOAPIC 7
+#define BOGFD_IRQ 7
 #define BOGFD_UNIX 8
 #define BOGFD_KQUEUE 9
 #define BOGFD_PENDING 10

@@ -1,5 +1,6 @@
 -module(crazierl).
 -export([start/0, inb/1, inl/1, outb/2, outl/2, map/2, map_addr/1, bcopy_to/3, bcopy_from/3]).
+-export([open_interrupt/1]).
 
 -on_load(init/0).
 
@@ -26,3 +27,13 @@ start() ->
 	pci:attach(virtio_net, []),
 	application:start(etcpip),
 	example_host:start().
+
+open_interrupt(Irq) ->
+        Path = io_lib:format("/kern/irq/~B", [Irq]),
+        {ok, Socket} = gen_udp:open(0, [
+                {ifaddr, {local, Path}},
+                {active, true}
+        ]),
+        {ok, {local, ActualPath}} = inet:sockname(Socket),
+        {ok, [ActualIrq], []} = io_lib:fread("/kern/irq/~d", binary_to_list(ActualPath)),
+        {Socket, ActualIrq}.

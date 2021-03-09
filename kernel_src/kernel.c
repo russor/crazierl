@@ -101,6 +101,7 @@ struct bnote BNOTES[BNOTE_MAX];
 size_t next_fd;
 size_t next_bnote;
 uint8_t next_irq_vector = FIRST_IRQ_VECTOR;
+DECLARE_LOCK(all_irqs);
 volatile int cpus_initing = 1;
 
 uint8_t WANT_NMI = 0;
@@ -203,6 +204,7 @@ uint64_t fixed_point_time;
 uintptr_t user_stack;
 
 #define IOAPIC_PATH "/kern/ioapic/"
+#define IRQ_PATH "/kern/irq/"
 
 int check_bnote(size_t, struct BogusFD *);
 void check_bnotes_fd(struct BogusFD *);
@@ -641,7 +643,7 @@ struct interrupt_frame
 
 
 
-int UNCLAIMED_IOAPIC_INT = 0;
+int UNCLAIMED_IRQ = 0;
 void handle_irq(unsigned int vector)
 {
 	local_apic_write(0xB0, 0); // EOI
@@ -675,13 +677,13 @@ void handle_irq(unsigned int vector)
 		default: {
 			int found = 0;
 			for (int fd = 0; fd < BOGFD_MAX; ++fd) {
-				if (FDS[fd].type == BOGFD_IOAPIC && FDS[fd].status[0] == vector) {
+				if (FDS[fd].type == BOGFD_IRQ && FDS[fd].status[0] == vector) {
 					++found;
 					write(fd, "!", 1);
 				}
 			}
 			if (!found) { // && !UNCLAIMED_IOAPIC_INT) {
-				UNCLAIMED_IOAPIC_INT = 1;
+				UNCLAIMED_IRQ = 1;
 				ERROR_PRINTF("unexpected interrupt vector %X on cpu %d\n", vector, current_cpu);
 			}
 		}
@@ -759,7 +761,7 @@ ssize_t write(int fd, const void * buf, size_t nbyte) {
 			check_bnotes_fd(FDS[fd].pipe);
 			UNLOCK(FDS[fd].pipe->lock, current_thread);
 		}
-	} else if (FDS[fd].type == BOGFD_IOAPIC) {
+	} else if (FDS[fd].type == BOGFD_IRQ) {
 		FDS[fd].status[1] = 1;
 		written = 1;
 		wait_target = &FDS[fd];
@@ -982,7 +984,7 @@ int kern_ppoll(struct ppoll_args *a) {
 				++changedfds;
 				continue;
 			}
-			if ((a->fds[i].events & POLLIN && fd->type == BOGFD_IOAPIC && fd->status[1] != 0) ||
+			if ((a->fds[i].events & POLLIN && fd->type == BOGFD_IRQ && fd->status[1] != 0) ||
 			    (a->fds[i].events & POLLIN && fd->type == BOGFD_PIPE && fd->pb->length != 0)
 			   ) {
 				a->fds[i].revents |= POLLIN;
@@ -1047,7 +1049,7 @@ int check_bnote(size_t i, struct BogusFD * fd) {
 					BNOTES[i].status = 0;
 					break;
 				}
-				case BOGFD_IOAPIC: {
+				case BOGFD_IRQ: {
 					if (fd->status[1]) {
 						BNOTES[i].data = 1;
 						BNOTES[i].status = 1;
@@ -1085,7 +1087,7 @@ int check_bnote(size_t i, struct BogusFD * fd) {
 					BNOTES[i].status = 0;
 					break;
 				}
-				case BOGFD_IOAPIC: { // can't write to an interrupt vector
+				case BOGFD_IRQ: { // can't write to an interrupt vector
 					BNOTES[i].data = 0;
 					BNOTES[i].status = 0;
 					break;
@@ -1531,7 +1533,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			}
 			int read = 0;
 			struct BogusFD *fd = &FDS[a->s];
-			if (fd->type == BOGFD_IOAPIC) {
+			if (fd->type == BOGFD_IRQ) {
 				if (fd->status[1]) {
 					a->buf[0] = '!';
 					read = 1;
@@ -1564,6 +1566,32 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					halt("blocking recvfrom", 0);
 				}
 			}
+		}
+		case SYS_getsockname: {
+			struct getsockname_args *a = argp;
+			if (a->fdes < 0 || a->fdes >= BOGFD_MAX) {
+				SYSCALL_FAILURE(EBADF);
+			}
+			LOCK(FDS[a->fdes].lock, current_thread);
+			if (FDS[a->fdes].type != BOGFD_IRQ) {
+				UNLOCK(FDS[a->fdes].lock, current_thread);
+				SYSCALL_FAILURE(ENOTSOCK);
+			}
+			int len;
+			//int len = rtld_snprintf(a->asa->sa_data, *a->alen, "%s%d", IRQ_PATH, FDS[a->fdes].status[0]);
+			if (*a->alen < strlen(IRQ_PATH) + 3 + 1) { // max 256, plus 0
+				halt("buffer is too small", 0);
+			}
+
+			len = rtld_snprintf(a->asa->sa_data, *a->alen, "%s%u", IRQ_PATH, FDS[a->fdes].status[0]);
+			if (len + 1 > *a->alen) {
+				halt("buffer was too small", 0);
+			}
+			a->asa->sa_family = AF_LOCAL;
+			a->asa->sa_len = strlen(a->asa->sa_data) + 1;
+
+			UNLOCK(FDS[a->fdes].lock, current_thread);
+			SYSCALL_SUCCESS(0);
 		}
 		case SYS_ioctl: {
 			struct ioctl_args *a = argp;
@@ -1648,6 +1676,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					}
 					long flags = strtol(endptr, NULL, 10);
 
+					LOCK(all_irqs, current_thread);
 					while (next_irq_vector < 0xF0) {
 						if (!(IDT[next_irq_vector].type_attr & 0x80)) {
 						    break;
@@ -1660,16 +1689,51 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					uint8_t my_vector = next_irq_vector;
 					++next_irq_vector;
 
-					FDS[a->s].type = BOGFD_IOAPIC;
+					FDS[a->s].type = BOGFD_IRQ;
 					FDS[a->s].status[0] = my_vector;
 					FDS[a->s].status[1] = 0;
 					FDS[a->s].status[2] = global_irq;
 
 					IDT[my_vector].type_attr |= 0x80;
+					UNLOCK(all_irqs, current_thread);
 					
 					ioapic_set_gsi_vector(global_irq, flags, my_vector, current_cpu);
 
-					UNCLAIMED_IOAPIC_INT = 0;
+					UNCLAIMED_IRQ = 0;
+					check_bnotes_fd(&FDS[a->s]);
+					UNLOCK(FDS[a->s].lock, current_thread);
+					SYSCALL_SUCCESS(0);
+				} else if (strncmp(IRQ_PATH, name, strlen(IRQ_PATH)) == 0) {
+					char * endptr;
+					long my_vector = strtol(name + strlen(IRQ_PATH), &endptr, 10);
+					if (*endptr != '\0') {
+						halt("bad path for interrupt\n", 0);
+					}
+
+					LOCK(all_irqs, current_thread);
+					if (my_vector == 0) {
+						while (next_irq_vector < 0xF0) {
+							if (!(IDT[next_irq_vector].type_attr & 0x80)) {
+							    break;
+							}
+							++next_irq_vector;
+						}
+						if (next_irq_vector >= 0xF0) {
+							halt("too many irq vectors were requested, max vector is 0xF0\n", 0);
+						}
+						my_vector = next_irq_vector;
+						++next_irq_vector;
+					}
+
+					FDS[a->s].type = BOGFD_IRQ;
+					FDS[a->s].status[0] = my_vector;
+					FDS[a->s].status[1] = 0;
+					FDS[a->s].status[2] = 0;
+
+					IDT[my_vector].type_attr |= 0x80;
+					UNLOCK(all_irqs, current_thread);
+
+					UNCLAIMED_IRQ = 0;
 					check_bnotes_fd(&FDS[a->s]);
 					UNLOCK(FDS[a->s].lock, current_thread);
 					SYSCALL_SUCCESS(0);
