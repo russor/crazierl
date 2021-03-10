@@ -1,6 +1,6 @@
 -module(pci).
 
--export([start/0, list/0, attach/2, enable_msix/1]).
+-export([start/0, list/0, attach/2, enable_msix/3]).
 -include("pci.hrl").
 -behavior(gen_server).
 
@@ -37,6 +37,35 @@ handle_call({attach, Module, Args}, _From, State) ->
 	lists:map(fun (Device) -> attach_device_impl(Device, Module, Args) end, State#state.devices),
 	{reply, ok, State#state{devices = NewDevices}};
 
+handle_call({enable_msix, #pci_common{msix_map = Map, capabilities = Capabilities} = Common, Vector, IRQ}, _From, State) ->
+	Reply = case get_msix(Capabilities) of
+		false -> {error, no_msix};
+		#pci_msi_x{size = S} when Vector >= S -> {error, invalid_vector};
+		#pci_msi_x{offset = Offset} ->
+			% FIXME: x86 specific here
+			DestAPIC = 3,
+			<<AddressLo:32>> = <<16#FEE:12, DestAPIC:8, 0:8, 1:1, 0:1, 0:2>>,
+			AddressHi = 0,
+			Data = IRQ bor 16#100,
+			% FIXME: need MSI settings for other platforms
+			crazierl:bcopy_to(Map, Vector * 16 + 0, <<AddressLo:32/little>>),
+			crazierl:bcopy_to(Map, Vector * 16 + 4, <<AddressHi:32/little>>),
+			crazierl:bcopy_to(Map, Vector * 16 + 8, <<Data:32/little>>),
+			crazierl:bcopy_to(Map, Vector * 16 + 12,<<0:32/little>>), % not masked
+			<<Capability:8, Next:8, Control:16/little>> = pciConfigReadWord(Common, Offset),
+			Enabled = Control bor 16#8000,
+			pciConfigWriteWord(Common, Offset, <<Capability:8, Next:8, Enabled:16/little>>),
+			% set device to be bus-master, so it can actually write the MSI-X interrupt
+			<<Command:16/little, Status:16/little>> = pciConfigReadWord(Common, 4),
+			case Command band 4 of
+				0 ->
+					NewCommand = Command bor 4,
+					pciConfigWriteWord(Common, 4, <<NewCommand:16/little, Status:16/little>>);
+				4 -> ok
+			end
+	end,
+	{reply, Reply, State};
+
 handle_call(list, _From, State) ->
 	{reply, State#state.devices, State}.
 
@@ -65,8 +94,8 @@ list() ->
 attach(Module, Args) ->
 	gen_server:call(?MODULE, {attach, Module, Args}).
 
-enable_msix(Device) ->
-	gen_server:call(?MODULE, {enable_msix, Device}).
+enable_msix(Device, Vector, IRQ) when Vector >= 0 ->
+	gen_server:call(?MODULE, {enable_msix, Device, Vector, IRQ}).
 
 scan_bus(_, 32, _, Acc) -> Acc; % only 32 devices per Bus
 scan_bus(Bus, Device, Function, Acc) ->
@@ -163,8 +192,8 @@ parse_capability(16#11, Config, Offset) ->
 	<<MessageControl:16/little, TableOffset:32/little, PendingBit:32/little>> = binary:part(Config, {Offset + 2, 10}),
 	<<Enable:1, FunctionMask:1, _:3, Size:11>> = <<MessageControl:16>>,
 	#pci_msi_x{enabled = Enable, mask = FunctionMask, size = Size + 1,
-		table = {TableOffset band 7, TableOffset band 16#FFFFFFF8},
-		pending = {PendingBit band 7, PendingBit band 16#FFFFFFF8},
+		table = {(TableOffset band 7), TableOffset band 16#FFFFFFF8},
+		pending = {(PendingBit band 7), PendingBit band 16#FFFFFFF8},
 		offset = Offset};
 parse_capability(Type, _Config, Offset) ->
 	{Type, Offset}.
@@ -279,7 +308,7 @@ map_msix(#pci_common{capabilities = Capabilities} = Common, Bars) ->
 			Length = Size * 16,
 			Bar = element(BarNumber + 1, Bars),
 			true = (Bar#pci_mem_bar.size >= (BarOffset + Length)),
-			Map = crazierl:map(Bar#pci_mem_bar.base + BarOffset, Length),
+			{ok, Map} = crazierl:map(Bar#pci_mem_bar.base + BarOffset, Length),
 			Common#pci_common{msix_map = Map};
 		false -> Common
 	end.

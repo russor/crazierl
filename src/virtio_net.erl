@@ -78,12 +78,13 @@ attach(Device, _Args) ->
 
 	{ok, NotifyMap} = map_structure(notify_cfg, Device, Capabilities),
 
-	%{RxSocket, RxInt} = crazierl:open_interrupt(0),
-	RxSocket = foo,
-	
+	{RxSocket, RxInt} = crazierl:open_interrupt(0),
+	%io:format("using int ~B~n", [RxInt]),
+	pci:enable_msix(Common, 0, RxInt),
+	pci:enable_msix(Common, 1, RxInt),
 	<<NotifyOffsetMult:32/little>> = (maps:get(notify_cfg, Capabilities))#virtio_pci_cap.data,
-	RxQ = setup_virtq(CommonMap, read, 0, NotifyOffsetMult, NotifyMap),
-	TxQ = setup_virtq(CommonMap, write, 1, NotifyOffsetMult, NotifyMap),
+	RxQ = setup_virtq(CommonMap, read, 0, NotifyOffsetMult, NotifyMap, 0),
+	TxQ = setup_virtq(CommonMap, write, 1, NotifyOffsetMult, NotifyMap, 1),
 
 	<<11>> = crazierl:bcopy_from(CommonMap, ?DEVICE_STATUS, 1), % confirm
 	crazierl:bcopy_to(CommonMap, ?DEVICE_STATUS, <<15>>), % features_OK
@@ -122,6 +123,9 @@ map_structure(Key, #pci_device{bars = Bars}, Caps) ->
 
 loop(Device, MacAddr, RxSocket, RxQ, TxQ) ->
 	TxQ1 = receive
+		{udp, RxSocket, _, _, _} ->
+			%io:format("got rx interrupt!~n", []),
+			TxQ;
 		{'$gen_call', From, {send, {DestMac, EtherType}, Payload}} ->
 			Packet = <<DestMac:48, MacAddr:48, EtherType:16, Payload/binary>>,
 			%io:format("sending ... ~w~n", [Packet]),
@@ -131,7 +135,10 @@ loop(Device, MacAddr, RxSocket, RxQ, TxQ) ->
 			Packet = iolist_to_binary(Data),
 			%io:format("sending ... ~w~n", [Packet]),
 			gen:reply(From, ok),
-			add_to_queue(TxQ, Packet)
+			add_to_queue(TxQ, Packet);
+		Other ->
+			io:format("got message ~p", [Other]),
+			TxQ
 	after 1000 ->
 		TxQ
 	end,
@@ -234,7 +241,7 @@ feature_flag(legacy_guest_rsc6) -> 52;
 feature_flag(rsc_ext) -> 61;
 feature_flag(standby) -> 62.
 
-setup_virtq(CommonMap, Type, QueueNum, NotifyMult, NotifyMap) ->
+setup_virtq(CommonMap, Type, QueueNum, NotifyMult, NotifyMap, Vector) ->
 	{ok, Map} = crazierl:map(0, ?VIRTQ_TOTAL_LEN),
 	{_Virtual, Physical} = crazierl:map_addr(Map),
 	Flags = case Type of
@@ -242,13 +249,18 @@ setup_virtq(CommonMap, Type, QueueNum, NotifyMult, NotifyMap) ->
 		write -> 0
 	end,
 	DescriptorTable = virtq_descriptors(Physical + ?VIRTQ_BUFFER_START, Flags, 0, <<>>),
-	crazierl:bcopy_to(Map, 0, <<DescriptorTable/binary, 1:16/little>>), % available ring has notifications disabled and nothing available
+	crazierl:bcopy_to(Map, 0, <<DescriptorTable/binary>>),
 	Used = case Type of
 		read -> ignore;
 		write -> [{0, ?VIRTQ_LEN - 1}]
 	end,
+	MSIVector = case Vector of
+		false -> 16#FFFF;
+		_ -> Vector
+	end,
 	crazierl:bcopy_to(CommonMap, ?QUEUE_SELECT, <<QueueNum:16/little>>),
 	crazierl:bcopy_to(CommonMap, ?QUEUE_SIZE, <<?VIRTQ_LEN:16/little>>),
+	crazierl:bcopy_to(CommonMap, ?QUEUE_MSIX_VECTOR, <<MSIVector:16/little>>),
 	crazierl:bcopy_to(CommonMap, ?QUEUE_DESC, <<Physical:64/little>>),
 	crazierl:bcopy_to(CommonMap, ?QUEUE_DRIVER, <<(Physical + ?VIRTQ_AVAIL_START):64/little>>),
 	crazierl:bcopy_to(CommonMap, ?QUEUE_DEVICE, <<(Physical + ?VIRTQ_USED_START):64/little>>),
@@ -337,7 +349,7 @@ process_packet(Queue = #virtq{map = Map, used_idx = Idx}, read, NewIndex) ->
 
 process_packet(Queue = #virtq{map = Map, used = Used, used_idx = Idx}, write, NewIndex) ->
 	%io:format("reading used ring item (write) ~B~n", [Idx]),
-	<<Id:32/little, Len:32/little>> = crazierl:bcopy_from(Map, ?VIRTQ_USED_START + 4 + (8 * (Idx band (?VIRTQ_LEN -1 ))), 8),
+	<<Id:32/little, _Len:32/little>> = crazierl:bcopy_from(Map, ?VIRTQ_USED_START + 4 + (8 * (Idx band (?VIRTQ_LEN -1 ))), 8),
 	%io:format("descriptor ~B, length ~B~n", [Id, Len]),
 	NewUsed = add_to_used(Used, Id),
 	process_packet(Queue#virtq{used = NewUsed, used_idx = (Idx + 1) band ((1 bsl 16) - 1)}, write, NewIndex).
