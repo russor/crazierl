@@ -1123,7 +1123,37 @@ void wake_kq(int kq) {
 	}
 }
 
+void cleanup_bnotes(int fd, int is_kq) {
+	int bn = FDS[fd].bnote;
+	int next;
+	int min_freed = BNOTE_MAX;
+
+	while (bn != BNOTE_MAX) {
+		LOCK(BNOTES[bn].lock, current_thread);
+		BNOTES[bn].flags = EV_DROP;
+		BNOTES[bn].filter = BNOTE_PENDING;
+		BNOTES[bn].status = 0;
+		if (is_kq) {
+			next = BNOTES[bn].link;
+			BNOTES[bn].link = BNOTE_MAX;
+			BNOTES[bn].kq = BOGFD_MAX;
+		} else {
+			next = BNOTES[bn].selnext;
+			BNOTES[bn].selnext = BNOTE_MAX;
+			BNOTES[bn].fd = BOGFD_MAX;
+		}
+		if (BNOTES[bn].fd == BNOTES[bn].kq) {
+			BNOTES[bn].flags = 0;
+			BNOTES[bn].filter = 0;
+			min_freed = min(min_freed, bn);
+		}
+		UNLOCK(BNOTES[bn].lock, current_thread);
+		bn = next;
+	}
+}
+
 void check_bnotes_fd(struct BogusFD * fd) {
+	//TODO look for EV_DROP and cleanup
 	size_t kq = BOGFD_MAX;
 	for (int bnote = fd->bnote; bnote < BNOTE_MAX; bnote = BNOTES[bnote].selnext) {
 		LOCK(BNOTES[bnote].lock, current_thread);
@@ -1198,6 +1228,13 @@ int kern_kevent(struct kevent_args *a) {
 						BNOTES[x].udata = a->changelist[i].udata;
 						check_bnote(x, &FDS[fd]);
 					}
+				} else if (flags & EV_DELETE) {
+					size_t x = find_bnote(kq, fd, filter);
+					if (x != BNOTE_MAX) {
+						BNOTES[x].flags = EV_DROP;
+						BNOTES[x].filter = BNOTE_PENDING;
+						BNOTES[x].status = 0;
+					}
 				} else {
 					UNLOCK(FDS[kq].lock, current_thread);
 					ERROR_PRINTF("flags 0x%x\n", flags);
@@ -1223,6 +1260,7 @@ int kern_kevent(struct kevent_args *a) {
 	while (a->nevents) {
 		size_t i = FDS[kq].bnote;
 		size_t checked = 0;
+		//TODO look for EV_DROP and cleanup
 		while (nevents < a->nevents && i != BNOTE_MAX) {
 			LOCK(BNOTES[i].lock, current_thread);
 			if (BNOTES[i].status && !(BNOTES[i].flags & EV_DISABLE)) {
@@ -1496,13 +1534,9 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 						FDS[a->fd].pipe->pipe = NULL;
 					}
 				}
-			} else if (FDS[a->fd].type == BOGFD_KQUEUE) {
-				halt("kqueue cleanup unimplemented\n", 0);
 			}
 
-			if (FDS[a->fd].bnote != BNOTE_MAX) {
-				halt("bnote cleanup unimplemented\n", 0);
-			}
+			cleanup_bnotes(a->fd, FDS[a->fd].type == BOGFD_KQUEUE);
 
 			if (FDS[a->fd].type != BOGFD_CLOSED) {
 				DEBUG_PRINTF("close (%d)\n", a->fd);
