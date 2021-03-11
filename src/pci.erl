@@ -43,8 +43,8 @@ handle_call({enable_msix, #pci_common{msix_map = Map, capabilities = Capabilitie
 		#pci_msi_x{size = S} when Vector >= S -> {error, invalid_vector};
 		#pci_msi_x{offset = Offset} ->
 			% FIXME: x86 specific here
-			DestAPIC = 3,
-			<<AddressLo:32>> = <<16#FEE:12, DestAPIC:8, 0:8, 1:1, 0:1, 0:2>>,
+			DestAPIC = 0,
+			<<AddressLo:32>> = <<16#FEE:12, DestAPIC:8, 0:8, 0:1, 0:1, 0:2>>,
 			AddressHi = 0,
 			Data = IRQ bor 16#100,
 			% FIXME: need MSI settings for other platforms
