@@ -38,23 +38,29 @@ header_loop(Socket, Request, Headers, Bin) ->
 			header_loop(Socket, Request, [{Int, Field, OrigField, Val}|Headers], Rest)
 	end.
 
-output(Socket, {Method, Uri, Version}, Headers) ->
-	Response = iolist_to_binary([io_lib:format(
-		"HTTP/1.0 200 OK\r\nConnection: close\r\nContent-Type: text/plain\r\n\r\n"
-		"Your method: ~s\r\n"
-	        "Your URI: ~s\r\n"
-	        "Your version: ~w\r\n", [Method, clean(Uri), Version]),
-	        "\r\n",
-	        lists:map(fun({_, _, K, V}) -> [K, ": ", V, "\r\n"] end, Headers),
-	        io_lib:format("~w", [erlang:memory()]), "\r\n"
-	        ]),
-
+output(Socket, {Method, {abs_path, <<"/process_info">>}, Version}, Headers) ->
+	Response = <<"HTTP/1.0 200 OK\r\nConnection: close\r\nContent-Type: text/plain\r\n\r\n">>,
 	etcpip_socket:send(Socket, Response),
 	lists:foreach(fun (P) ->
 		etcpip_socket:send(Socket, iolist_to_binary(io_lib:format(
 			"~n~p~n~p~n", [P, process_info(P)])))
 	end, processes()),
 
+	etcpip_socket:close(Socket);
+
+output(Socket, {Method, {abs_path, <<"/memory">>}, Version}, Headers) ->
+	Response = iolist_to_binary([
+		"HTTP/1.0 200 OK\r\nConnection: close\r\nContent-Type: text/plain\r\n\r\n",
+	        io_lib:format("~w", [erlang:memory()]), "\r\n"
+	        ]),
+
+	etcpip_socket:send(Socket, Response),
+	etcpip_socket:close(Socket);
+
+output(Socket, {Method, Uri, Version}, Headers) ->
+	Response = <<"HTTP/1.0 404 Not Found\r\nConnection: close\r\nContent-Type: text/plain\r\n\r\n"
+		"Not found\r\n">>,
+	etcpip_socket:send(Socket, Response),
 	etcpip_socket:close(Socket).
 
 clean('*') -> '*';
