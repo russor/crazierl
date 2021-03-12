@@ -853,9 +853,10 @@ size_t kern_read(int fd, void * buf, size_t nbyte, int async) {
 			return -EAGAIN;
 		} else {
 			FDS[fd].flags |= BOGFD_BLOCKED_READ;
+			LOCK(thread_state, current_thread);
 			threads[current_thread].wait_target = (uintptr_t) &FDS[fd];
 			UNLOCK(FDS[fd].lock, current_thread);
-			switch_thread(THREAD_IO_READ, 0, 0);
+			switch_thread(THREAD_IO_READ, 0, 1);
 		}
 	}
 }
@@ -1286,9 +1287,9 @@ int kern_kevent(struct kevent_args *a) {
 			break;
 		}
 		//ERROR_PRINTF("thread %d kq %d sleeping until %lld (currently %lld, checked %d notes\n", current_thread, kq, timeout, fixed_point_time, checked);
-		UNLOCK(FDS[kq].lock, current_thread);
 		LOCK(thread_state, current_thread);
 		FDS[kq].flags |= BOGFD_BLOCKED_READ;
+		UNLOCK(FDS[kq].lock, current_thread);
 		threads[current_thread].wait_target = (uintptr_t) &FDS[kq];
 		if (switch_thread(THREAD_IO_READ, timeout, 1)) {
 			break;
@@ -1362,6 +1363,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 		case SYS_sendto: {
 			struct sendto_args *a = argp;
 			while (1) {
+				LOCK(FDS[a->s].lock, current_thread);
 				ssize_t ret = write(a->s, a->buf, a->len);
 				if (ret > 0) {
 					SYSCALL_SUCCESS(ret);
@@ -1369,6 +1371,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					if (FDS[a->s].flags & O_NONBLOCK) {
 						SYSCALL_FAILURE(EAGAIN);
 					} else {
+						halt("bad locking, needs fixing\n", 0);
 						FDS[a->s].flags |= BOGFD_BLOCKED_WRITE;
 						threads[current_thread].wait_target = (uintptr_t) &FDS[a->s];
 						switch_thread(THREAD_IO_WRITE, 0, 0);
@@ -1388,6 +1391,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					if (FDS[a->fd].flags & O_NONBLOCK) {
 						SYSCALL_FAILURE(EAGAIN);
 					} else {
+						halt("bad locking needs fixing\n", 0);
 						FDS[a->fd].flags |= BOGFD_BLOCKED_WRITE;
 						threads[current_thread].wait_target = (uintptr_t) &FDS[a->fd];
 						switch_thread(THREAD_IO_WRITE, 0, 0);
@@ -1421,6 +1425,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					if (FDS[a->fd].flags & O_NONBLOCK) {
 						SYSCALL_FAILURE(EAGAIN);
 					} else {
+						halt("bad locking, needs fixing\n", 0);
 						FDS[a->fd].flags |= BOGFD_BLOCKED_WRITE;
 						threads[current_thread].wait_target = (uintptr_t) &FDS[a->fd];
 						switch_thread(THREAD_IO_WRITE, 0, 0);
