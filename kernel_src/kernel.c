@@ -1363,7 +1363,6 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 		case SYS_sendto: {
 			struct sendto_args *a = argp;
 			while (1) {
-				LOCK(FDS[a->s].lock, current_thread);
 				ssize_t ret = write(a->s, a->buf, a->len);
 				if (ret > 0) {
 					SYSCALL_SUCCESS(ret);
