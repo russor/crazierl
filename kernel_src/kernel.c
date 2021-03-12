@@ -2308,7 +2308,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 		}
 		case SYS_thr_set_name: {
 			struct thr_set_name_args *a = argp;
-			ERROR_PRINTF("ignoring thr_set_name(%d, %s)\n", a->id, a->name);
+			rtld_snprintf(&threads[a->id - THREAD_ID_OFFSET].name, sizeof(threads[0].name), "%s", a->name);
 			SYSCALL_SUCCESS(0);
 		}
 	}
@@ -2693,6 +2693,7 @@ void setup_cpus()
 		uintptr_t new_stack_cur = setup_new_idle(threads[i + 1].kern_stack_top);
 		threads[i + 1].kern_stack_cur = new_stack_cur;
 		threads[i + 1].state = THREAD_IDLE;
+		rtld_snprintf(&threads[i + 1].name, sizeof(threads[i + 1].name), "cpu %d idle", i);
 		size_t gsbase = GDT_GSBASE_OFFSET + (i * 2);
 
 		// setup GS BASE descriptor for kernel

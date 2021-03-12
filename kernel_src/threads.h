@@ -19,5 +19,6 @@ struct crazierl_thread {
     uintptr_t kern_stack_cur;
     uintptr_t tls_base;
     uintptr_t wait_target;
+    char name [MAXCOMLEN + 1];
 };
 
