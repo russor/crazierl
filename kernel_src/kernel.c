@@ -83,6 +83,7 @@ typedef uint32_t u_int32_t;
 #include <sys/socket.h>
 #include <sys/thr.h>
 #include <sys/event.h>
+#include <x86/fpu.h>
 
 #include "threads.h"
 
@@ -109,6 +110,8 @@ uint8_t WANT_NMI = 0;
 #define MAX_THREADS 128
 #define THREAD_ID_OFFSET 100002
 struct crazierl_thread threads[MAX_THREADS];
+union savefpu savearea[MAX_THREADS];
+
 __thread size_t current_thread = 0;
 __thread size_t current_cpu = -1;
 size_t next_thread = 0;
@@ -606,7 +609,7 @@ int switch_thread(unsigned int new_state, uint64_t timeout, int locked) {
 	if (timeout) {
 		threads[old_thread].timeout = timeout;
 	}
-	asm volatile ( "fxsave (%0)" :: "a"(&threads[old_thread].savearea) :);
+	asm volatile ( "fxsave (%0)" :: "a"(&savearea[old_thread]) :);
 	TSS[current_cpu].esp0 = threads[target].kern_stack_top;
 	if (threads[target].state != THREAD_IDLE) {
 		threads[target].state = THREAD_RUNNING;
@@ -628,7 +631,7 @@ int switch_thread(unsigned int new_state, uint64_t timeout, int locked) {
 	int we_timed_out = switch_thread_impl(&threads[old_thread].kern_stack_cur, threads[target].kern_stack_cur);
 	threads[current_thread].timeout = 0;
 	UNLOCK(thread_state, current_thread);
-	asm volatile ( "fxrstor (%0)" :: "a"(&threads[current_thread].savearea) :);
+	asm volatile ( "fxrstor (%0)" :: "a"(&savearea[current_thread]) :);
 	return we_timed_out;
 }
 
@@ -2256,7 +2259,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			UNLOCK(thread_state, current_thread);
 			threads[new_thread].kern_stack_top = stack_page + PAGE_SIZE;
 			threads[new_thread].tls_base = (uintptr_t)a->param->tls_base;
-			bzero(&threads[new_thread].savearea, sizeof(threads[new_thread].savearea));
+			bzero(&savearea[new_thread], sizeof(savearea[new_thread]));
 
 			uintptr_t new_stack_cur = setup_new_stack(threads[new_thread].kern_stack_top, threads[current_thread].kern_stack_top);
 			DEBUG_PRINTF("thr_new return (%d) on old thread (%d) cpu %d\n", new_thread, current_thread, current_cpu);
@@ -2679,7 +2682,7 @@ void setup_cpus()
 		CPU_SET(i, &threads[i + 1].cpus);
 		threads[i + 1].state = THREAD_IDLE;
 		threads[i + 1].kern_stack_top = stack_page + PAGE_SIZE;
-		bzero(&threads[i + 1].savearea, sizeof(threads[i + 1].savearea));
+		bzero(&savearea[i + 1], sizeof(savearea[i + 1]));
 		uintptr_t stack;
 		asm volatile ( "mov %%esp, %0" : "=a"(stack) :);
 		size_t stack_size = threads[0].kern_stack_top - stack;
