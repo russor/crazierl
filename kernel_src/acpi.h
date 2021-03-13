@@ -26,6 +26,7 @@ extern struct io_apic io_apics[];
 struct cpu {
     uint32_t apic_id;
     uint32_t volatile flags;
+    uint32_t volatile current_thread;
 };
 
 #define MAX_CPUS 256

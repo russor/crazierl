@@ -596,6 +596,7 @@ int switch_thread(unsigned int new_state, uint64_t timeout, int locked) {
 			target = idle_thread;
 		}
 	}
+
 	DEBUG_PRINTF("switching from %d (%d) to %d (%d) on cpu %d\n", old_thread, new_state, target, threads[target].state, current_cpu);
 	DEBUG_PRINTF("new stack %p of %p\n",
 		threads[target].kern_stack_cur, threads[target].kern_stack_top);
@@ -624,12 +625,15 @@ int switch_thread(unsigned int new_state, uint64_t timeout, int locked) {
 		if (timed_out) {
 			*(int *)threads[target].kern_stack_cur = 1;
 		}
+		cpus[current_cpu].flags &= ~CPU_IDLE; // no longer idle
 	} else {
 		cpus[current_cpu].flags |= CPU_IDLE;
 	}
 	RELOCK(thread_state, old_thread, target);
 	int we_timed_out = switch_thread_impl(&threads[old_thread].kern_stack_cur, threads[target].kern_stack_cur);
 	threads[current_thread].timeout = 0;
+	threads[current_thread].wait_target = 0;
+	cpus[current_cpu].current_thread = current_thread;
 	UNLOCK(thread_state, current_thread);
 	asm volatile ( "fxrstor (%0)" :: "a"(&savearea[current_thread]) :);
 	return we_timed_out;
@@ -2308,7 +2312,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 		}
 		case SYS_thr_set_name: {
 			struct thr_set_name_args *a = argp;
-			rtld_snprintf(&threads[a->id - THREAD_ID_OFFSET].name, sizeof(threads[0].name), "%s", a->name);
+			rtld_snprintf(threads[a->id - THREAD_ID_OFFSET].name, sizeof(threads[0].name), "%s", a->name);
 			SYSCALL_SUCCESS(0);
 		}
 	}
@@ -2669,9 +2673,11 @@ void setup_cpus()
 	size_t this_cpu = -1;
 
 	for (int i = 0; i < numcpu; ++i) {
+		cpus[i].current_thread = i + 1; // idle thread
 		if (cpus[i].apic_id == my_apic_id) {
 			this_cpu = i;
 			CPU_SET(i, &threads[0].cpus);
+			cpus[i].current_thread = 0;
 		}
 		// thread 0 starts as runnable on all CPUs
 		CPU_SET(i, &threads[0].cpus);
@@ -2693,7 +2699,7 @@ void setup_cpus()
 		uintptr_t new_stack_cur = setup_new_idle(threads[i + 1].kern_stack_top);
 		threads[i + 1].kern_stack_cur = new_stack_cur;
 		threads[i + 1].state = THREAD_IDLE;
-		rtld_snprintf(&threads[i + 1].name, sizeof(threads[i + 1].name), "cpu %d idle", i);
+		rtld_snprintf(threads[i + 1].name, sizeof(threads[i + 1].name), "cpu %d idle", i);
 		size_t gsbase = GDT_GSBASE_OFFSET + (i * 2);
 
 		// setup GS BASE descriptor for kernel
