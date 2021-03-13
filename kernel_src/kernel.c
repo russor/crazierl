@@ -921,18 +921,21 @@ int kern_umtx_op(struct _umtx_op_args *a) {
 		}
 		case UMTX_OP_MUTEX_WAIT: {
 			struct umutex *mutex = a->obj;
+			if (a->uaddr1 != NULL || a->uaddr2 != NULL) {
+				halt("umtx mutex_wait with timeout\n", 0);
+			}
+			LOCK(thread_state, current_thread);
 			while (1) {
-				LOCK(thread_state, current_thread);
-				if ((mutex->m_owner & ~UMUTEX_CONTESTED) == UMUTEX_UNOWNED) {
+				uint32_t old = mutex->m_owner;
+				if ((old & ~UMUTEX_CONTESTED) == UMUTEX_UNOWNED) {
 					UNLOCK(thread_state, current_thread);
 					break;
 				}
-				if (a->uaddr1 != NULL || a->uaddr2 != NULL) {
-					halt("umtx mutex_wait with timeout\n", 0);
+				if (__sync_bool_compare_and_swap(&mutex->m_owner, old, old | UMUTEX_CONTESTED)) {
+					threads[current_thread].wait_target = (uintptr_t) a->obj;
+					switch_thread(THREAD_UMTX_MUTEX_WAIT, 0, 1);
+					LOCK(thread_state, current_thread);
 				}
-				mutex->m_owner |= UMUTEX_CONTESTED;
-				threads[current_thread].wait_target = (uintptr_t) a->obj;
-				switch_thread(THREAD_UMTX_MUTEX_WAIT, 0, 1);
 			}
 			return 0;
 		}
@@ -951,7 +954,12 @@ int kern_umtx_op(struct _umtx_op_args *a) {
 						wake_cpu_for_thread(thread);
 						found = 1;
 					} else {
-						mutex->m_owner |= UMUTEX_CONTESTED;
+						while (1) {
+							uint32_t old = mutex->m_owner;
+							if (__sync_bool_compare_and_swap(&mutex->m_owner, old, old | UMUTEX_CONTESTED)) {
+								break;
+							}
+						}
 						break;
 					}
 				}
