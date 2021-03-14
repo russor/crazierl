@@ -79,9 +79,10 @@ attach(Device, _Args) ->
 	{ok, NotifyMap} = map_structure(notify_cfg, Device, Capabilities),
 
 	{RxSocket, RxInt} = crazierl:open_interrupt(0),
+	{TxSocket, TxInt} = crazierl:open_interrupt(0),
 	%io:format("using int ~B~n", [RxInt]),
 	pci:enable_msix(Common, 0, RxInt),
-	pci:enable_msix(Common, 1, RxInt),
+	pci:enable_msix(Common, 1, TxInt),
 	<<NotifyOffsetMult:32/little>> = (maps:get(notify_cfg, Capabilities))#virtio_pci_cap.data,
 	RxQ = setup_virtq(CommonMap, read, 0, NotifyOffsetMult, NotifyMap, 0),
 	TxQ = setup_virtq(CommonMap, write, 1, NotifyOffsetMult, NotifyMap, 1),
@@ -104,7 +105,7 @@ attach(Device, _Args) ->
 	
 	%arp:register(self(), {10,0,2,15}, 24, {10,0,2,2}, MacAddr),
 	RxQ2 = offer_desc(RxQ, {0, ?VIRTQ_LEN - 1}),
-	loop(Device, MacAddr, RxSocket, RxQ2, TxQ).
+	loop(Device, MacAddr, RxSocket, TxSocket, RxQ2, TxQ).
 
 parse_capabilities([{vendor_specific, <<RawType:8, Bar:8, _:3/binary, Offset:32/little, Length:32/little, Data/binary>>}|T], Map) ->
 	Type = virtio_cfg_type(RawType),
@@ -121,30 +122,29 @@ map_structure(Key, #pci_device{bars = Bars}, Caps) ->
 	true = (Bar#pci_mem_bar.size >= (Cap#virtio_pci_cap.offset + Cap#virtio_pci_cap.length)),
 	crazierl:map(Bar#pci_mem_bar.base + Cap#virtio_pci_cap.offset, Cap#virtio_pci_cap.length).
 
-loop(Device, MacAddr, RxSocket, RxQ, TxQ) ->
-	TxQ1 = receive
+loop(Device, MacAddr, RxSocket, TxSocket, RxQ, TxQ) ->
+	{RxQ1, TxQ1} = receive
 		{udp, RxSocket, _, _, _} ->
 			%io:format("got rx interrupt!~n", []),
-			TxQ;
+			{check_queue(RxQ, read), TxQ};
+		{udp, TxSocket, _, _, _} ->
+			%io:format("got rx interrupt!~n", []),
+			{RxQ, check_queue(TxQ, write)};
 		{'$gen_call', From, {send, {DestMac, EtherType}, Payload}} ->
 			Packet = <<DestMac:48, MacAddr:48, EtherType:16, Payload/binary>>,
 			%io:format("sending ... ~w~n", [Packet]),
 			gen:reply(From, ok),
-			add_to_queue(TxQ, Packet);
+			{RxQ, add_to_queue(TxQ, Packet)};
 		{'$gen_call', From, {send, Data}} ->
 			Packet = iolist_to_binary(Data),
 			%io:format("sending ... ~w~n", [Packet]),
 			gen:reply(From, ok),
-			add_to_queue(TxQ, Packet);
+			{RxQ, add_to_queue(TxQ, Packet)};
 		Other ->
 			io:format("got message ~p", [Other]),
-			TxQ
-	after 1000 ->
-		TxQ
+			{RxQ, TxQ}
 	end,
-	NewRx = check_queue(RxQ, read),
-	TxQ2 = check_queue(TxQ1, write),
-	loop(Device, MacAddr, RxSocket, NewRx, TxQ2).
+	loop(Device, MacAddr, RxSocket, TxSocket, RxQ1, TxQ1).
 
 
 virtio_cfg_type(1) -> common_cfg;
