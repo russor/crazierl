@@ -122,22 +122,28 @@ map_structure(Key, #pci_device{bars = Bars}, Caps) ->
 	true = (Bar#pci_mem_bar.size >= (Cap#virtio_pci_cap.offset + Cap#virtio_pci_cap.length)),
 	crazierl:map(Bar#pci_mem_bar.base + Cap#virtio_pci_cap.offset, Cap#virtio_pci_cap.length).
 
+% tx queue full, don't process send messages
+loop(Device, MacAddr, RxSocket, TxSocket, RxQ, TxQ = #virtq{used = []}) ->
+	{RxQ1, TxQ1} = receive
+		{udp, RxSocket, _, _, _} ->
+			{check_queue(RxQ, read), TxQ};
+		{udp, TxSocket, _, _, _} ->
+			{RxQ, check_queue(TxQ, write)}
+	end,
+	loop(Device, MacAddr, RxSocket, TxSocket, RxQ1, TxQ1);
+
 loop(Device, MacAddr, RxSocket, TxSocket, RxQ, TxQ) ->
 	{RxQ1, TxQ1} = receive
 		{udp, RxSocket, _, _, _} ->
-			%io:format("got rx interrupt!~n", []),
 			{check_queue(RxQ, read), TxQ};
 		{udp, TxSocket, _, _, _} ->
-			%io:format("got rx interrupt!~n", []),
 			{RxQ, check_queue(TxQ, write)};
 		{'$gen_call', From, {send, {DestMac, EtherType}, Payload}} ->
 			Packet = <<DestMac:48, MacAddr:48, EtherType:16, Payload/binary>>,
-			%io:format("sending ... ~w~n", [Packet]),
 			gen:reply(From, ok),
 			{RxQ, add_to_queue(TxQ, Packet)};
 		{'$gen_call', From, {send, Data}} ->
 			Packet = iolist_to_binary(Data),
-			%io:format("sending ... ~w~n", [Packet]),
 			gen:reply(From, ok),
 			{RxQ, add_to_queue(TxQ, Packet)};
 		Other ->
