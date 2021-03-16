@@ -34,7 +34,7 @@ ifeq ($(wildcard /libexec/ld-elf32.so.1),)
 else
 	RTLD=/libexec/ld-elf32.so.1
 endif
-#OTPDIR=../installed
+#OTPDIR=../installed/lib/erlang
 OTPDIR=../erlang-runtime$(ERLANG_VERSION)/usr/local/lib/erlang$(ERLANG_VERSION)
 
 KERNEL_COMPILER=clang -m32 -mno-sse -g -ffreestanding -gdwarf-2 -c -DCRAZIERL_KERNEL
@@ -47,7 +47,7 @@ run: obj/mykernel.elf obj/initrd
 		-netdev user,id=mynet0,hostfwd=tcp:127.0.0.1:7780-:80 -device virtio-net,netdev=mynet0
 
 netboot: obj/mykernel.elf obj/initrd
-	scp $^ 192.168.0.12:/var/lib/tftpboot/crazierl/
+	cp $^ /usr/local/www/apache24/data/tftpboot/crazierl/
 
 debug: obj/mykernel.elf obj/initrd
 	qemu-system-i386 -display none -d cpu_reset,guest_errors -smp 2 -S -s  -m 256 -serial mon:stdio -kernel obj/mykernel.elf -append $(RTLD) -initrd obj/initrd
