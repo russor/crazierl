@@ -97,23 +97,34 @@ foreach my $element (@{$statement->elems()->[2]->elems()}) {
 
 foreach my $f (@LOCAL_FILES) {
 	next unless $f;
-	my $file;
+	my $path = $f;
 	if ($f =~ m@^OTPDIR/(.*)$@) {
 		$f = $1;
-		$f = glob ("$OTP_DIR/$f");
+		($f) = glob ("$OTP_DIR/$f");
+		if (!$f) {
+			die "couldn't glob $path $OTP_DIR";
+		}
 		if (substr($f, 0, length($OTP_DIR) + 1) eq "$OTP_DIR/") {
 			substr($f, 0, length($OTP_DIR) + 1, '');
 		} else {
 			die "couldn't find $f";
 		}
-		open $file, '<', "$OTP_DIR/$f" or die "can't open $OTP_DIR/$f: $!";
-	} else {
-		open $file, '<', "$f" or die "can't open $f: $!";
+		$path = "$OTP_DIR/$f";
 	}
+	my $file;
+	open $file, '<', "$path" or die "can't open $path: $!";
 	$f =~ s@^/@@;
 	{
 		local $/ = undef;
 		$FILES{$f} = <$file>;
+	}
+	if ($path =~ /\.so$/) {
+		my @LDD = `/usr/bin/ldd $path`;
+		foreach my $l (@LDD) {
+			if ($l =~ m@ => (.*) \(@) {
+				push @LOCAL_FILES, $1;
+			}
+		}
 	}
 }
 

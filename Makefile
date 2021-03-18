@@ -44,7 +44,7 @@ NIF_COMPILER=clang -m32 -fpic -g -gdwarf-2 -shared -I$(OTPDIR)/usr/include/
 
 run: obj/mykernel.elf obj/initrd
 	qemu-system-i386 -display none -smp 4 -s -m 512 -serial mon:stdio -kernel obj/mykernel.elf -append $(RTLD) -initrd obj/initrd \
-		-netdev user,id=mynet0,hostfwd=tcp:127.0.0.1:7780-:80 -device virtio-net,netdev=mynet0
+		-netdev user,id=mynet0,hostfwd=tcp:127.0.0.1:7780-:80 -device virtio-net,netdev=mynet0 #-object filter-dump,id=mynet0,netdev=mynet0,file=/tmp/crazierl.pcap
 
 netboot: obj/mykernel.elf obj/initrd
 	cp $^ /usr/local/www/apache24/data/tftpboot/crazierl/
@@ -86,13 +86,16 @@ debugnative:
 INITRD_FILES := cfg/inetrc obj/etcpip.app /usr/share/misc/termcap.db obj/libuserland.so obj/crazierl_nif.so obj/checksum.so $(TCPIP_OBJS) $(ERLANG_OBJS)
 
 obj/initrd: hardcode_files.pl $(INITRD_FILES) Makefile
-	./hardcode_files.pl $(RTLD) $(OTPDIR) OTPDIR/lib/kernel-*/ebin/erl_ddll.beam $(INITRD_FILES) > obj/initrd.tmp
+	./hardcode_files.pl $(RTLD) $(OTPDIR) \
+		OTPDIR/lib/kernel-*/ebin/erl_ddll.beam \
+		OTPDIR/lib/crypto-*/ebin/crypto.beam OTPDIR/lib/crypto-*/priv/lib/crypto.so OTPDIR/lib/crypto-*/priv/lib/crypto_callback.so \
+		$(INITRD_FILES) > obj/initrd.tmp
 	mv obj/initrd.tmp obj/initrd
 
 obj/libuserland.so: $(USER_OBJS)
 	clang -m32 -fpic -shared -Wl,-soname,libuserland.so -o obj/libuserland.so $^
 
-obj/crazierl_nif.so: crazierl_nif.c $(OTPDIR)/bin/erlc
+obj/crazierl_nif.so: crazierl_nif.c
 	$(NIF_COMPILER) $< -o $@
 
 obj/checksum.so: ../erlang-tcpip/c_src/checksum.c
