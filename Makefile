@@ -6,7 +6,7 @@ DEPFLAGS = -MT $@ -MMD -MP
 
 ERLANG_SRCS = $(wildcard *.erl)
 ERLANG_OBJS = $(ERLANG_SRCS:%.erl=$(OBJDIR)/%.beam)
-KERNEL_SRCS = kernel.c files.c kern_mmap.c acpi.c strtol.c
+KERNEL_SRCS = kernel.c files.c kern_mmap.c acpi.c strtol.c rand.c
 KERNEL_OBJS = $(KERNEL_SRCS:%.c=$(OBJDIR)/%.o)
 
 REAL_FBSD_KERNEL_SRCS = lib/libc/quad/qdivrem.c lib/libc/quad/udivdi3.c \
@@ -22,6 +22,13 @@ REAL_FBSD_KERNEL_SRCS = lib/libc/quad/qdivrem.c lib/libc/quad/udivdi3.c \
                    sys/kern/syscalls.c sys/libkern/explicit_bzero.c
 FBSD_KERNEL_SRCS = $(foreach file, $(REAL_FBSD_KERNEL_SRCS), $(subst /,__,$(file)))
 FBSD_KERNEL_OBJS = $(FBSD_KERNEL_SRCS:%.c=$(OBJDIR)/%.o)
+
+REAL_BEARSSL_SRCS = rand/hmac_drbg.c mac/hmac.c hash/sha2small.c codec/dec32be.c \
+                    codec/enc32be.c
+BEARSSL_SRCS = $(foreach file, $(REAL_BEARSSL_SRCS), $(subst /,__,$(file)))
+BEARSSL_OBJS = $(BEARSSL_SRCS:%.c=$(OBJDIR)/%.o)
+
+
 
 USER_SRCS = userland.c files.c
 USER_OBJS = $(USER_SRCS:%.c=$(OBJDIR)/user.%.o)
@@ -44,7 +51,7 @@ NIF_COMPILER=clang -m32 -fpic -g -gdwarf-2 -shared -I$(OTPDIR)/usr/include/
 
 run: obj/mykernel.elf obj/initrd
 	qemu-system-i386 -display none -smp 4 -s -m 512 -serial mon:stdio -kernel obj/mykernel.elf -append $(RTLD) -initrd obj/initrd \
-		-netdev user,id=mynet0,hostfwd=tcp:127.0.0.1:7780-:80 -device virtio-net,netdev=mynet0 #-object filter-dump,id=mynet0,netdev=mynet0,file=/tmp/crazierl.pcap
+		-netdev user,id=mynet0,hostfwd=tcp:127.0.0.1:7780-:80 -device virtio-net,netdev=mynet0 -object filter-dump,id=mynet0,netdev=mynet0,file=/tmp/crazierl.pcap
 
 netboot: obj/mykernel.elf obj/initrd
 	cp $^ /usr/local/www/apache24/data/tftpboot/crazierl/
@@ -73,7 +80,7 @@ $(OTPDIR)/bin/erl.patched: $(OTPDIR)/bin/erl
 
 $(OTPDIR)/bin/erlc: $(OTPDIR)/bin/erl.patched
 
-obj/mykernel.elf: obj/start.o $(KERNEL_OBJS) $(FBSD_KERNEL_OBJS)
+obj/mykernel.elf: obj/start.o $(KERNEL_OBJS) $(FBSD_KERNEL_OBJS) $(BEARSSL_OBJS)
 	clang -m32 -g -static -ffreestanding -nostdlib -T linker.ld $^ -o obj/mykernel.elf -gdwarf-2
 
 obj/start.o: start.s | $(DEPDIR)
@@ -111,11 +118,15 @@ $(ERLANG_OBJS): $(OBJDIR)/%.beam : %.erl $(DEPDIR)/%.d | $(DEPDIR) $(OTPDIR)/bin
 	$(OTPDIR)/bin/erlc -o $(OBJDIR)/ -MMD -MF $(DEPDIR)/$*.d $<
 
 $(KERNEL_OBJS): $(OBJDIR)/%.o: %.c $(DEPDIR)/%.c.d | $(DEPDIR)
-	$(KERNEL_COMPILER) $(DEPFLAGS) -MF $(DEPDIR)/$*.c.d.T $< -I /usr/src/libexec/rtld-elf/ -I /usr/src/sys/ -o $@
+	$(KERNEL_COMPILER) $(DEPFLAGS) -MF $(DEPDIR)/$*.c.d.T $< -I /usr/src/libexec/rtld-elf/ -I /usr/src/sys/ -I /usr/src/contrib/bearssl/inc/ -o $@
 	mv -f $(DEPDIR)/$*.c.d.T $(DEPDIR)/$*.c.d && touch $@
 
 $(FBSD_KERNEL_OBJS): $(OBJDIR)/%.o: $(DEPDIR)/%.c.d | $(DEPDIR)
 	$(KERNEL_COMPILER) $(DEPFLAGS) -MF $(DEPDIR)/$*.c.d.T $(subst __,/,/usr/src/$*.c) -o $@
+	mv -f $(DEPDIR)/$*.c.d.T $(DEPDIR)/$*.c.d && touch $@
+
+$(BEARSSL_OBJS): $(OBJDIR)/%.o: $(DEPDIR)/%.c.d | $(DEPDIR)
+	$(KERNEL_COMPILER) -I /usr/src/contrib/bearssl/src/ -I /usr/src/contrib/bearssl/inc/ $(DEPFLAGS) -MF $(DEPDIR)/$*.c.d.T $(subst __,/,/usr/src/contrib/bearssl/src/$*.c) -o $@
 	mv -f $(DEPDIR)/$*.c.d.T $(DEPDIR)/$*.c.d && touch $@
 
 $(USER_OBJS) : $(OBJDIR)/user.%.o: %.c $(DEPDIR)/user.%.c.d | $(DEPDIR)
@@ -123,6 +134,6 @@ $(USER_OBJS) : $(OBJDIR)/user.%.o: %.c $(DEPDIR)/user.%.c.d | $(DEPDIR)
 	mv -f $(DEPDIR)/user.$*.c.d.T $(DEPDIR)/user.$*.c.d && touch $@
 
 $(DEPDIR): ; @mkdir -p $@
-DEPFILES := $(ERLANG_OBJS:$(OBJDIR)/%.beam=$(DEPDIR)/%.d) $(TCPIP_OBJS:$(OBJDIR)/%.beam=$(DEPDIR)/%.d) $(KERNEL_SRCS:%.c=$(DEPDIR)/%.c.d) $(FBSD_KERNEL_SRCS:%.c=$(DEPDIR)/%.c.d) $(USER_SRCS:%.c=$(DEPDIR)/user.%.c.d) $(NIF_SRCS:%.c=$(DEPDIR)/nif.%.d)
+DEPFILES := $(ERLANG_OBJS:$(OBJDIR)/%.beam=$(DEPDIR)/%.d) $(TCPIP_OBJS:$(OBJDIR)/%.beam=$(DEPDIR)/%.d) $(KERNEL_SRCS:%.c=$(DEPDIR)/%.c.d) $(FBSD_KERNEL_SRCS:%.c=$(DEPDIR)/%.c.d) $(BEARSSL_SRCS:%.c=$(DEPDIR)/%.c.d) $(USER_SRCS:%.c=$(DEPDIR)/user.%.c.d) $(NIF_SRCS:%.c=$(DEPDIR)/nif.%.d)
 $(DEPFILES):
 include $(wildcard $(DEPFILES))

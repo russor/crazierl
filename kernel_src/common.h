@@ -29,9 +29,20 @@
 		halt("halting\n", 0); \
 	} \
 	name ## Locked = 0;
+
+void rand_init();
+void rand_bytes(void * out, size_t len);
+void rand_update(const void * seed, size_t len);
+
+extern __thread size_t current_thread;
+_Noreturn void halt(char * message, int dontpropagate);
+void move_cursor();
+void term_printf(const char *, ...);
+
+
+
 #endif
 
-_Noreturn void halt(char * message, int dontpropagate);
 
 #ifdef CRAZIERL_USER
 //#define DEBUG_PRINTF(...) printf(__VA_ARGS__);
@@ -39,8 +50,6 @@ _Noreturn void halt(char * message, int dontpropagate);
 #define ERROR_PRINTF(...) printf(__VA_ARGS__);
 #endif
 
-void move_cursor();
-void term_printf(const char *, ...);
 
 #ifndef likely
 #define likely(x)       __builtin_expect(!!(x), 1)
@@ -56,7 +65,6 @@ static inline unsigned int max(unsigned int a, unsigned int b) {
 	if (a > b) { return a; }
 	return b;
 }
-
 
 
 #endif

@@ -655,6 +655,12 @@ void handle_irq(unsigned int vector)
 {
 	local_apic_write(0xB0, 0); // EOI
 	vector += FIRST_IRQ_VECTOR;
+	uint64_t seed[3];
+	seed[0] = vector;
+	seed[1] = __rdtsc();
+	seed[2] = fixed_point_time;
+	rand_update(&seed, sizeof(seed));
+
 	switch (vector) {
 		case TIMER_VECTOR: {
 			++TIMER_COUNT;
@@ -1943,17 +1949,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 							strlcpy(a->old, "node0.crazierl.org", *a->oldlenp);
 							SYSCALL_SUCCESS(0);
 						case KERN_ARND:{
-							uint8_t *r = (uint8_t *)a->old;
-							uint32_t count = *a->oldlenp;
-							DEBUG_PRINTF("random requested (%d)\n", count);
-							ERROR_PRINTF("no reasonable random available\n");
-							while (count) {
-								/*unsigned int value;
-								_rdrand32_step(&value); */
-								*r = count & 0xFF;
-								--count;
-								++r;
-							}
+							rand_bytes((uint8_t *)a->old, *a->oldlenp);
 							SYSCALL_SUCCESS(0);
 						}
 						case KERN_OSRELDATE:
@@ -2322,6 +2318,11 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			struct thr_set_name_args *a = argp;
 			rtld_snprintf(threads[a->id - THREAD_ID_OFFSET].name, sizeof(threads[0].name), "%s", a->name);
 			SYSCALL_SUCCESS(0);
+		}
+		case SYS_getrandom: {
+		        struct getrandom_args *a = argp;
+		        rand_bytes(a->buf, a->buflen);
+		        SYSCALL_SUCCESS(a->buflen);
 		}
 	}
 				
@@ -3013,6 +3014,7 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 		}
 	}
 	setup_cpus();
+	rand_init();
 	asm volatile ("sti" ::); // enable interrupts here
 	init_cpus();
 	unsigned int cpus_inited = TIMER_COUNT;
