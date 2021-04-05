@@ -810,7 +810,7 @@ ssize_t write(int fd, const void * buf, size_t nbyte) {
 	return written;
 }
 
-size_t kern_read(int fd, void * buf, size_t nbyte, int async) {
+size_t kern_read(int fd, void * buf, size_t nbyte, int force_async) {
 	if (fd < 0 || fd >= BOGFD_MAX) {
 		return -EBADF;
 	}
@@ -850,6 +850,12 @@ size_t kern_read(int fd, void * buf, size_t nbyte, int async) {
 			// return here, because we don't want to block on a file!
 			UNLOCK(FDS[fd].lock, current_thread);
 			return read;
+		} else if (FDS[fd].type == BOGFD_IRQ) {
+			if (FDS[fd].status[1]) {
+				((char *)buf)[0] = '!';
+				read = 1;
+				FDS[fd].status[1] = 0;
+			}
 		} else {
 			UNLOCK(FDS[fd].lock, current_thread);
 			return -EBADF;
@@ -858,7 +864,7 @@ size_t kern_read(int fd, void * buf, size_t nbyte, int async) {
 			check_bnotes_fd(&FDS[fd]);
 			UNLOCK(FDS[fd].lock, current_thread);
 			return read;
-		} else if (async) {
+		} else if (force_async || FDS[fd].flags & O_NONBLOCK) {
 			UNLOCK(FDS[fd].lock, current_thread);
 			return -EAGAIN;
 		} else {
@@ -1331,7 +1337,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 	switch(call) {
 		case SYS_read: {
 			struct read_args *a = argp;
-			ssize_t read = kern_read(a->fd, a->buf, a->nbyte, FDS[a->fd].flags & O_NONBLOCK);
+			ssize_t read = kern_read(a->fd, a->buf, a->nbyte, 0);
 			if (read < 0) {
 				SYSCALL_FAILURE(-read);
 			}
@@ -1343,7 +1349,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			unsigned int iovcnt = a->iovcnt;
 			ssize_t ret = 0;
 			while (iovcnt) {
-				ssize_t nbyte = kern_read(a->fd, iov->iov_base, iov->iov_len, iovcnt != a->iovcnt || FDS[a->fd].flags & O_NONBLOCK);
+				ssize_t nbyte = kern_read(a->fd, iov->iov_base, iov->iov_len, iovcnt != a->iovcnt);
 				if (nbyte > 0) {
 					ret += nbyte;
 				}
@@ -1586,45 +1592,14 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 		case SYS_geteuid: SYSCALL_SUCCESS(0);
 		case SYS_recvfrom: {
 			struct recvfrom_args *a = argp;
-			if (a->s < 0 || a->s > BOGFD_MAX) {
-				ERROR_PRINTF("recvfrom (%d, ...) = EBADF\n", a->s);
-				SYSCALL_FAILURE(EBADF);
+			int ret = kern_read(a->s, a->buf, a->len, 0);
+			if (ret < 0) {
+				SYSCALL_FAILURE(-ret);
 			}
-			int read = 0;
-			struct BogusFD *fd = &FDS[a->s];
-			if (fd->type == BOGFD_IRQ) {
-				if (fd->status[1]) {
-					a->buf[0] = '!';
-					read = 1;
-					fd->status[1] = 0;
-				}
-			} else if (fd->type == BOGFD_PIPE) {
-				if (fd->pb->length) {
-					read = min(a->len, fd->pb->length);
-					memcpy(a->buf, fd->pb->data, read);
-					fd->pb->length -= read;
-					if (fd->pb->length) {
-						memmove(fd->pb->data, &fd->pb->data[read], fd->pb->length);
-					}
-				} else if (fd->pipe == NULL) {
-					SYSCALL_SUCCESS(0);
-				}
-			} else {
-				ERROR_PRINTF("recvfrom (%d, ...) = ENOTSOCK\n", a->s);
-				SYSCALL_FAILURE(ENOTSOCK);
+		        if (a->from != NULL) {
+				bzero(a->from, *a->fromlenaddr);
 			}
-			if (read) {
-				if (a->from != NULL) {
-					bzero(a->from, *a->fromlenaddr);
-				}
-				SYSCALL_SUCCESS(read);
-			} else {
-				if (fd->flags & O_NONBLOCK) {
-					SYSCALL_FAILURE(EAGAIN);
-				} else {
-					halt("blocking recvfrom", 0);
-				}
-			}
+			SYSCALL_SUCCESS(ret);
 		}
 		case SYS_getsockname: {
 			struct getsockname_args *a = argp;
