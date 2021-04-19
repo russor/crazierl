@@ -35,11 +35,10 @@ void rand_bytes(void * out, size_t len);
 void rand_update(const void * seed, size_t len);
 
 extern __thread size_t current_thread;
+extern __thread size_t current_cpu;
 _Noreturn void halt(char * message, int dontpropagate);
 void move_cursor();
 void term_printf(const char *, ...);
-
-
 
 #endif
 
