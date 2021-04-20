@@ -25,8 +25,15 @@ start() ->
 	]),
 	pci:start(),
 	pci:attach(virtio_net, []),
-	application:start(etcpip),
-	example_host:start().
+	try
+		virtio_net ! {ping, self()},
+		receive
+			pong -> ok
+		end
+	catch _:_ -> ok
+	end,
+	example_host:start(),
+	dhcpc:go().
 
 open_interrupt(Irq) ->
         Path = io_lib:format("/kern/irq/~B", [Irq]),

@@ -92,9 +92,12 @@ attach(Device, _Args) ->
 	<<15>> = crazierl:bcopy_from(CommonMap, ?DEVICE_STATUS, 1), % confirm
 	application:set_env([
 		{etcpip, [
-			{ip,      {10,0,2,15}},
-			{netmask, {255,255,255,0}},
-			{gateway, {10,0,2,2}},
+			%{ip,      {10,0,2,15}},
+			%{netmask, {255,255,255,0}},
+			%{gateway, {10,0,2,2}},
+			{ip, {0,0,0,0}},
+			{netmask, {255, 255, 255, 255}},
+			{gateway, {0, 0, 0, 0}},
 			{mac,     MacAddr},
 			{iface,   "vtnet0"},
 			{ip6, [
@@ -102,6 +105,7 @@ attach(Device, _Args) ->
 			]}
 		]}
 	], [{persistent, true}]),
+	etcpip_socket:start(),
 	
 	%arp:register(self(), {10,0,2,15}, 24, {10,0,2,2}, MacAddr),
 	RxQ2 = offer_desc(RxQ, {0, ?VIRTQ_LEN - 1}),
@@ -128,7 +132,10 @@ loop(Device, MacAddr, RxSocket, TxSocket, RxQ, TxQ = #virtq{used = []}) ->
 		{udp, RxSocket, _, _, _} ->
 			{check_queue(RxQ, read), TxQ};
 		{udp, TxSocket, _, _, _} ->
-			{RxQ, check_queue(TxQ, write)}
+			{RxQ, check_queue(TxQ, write)};
+		{ping, From} ->
+			From ! pong,
+			{RxQ, TxQ}
 	end,
 	loop(Device, MacAddr, RxSocket, TxSocket, RxQ1, TxQ1);
 
@@ -146,6 +153,9 @@ loop(Device, MacAddr, RxSocket, TxSocket, RxQ, TxQ) ->
 			Packet = iolist_to_binary(Data),
 			gen:reply(From, ok),
 			{RxQ, add_to_queue(TxQ, Packet)};
+		{ping, From} ->
+			From ! pong,
+			{RxQ, TxQ};
 		Other ->
 			io:format("got message ~p", [Other]),
 			{RxQ, TxQ}
