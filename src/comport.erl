@@ -18,6 +18,7 @@ init(Owner, IoPort, Interrupt) ->
 		{active, true}
 	]),
 	crazierl:outb(IoPort + 1, 2#11), % request irq for data avail and transmitter empty
+	crazierl:outb(IoPort, 16#13), % XOFF
 	loop(port_loop(#s{owner = Owner, io_port = IoPort, irq = InterruptSocket, buffer = <<>>, looped = 0})).
 
 loop(State = #s{buffer = B, irq = Irq}) ->
