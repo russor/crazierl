@@ -13,7 +13,7 @@
 
 __attribute__ ((constructor))
 void init_userland () {
-	printf("hi from userland\n");
+	printf("hi from userland\r\n");
 }
 
 ssize_t readlink(const char *restrict path, char *restrict buf, size_t bufsiz)
@@ -30,20 +30,20 @@ int rtprio_thread(int function, lwpid_t lwpid, struct rtprio *rtp)
 
 		return 0;
 	}
-	ERROR_PRINTF("rtprio_thread(%d, %d, ...)\n", function, lwpid);
+	ERROR_PRINTF("rtprio_thread(%d, %d, ...)\r\n", function, lwpid);
 	exit(EINVAL);
 }
 
 int access (const char *path, int mode)
 {
-	DEBUG_PRINTF("access (%s, %d)\n", path, mode);
+	DEBUG_PRINTF("access (%s, %d)\r\n", path, mode);
 	errno = ENOENT;
 	return -1;
 }
 
 int socketpair (int domain, int type, int protocol, int *sv)
 {
-	DEBUG_PRINTF("socketpair(%d, %d, %d, %p)\n", domain, type, protocol, sv);
+	DEBUG_PRINTF("socketpair(%d, %d, %d, %p)\r\n", domain, type, protocol, sv);
 	return pipe(sv);
 }
 

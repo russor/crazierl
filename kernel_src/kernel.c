@@ -297,9 +297,6 @@ int is_transmit_empty() {
 }
 
 void write_serial(char a) {
-	if (a == '\n') {
-		write_serial('\r');
-	}
 	while (is_transmit_empty() == 0);
 	outb(PORT_COM1,a);
 }
@@ -335,7 +332,7 @@ void _putchar(char c)
 	default: // Normal characters just get displayed and then increment the column
 		{
 			if (c < 0x20 || c >= 0x7f) {
-				//ERROR_PRINTF("unhandled control character %x\n", c);
+				//ERROR_PRINTF("unhandled control character %x\r\n", c);
 			}
 			vga_buffer[vga_current_index] = ((uint16_t)term_color << 8) | c;
 			/*if (vga_current_index + VGA_SCREEN >= VGA_BUFFER_SIZE) {
@@ -557,7 +554,7 @@ int switch_thread(unsigned int new_state, uint64_t timeout, int locked) {
 	if (!locked) {
 		LOCK(thread_state, current_thread);
 	}
-	//DEBUG_PRINTF("current thread %d (%p), current cpu %d\n", current_thread, &current_thread, current_cpu);
+	//DEBUG_PRINTF("current thread %d (%p), current cpu %d\r\n", current_thread, &current_thread, current_cpu);
 	size_t old_thread = current_thread;
 	size_t i = old_thread + 1;
 	size_t target = old_thread;
@@ -597,10 +594,10 @@ int switch_thread(unsigned int new_state, uint64_t timeout, int locked) {
 		}
 	}
 
-	DEBUG_PRINTF("switching from %d (%d) to %d (%d) on cpu %d\n", old_thread, new_state, target, threads[target].state, current_cpu);
-	DEBUG_PRINTF("new stack %p of %p\n",
+	DEBUG_PRINTF("switching from %d (%d) to %d (%d) on cpu %d\r\n", old_thread, new_state, target, threads[target].state, current_cpu);
+	DEBUG_PRINTF("new stack %p of %p\r\n",
 		threads[target].kern_stack_cur, threads[target].kern_stack_top);
-	DEBUG_PRINTF("old stack %p of %p\n",
+	DEBUG_PRINTF("old stack %p of %p\r\n",
 		threads[old_thread].kern_stack_cur, threads[old_thread].kern_stack_top);
 	current_thread = target;
 
@@ -684,7 +681,7 @@ void handle_irq(unsigned int vector)
 			break;
 		}
 		case HALT_VECTOR: {
-			ERROR_PRINTF("halted by IPI, cpu %d, thread %d\n", current_cpu, current_thread);
+			ERROR_PRINTF("halted by IPI, cpu %d, thread %d\r\n", current_cpu, current_thread);
 			halt(NULL, 1);
 		}
 		default: {
@@ -697,7 +694,7 @@ void handle_irq(unsigned int vector)
 			}
 			if (!found) { // && !UNCLAIMED_IOAPIC_INT) {
 				UNCLAIMED_IRQ = 1;
-				ERROR_PRINTF("unexpected interrupt vector %X on cpu %d\n", vector, current_cpu);
+				ERROR_PRINTF("unexpected interrupt vector %X on cpu %d\r\n", vector, current_cpu);
 			}
 		}
 	}
@@ -736,7 +733,7 @@ void ioapic_set_gsi_vector(unsigned int irq, uint8_t flags, uint8_t vector, uint
 		}
 		++ioapic;
 	}
-	ERROR_PRINTF("couldn't find IO-APIC for irq %d\n", origirq);
+	ERROR_PRINTF("couldn't find IO-APIC for irq %d\r\n", origirq);
 	halt(NULL, 0);
 }
 
@@ -767,7 +764,7 @@ ssize_t write(int fd, const void * buf, size_t nbyte) {
 			}
 
 			written = min(nbyte, BOGFD_PB_LEN - FDS[fd].pipe->pb->length);
-			//ERROR_PRINTF("write (%d, \"%s\", %d) = %d\n", fd, buf, nbyte, written);
+			//ERROR_PRINTF("write (%d, \"%s\", %d) = %d\r\n", fd, buf, nbyte, written);
 			memcpy(&FDS[fd].pipe->pb->data[FDS[fd].pipe->pb->length], buf, written);
 			FDS[fd].pipe->pb->length += written;
 			wait_target = FDS[fd].pipe;
@@ -779,7 +776,7 @@ ssize_t write(int fd, const void * buf, size_t nbyte) {
 		written = 1;
 		wait_target = &FDS[fd];
 	} else {
-		ERROR_PRINTF("write (%d, %08x, %d) = EBADF\n", fd, buf, nbyte);
+		ERROR_PRINTF("write (%d, %08x, %d) = EBADF\r\n", fd, buf, nbyte);
 		UNLOCK(FDS[fd].lock, current_thread);
 		return -EBADF;
 	}
@@ -843,7 +840,7 @@ size_t kern_read(int fd, void * buf, size_t nbyte, int force_async) {
 				return 0;
 			}
 		} else if (FDS[fd].type == BOGFD_FILE) {
-			DEBUG_PRINTF("read (%d, %p, %d)\n", fd, buf, nbyte);
+			DEBUG_PRINTF("read (%d, %p, %d)\r\n", fd, buf, nbyte);
 			read = min(nbyte, FDS[fd].file->end - FDS[fd].pos);
 			memcpy(buf, FDS[fd].pos, read);
 			FDS[fd].pos += read;
@@ -920,7 +917,7 @@ int kern_umtx_op(struct _umtx_op_args *a) {
 						timeout += fixed_point_time;
 					}
 				} else if ((ssize_t) a->uaddr1 == sizeof(struct timespec)) {
-					halt("umtx wait_uint with timespec timeout\n", 0);
+					halt("umtx wait_uint with timespec timeout\r\n", 0);
 				}
 				threads[current_thread].wait_target = kern_mmap_physical((uintptr_t) a->obj);
 				if (switch_thread(THREAD_UMTX_WAIT, timeout, 1)) {
@@ -934,7 +931,7 @@ int kern_umtx_op(struct _umtx_op_args *a) {
 		case UMTX_OP_MUTEX_WAIT: {
 			struct umutex *mutex = a->obj;
 			if (a->uaddr1 != NULL || a->uaddr2 != NULL) {
-				halt("umtx mutex_wait with timeout\n", 0);
+				halt("umtx mutex_wait with timeout\r\n", 0);
 			}
 			LOCK(thread_state, current_thread);
 			while (1) {
@@ -981,13 +978,13 @@ int kern_umtx_op(struct _umtx_op_args *a) {
 		}
 	}
 
-	ERROR_PRINTF("_umtx_op(%08x, %d, %d, %08x, %08x)\n", a->obj, a->op, a->val, a->uaddr1, a->uaddr2);
+	ERROR_PRINTF("_umtx_op(%08x, %d, %d, %08x, %08x)\r\n", a->obj, a->op, a->val, a->uaddr1, a->uaddr2);
 	halt("unknown umtx op", 0);
 }
 
 // separate function, because uint64_t breaks stack setup for thr_new otherwise
 int kern_ppoll(struct ppoll_args *a) {
-	//ERROR_PRINTF("ppoll nfds=%d!\n", a->nfds);
+	//ERROR_PRINTF("ppoll nfds=%d!\r\n", a->nfds);
 	uint64_t timeout = 0;
 	if (a->ts != NULL) {
 		timeout = fixed_point_time + FIXED_POINT_TIME_NANOSECOND(a->ts->tv_sec, a->ts->tv_nsec);
@@ -997,9 +994,9 @@ int kern_ppoll(struct ppoll_args *a) {
 	while (1) {
 		/*if (!printed) { // && a->ts->tv_sec > 60) {
 			printed = 1;
-			ERROR_PRINTF("ppoll for %d fds, timeout %d.%d\n", a->nfds, FIXED_POINT_SECONDS(timeout), FIXED_POINT_MILLISECONDS(timeout));
+			ERROR_PRINTF("ppoll for %d fds, timeout %d.%d\r\n", a->nfds, FIXED_POINT_SECONDS(timeout), FIXED_POINT_MILLISECONDS(timeout));
 			for (int i = 0; i < a->nfds; ++i) {
-				ERROR_PRINTF("  FD %d: events %08x -> %08x\n", a->fds[i].fd, a->fds[i].events, a->fds[i].revents);
+				ERROR_PRINTF("  FD %d: events %08x -> %08x\r\n", a->fds[i].fd, a->fds[i].events, a->fds[i].revents);
 			}
 		}*/
 		LOCK(thread_state, current_thread);
@@ -1088,8 +1085,8 @@ int check_bnote(size_t i, struct BogusFD * fd) {
 					break;
 				}
 				default:
-					ERROR_PRINTF("fdtype %d\n", fd->type);
-					halt("unexpected FD type in check_bnote EVFILT_READ\n", 0);
+					ERROR_PRINTF("fdtype %d\r\n", fd->type);
+					halt("unexpected FD type in check_bnote EVFILT_READ\r\n", 0);
 			}
 			break;
 		}
@@ -1121,14 +1118,14 @@ int check_bnote(size_t i, struct BogusFD * fd) {
 					break;
 				}
 				default:
-					ERROR_PRINTF("fdtype %d\n", fd->type);
-					halt("unexpected FD type in check_bnote EVFILT_WRITE\n", 0);
+					ERROR_PRINTF("fdtype %d\r\n", fd->type);
+					halt("unexpected FD type in check_bnote EVFILT_WRITE\r\n", 0);
 			}
 			break;
 		}
 		default:
-			ERROR_PRINTF("filter %d\n", BNOTES[i].filter);
-			halt("unexpected filter type in check_bnote\n", 0);
+			ERROR_PRINTF("filter %d\r\n", BNOTES[i].filter);
+			halt("unexpected filter type in check_bnote\r\n", 0);
 	}
 	if (BNOTES[i].status != 0) {
 		return !(BNOTES[i].flags & EV_DISABLE);
@@ -1197,19 +1194,19 @@ void check_bnotes_fd(struct BogusFD * fd) {
 int kern_kevent(struct kevent_args *a) {
 	size_t kq = a->fd;
 	if (kq < 0 || kq >= BOGFD_MAX) {
-		ERROR_PRINTF("kqueue (...) = EBADF\n");
+		ERROR_PRINTF("kqueue (...) = EBADF\r\n");
 		return -EBADF;
 	}
 	uint64_t timeout = 0;
 	if (a->timeout != NULL) {
 		timeout = fixed_point_time + FIXED_POINT_TIME_NANOSECOND(a->timeout->tv_sec, a->timeout->tv_nsec);
-		//ERROR_PRINTF("thread %d kqueue %d, %d changes, waiting for %d events, timeout %d.%06d\n", current_thread, kq, a->nchanges, a->nevents, a->timeout->tv_sec, a->timeout->tv_nsec);
+		//ERROR_PRINTF("thread %d kqueue %d, %d changes, waiting for %d events, timeout %d.%06d\r\n", current_thread, kq, a->nchanges, a->nevents, a->timeout->tv_sec, a->timeout->tv_nsec);
 	} else {
-		//ERROR_PRINTF("thread %d kqueue %d, %d changes, waiting for %d events, timeout 0\n", current_thread, kq, a->nchanges, a->nevents);
+		//ERROR_PRINTF("thread %d kqueue %d, %d changes, waiting for %d events, timeout 0\r\n", current_thread, kq, a->nchanges, a->nevents);
 	}
 	LOCK(FDS[kq].lock, current_thread);
 	if (FDS[kq].type != BOGFD_KQUEUE) {
-		ERROR_PRINTF("kqueue (...) = EBADF\n");
+		ERROR_PRINTF("kqueue (...) = EBADF\r\n");
 		UNLOCK(FDS[kq].lock, current_thread);
 		return -EBADF;
 	}
@@ -1231,8 +1228,8 @@ int kern_kevent(struct kevent_args *a) {
 				if (flags & (EV_ADD | EV_ENABLE | EV_DISABLE)) {
 					if (flags & ~ (EV_ADD  | EV_ENABLE | EV_DISABLE | EV_DISPATCH)) {
 						UNLOCK(FDS[kq].lock, current_thread);
-						ERROR_PRINTF("unexpected flags 0x%x\n", flags);
-						halt("halting\n", 0);
+						ERROR_PRINTF("unexpected flags 0x%x\r\n", flags);
+						halt("halting\r\n", 0);
 					}
 					size_t x = find_bnote(kq, fd, filter);
 					if (x == BNOTE_MAX && (flags & EV_ADD)) {
@@ -1265,7 +1262,7 @@ int kern_kevent(struct kevent_args *a) {
 					}
 				} else {
 					UNLOCK(FDS[kq].lock, current_thread);
-					ERROR_PRINTF("flags 0x%x\n", flags);
+					ERROR_PRINTF("flags 0x%x\r\n", flags);
 					halt("flags", 0);
 				}
 				if (flags & EV_RECEIPT) {
@@ -1277,7 +1274,7 @@ int kern_kevent(struct kevent_args *a) {
 			UNLOCK(FDS[fd].lock, current_thread);
 		} else {
 			UNLOCK(FDS[kq].lock, current_thread);
-			ERROR_PRINTF("filter %d\n", filter);
+			ERROR_PRINTF("filter %d\r\n", filter);
 			halt("filter", 0);
 		}
 	}
@@ -1292,7 +1289,7 @@ int kern_kevent(struct kevent_args *a) {
 		while (nevents < a->nevents && i != BNOTE_MAX) {
 			LOCK(BNOTES[i].lock, current_thread);
 			if (BNOTES[i].status && !(BNOTES[i].flags & EV_DISABLE)) {
-				//ERROR_PRINTF("got event fd %d, filter %d\n", BNOTES[i].fd, BNOTES[i].filter);
+				//ERROR_PRINTF("got event fd %d, filter %d\r\n", BNOTES[i].fd, BNOTES[i].filter);
 				EV_SET(&(a->eventlist[nevents]), BNOTES[i].fd, BNOTES[i].filter, BNOTES[i].flags,
 				       BNOTES[i].fflags, BNOTES[i].data, BNOTES[i].udata);
 				++nevents;
@@ -1310,7 +1307,7 @@ int kern_kevent(struct kevent_args *a) {
 			UNLOCK(FDS[kq].lock, current_thread);
 			break;
 		}
-		//ERROR_PRINTF("thread %d kq %d sleeping until %lld (currently %lld, checked %d notes\n", current_thread, kq, timeout, fixed_point_time, checked);
+		//ERROR_PRINTF("thread %d kq %d sleeping until %lld (currently %lld, checked %d notes\r\n", current_thread, kq, timeout, fixed_point_time, checked);
 		LOCK(thread_state, current_thread);
 		FDS[kq].flags |= BOGFD_BLOCKED_READ;
 		UNLOCK(FDS[kq].lock, current_thread);
@@ -1323,7 +1320,7 @@ int kern_kevent(struct kevent_args *a) {
 	if (!a->nevents) {
 		UNLOCK(FDS[kq].lock, current_thread);
 	}
-	//ERROR_PRINTF("thread %d leaving kqueue %d (%d events)\n", current_thread, kq, nevents);
+	//ERROR_PRINTF("thread %d leaving kqueue %d (%d events)\r\n", current_thread, kq, nevents);
 	return nevents;
 }
 
@@ -1368,11 +1365,11 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 		case SYS_pread: {
 			struct pread_args *a = argp;
 			if (a->fd < 0 || a->fd >= BOGFD_MAX) {
-				ERROR_PRINTF("pread (...) = EBADF\n");
+				ERROR_PRINTF("pread (...) = EBADF\r\n");
 				SYSCALL_FAILURE(EBADF);
 			}
 			if (FDS[a->fd].type == BOGFD_FILE) {
-				DEBUG_PRINTF("pread (%d, %p, %d)\n", a->fd, a->buf, a->nbyte);
+				DEBUG_PRINTF("pread (%d, %p, %d)\r\n", a->fd, a->buf, a->nbyte);
 				size_t read = 0;
 				struct BogusFD *fd = &FDS[a->fd];
 				if (a->offset > 0 && a->offset < fd->file->size) {
@@ -1381,7 +1378,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				}
 				SYSCALL_SUCCESS(read);
 			}
-			ERROR_PRINTF("pread (%d, ...) = EBADF\n", a->fd);
+			ERROR_PRINTF("pread (%d, ...) = EBADF\r\n", a->fd);
 			SYSCALL_FAILURE(EBADF);
 		}
 		case SYS_sendto: {
@@ -1394,7 +1391,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					if (FDS[a->s].flags & O_NONBLOCK) {
 						SYSCALL_FAILURE(EAGAIN);
 					} else {
-						halt("bad locking, needs fixing\n", 0);
+						halt("bad locking, needs fixing\r\n", 0);
 						FDS[a->s].flags |= BOGFD_BLOCKED_WRITE;
 						threads[current_thread].wait_target = (uintptr_t) &FDS[a->s];
 						switch_thread(THREAD_IO_WRITE, 0, 0);
@@ -1414,7 +1411,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					if (FDS[a->fd].flags & O_NONBLOCK) {
 						SYSCALL_FAILURE(EAGAIN);
 					} else {
-						halt("bad locking needs fixing\n", 0);
+						halt("bad locking needs fixing\r\n", 0);
 						FDS[a->fd].flags |= BOGFD_BLOCKED_WRITE;
 						threads[current_thread].wait_target = (uintptr_t) &FDS[a->fd];
 						switch_thread(THREAD_IO_WRITE, 0, 0);
@@ -1448,13 +1445,13 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					if (FDS[a->fd].flags & O_NONBLOCK) {
 						SYSCALL_FAILURE(EAGAIN);
 					} else {
-						halt("bad locking, needs fixing\n", 0);
+						halt("bad locking, needs fixing\r\n", 0);
 						FDS[a->fd].flags |= BOGFD_BLOCKED_WRITE;
 						threads[current_thread].wait_target = (uintptr_t) &FDS[a->fd];
 						switch_thread(THREAD_IO_WRITE, 0, 0);
 					}
 				} else {
-					ERROR_PRINTF("writev (%d, %08x, %d)\n", a->fd, a->iovp, a->iovcnt);
+					ERROR_PRINTF("writev (%d, %08x, %d)\r\n", a->fd, a->iovp, a->iovcnt);
 					SYSCALL_FAILURE(-ret);
 				}
 			}
@@ -1468,7 +1465,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				++next_fd;
 			}
 			if (next_fd >= BOGFD_MAX) {
-				ERROR_PRINTF("open (%s) = EMFILE\n", a->path);
+				ERROR_PRINTF("open (%s) = EMFILE\r\n", a->path);
 				UNLOCK(all_fds, current_thread);
 				SYSCALL_FAILURE(EMFILE);
 			}
@@ -1492,7 +1489,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					FDS[the_fd].type = BOGFD_DIR;
 					FDS[the_fd].file = file;
 					FDS[the_fd].namelen = len;
-					DEBUG_PRINTF("open (%s, ...) = %d\n", path, the_fd);
+					DEBUG_PRINTF("open (%s, ...) = %d\r\n", path, the_fd);
 					UNLOCK(FDS[the_fd].lock, current_thread);
 					SYSCALL_SUCCESS(the_fd);
 				}
@@ -1502,18 +1499,18 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					FDS[the_fd].type = BOGFD_FILE;
 					FDS[the_fd].file = file;
 					FDS[the_fd].pos = file->start;
-					DEBUG_PRINTF("open (%s, ...) = %d\n", path, the_fd);
+					DEBUG_PRINTF("open (%s, ...) = %d\r\n", path, the_fd);
 					UNLOCK(FDS[the_fd].lock, current_thread);
 					SYSCALL_SUCCESS(the_fd);
 				}
 			}
 			if (strcmp("/dev/null", path) == 0) {
 				FDS[the_fd].type = BOGFD_NULL;
-				DEBUG_PRINTF("open (%s, ...) = %d\n", path, the_fd);
+				DEBUG_PRINTF("open (%s, ...) = %d\r\n", path, the_fd);
 				UNLOCK(FDS[the_fd].lock, current_thread);
 				SYSCALL_SUCCESS(the_fd);
 			}
-			DEBUG_PRINTF ("open (%s, %08x) = ENOENT\n", path, a->flags);
+			DEBUG_PRINTF ("open (%s, %08x) = ENOENT\r\n", path, a->flags);
 			LOCK(all_fds, current_thread);
 			FDS[the_fd].type = BOGFD_CLOSED;
 			UNLOCK(FDS[the_fd].lock, current_thread);
@@ -1526,14 +1523,14 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 		case SYS_close: {
 			struct close_args *a = argp;
 			if (a->fd < 0 || a->fd >= BOGFD_MAX) {
-				ERROR_PRINTF("close (...) = EBADF\n");
+				ERROR_PRINTF("close (...) = EBADF\r\n");
 				SYSCALL_FAILURE(EBADF);
 			}
 			LOCK(FDS[a->fd].lock, current_thread);
 			if (FDS[a->fd].type == BOGFD_PIPE) {
 				if (FDS[a->fd].pipe == &FDS[0]) {
 					find_cursor();
-					term_print("unpiping STDIN\n");
+					term_print("unpiping STDIN\r\n");
 					term_printn(FDS[a->fd].pb->data, FDS[a->fd].pb->length);
 
 					kern_munmap(PROT_KERNEL, (uintptr_t) FDS[a->fd].pb, PAGE_SIZE);
@@ -1542,7 +1539,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					FDS[0].file = NULL;
 				} else if (FDS[a->fd].pipe == &FDS[1]) {
 					find_cursor();
-					term_print("unpiping STDOUT\n");
+					term_print("unpiping STDOUT\r\n");
 					term_printn(FDS[a->fd].pb->data, FDS[a->fd].pb->length);
 
 					kern_munmap(PROT_KERNEL, (uintptr_t) FDS[a->fd].pb, PAGE_SIZE);
@@ -1551,7 +1548,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					FDS[1].buffer = NULL;
 				} else if (FDS[a->fd].pipe == &FDS[2]) {
 					find_cursor();
-					term_print("unpiping STDERR\n");
+					term_print("unpiping STDERR\r\n");
 					term_printn(FDS[a->fd].pb->data, FDS[a->fd].pb->length);
 
 					kern_munmap(PROT_KERNEL, (uintptr_t) FDS[a->fd].pb, PAGE_SIZE);
@@ -1570,7 +1567,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			cleanup_bnotes(a->fd, FDS[a->fd].type == BOGFD_KQUEUE);
 
 			if (FDS[a->fd].type != BOGFD_CLOSED) {
-				DEBUG_PRINTF("close (%d)\n", a->fd);
+				DEBUG_PRINTF("close (%d)\r\n", a->fd);
 				FDS[a->fd].flags = 0;
 				FDS[a->fd].file = NULL;
 				FDS[a->fd].buffer = NULL;
@@ -1583,7 +1580,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				UNLOCK(all_fds, current_thread);
 				SYSCALL_SUCCESS(0);
 			} else {
-				ERROR_PRINTF("close (%d) = EBADF\n", a->fd);
+				ERROR_PRINTF("close (%d) = EBADF\r\n", a->fd);
 				UNLOCK(FDS[a->fd].lock, current_thread);
 				SYSCALL_FAILURE(EBADF);
 			}
@@ -1629,7 +1626,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 		}
 		case SYS_ioctl: {
 			struct ioctl_args *a = argp;
-			DEBUG_PRINTF("ioctl (%d, %08lx, ...)\n", a->fd, a->com);
+			DEBUG_PRINTF("ioctl (%d, %08lx, ...)\r\n", a->fd, a->com);
 			int ret = -1;
 			switch (a->com) {
 				case TIOCGETA: {
@@ -1660,19 +1657,19 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					SYSCALL_SUCCESS(0);
 				}
 			}
-			DEBUG_PRINTF("fd %d, parm_len %ld, cmd %ld, group %c\n", a->fd, IOCPARM_LEN(a->com), a->com & 0xff, (char) IOCGROUP(a->com));
+			DEBUG_PRINTF("fd %d, parm_len %ld, cmd %ld, group %c\r\n", a->fd, IOCPARM_LEN(a->com), a->com & 0xff, (char) IOCGROUP(a->com));
 			SYSCALL_FAILURE(ENOTTY);
 		}
 		case SYS_munmap: {
 			struct munmap_args *a = argp;
-			DEBUG_PRINTF("munmap (%08x, %d)\n",
+			DEBUG_PRINTF("munmap (%08x, %d)\r\n",
 				a->addr, a->len);
 			kern_munmap(0, (uintptr_t) a->addr, a->len);
 			SYSCALL_SUCCESS(0);
 		}
 		case SYS_socket: {
 			struct socket_args *a = argp;
-			DEBUG_PRINTF("socket (%d, %d, %d)\n", a->domain, a->type, a->protocol);
+			DEBUG_PRINTF("socket (%d, %d, %d)\r\n", a->domain, a->type, a->protocol);
 			if (a->domain == PF_UNIX) {
 				LOCK(all_fds, current_thread);
 				while (next_fd < BOGFD_MAX && FDS[next_fd].type != BOGFD_CLOSED) {
@@ -1680,7 +1677,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				}
 				if (next_fd >= BOGFD_MAX) {
 					UNLOCK(all_fds, current_thread);
-					ERROR_PRINTF("socket (..) = EMFILE\n");
+					ERROR_PRINTF("socket (..) = EMFILE\r\n");
 					SYSCALL_FAILURE(EMFILE);
 				}
 				size_t the_fd = next_fd;
@@ -1696,7 +1693,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 		case SYS_bind: {
 			struct bind_args *a = argp;
 			if (a->s < 0 || a->s > BOGFD_MAX) {
-				ERROR_PRINTF("bind (%d, %08x, %d) = EBADF\n", a->s, a->name, a->namelen);
+				ERROR_PRINTF("bind (%d, %08x, %d) = EBADF\r\n", a->s, a->name, a->namelen);
 				SYSCALL_FAILURE(EBADF);
 			}
 			LOCK(FDS[a->s].lock, current_thread);
@@ -1706,7 +1703,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					char * endptr;
 					long global_irq = strtol(name + strlen(IOAPIC_PATH), &endptr, 10);
 					if (*endptr != '/') {
-						halt("bad path for interrupt\n", 0);
+						halt("bad path for interrupt\r\n", 0);
 					}
 					long flags = strtol(endptr, NULL, 10);
 
@@ -1718,7 +1715,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 						++next_irq_vector;
 					}
 					if (next_irq_vector >= 0xF0) {
-						halt("too many irq vectors were requested, max vector is 0xF0\n", 0);
+						halt("too many irq vectors were requested, max vector is 0xF0\r\n", 0);
 					}
 					uint8_t my_vector = next_irq_vector;
 					++next_irq_vector;
@@ -1741,7 +1738,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					char * endptr;
 					long my_vector = strtol(name + strlen(IRQ_PATH), &endptr, 10);
 					if (*endptr != '\0') {
-						halt("bad path for interrupt\n", 0);
+						halt("bad path for interrupt\r\n", 0);
 					}
 
 					LOCK(all_irqs, current_thread);
@@ -1753,7 +1750,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 							++next_irq_vector;
 						}
 						if (next_irq_vector >= 0xF0) {
-							halt("too many irq vectors were requested, max vector is 0xF0\n", 0);
+							halt("too many irq vectors were requested, max vector is 0xF0\r\n", 0);
 						}
 						my_vector = next_irq_vector;
 						++next_irq_vector;
@@ -1774,7 +1771,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				} else if (strncmp("/kern/fd/", name, 9) == 0) {
 					int fd = name[9] - '0';
 					if (fd >= 0 && fd <= 2) {
-						ERROR_PRINTF("fd %d requested by %d\n", fd, a->s);
+						ERROR_PRINTF("fd %d requested by %d\r\n", fd, a->s);
 						LOCK(FDS[fd].lock, current_thread);
 						if (FDS[fd].type == BOGFD_TERMIN || FDS[fd].type == BOGFD_TERMOUT) {
 							FDS[a->s].type = BOGFD_PIPE;
@@ -1809,11 +1806,11 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 		case SYS_fcntl: {
 			struct fcntl_args *a = argp;
 			if (a->fd < 0 || a->fd > BOGFD_MAX) {
-				ERROR_PRINTF("fcntl (%d, ...) = EBADF\n", a->fd);
+				ERROR_PRINTF("fcntl (%d, ...) = EBADF\r\n", a->fd);
 				SYSCALL_FAILURE(EBADF);
 			}
 			if (FDS[a->fd].type == BOGFD_CLOSED) {
-				ERROR_PRINTF("fcntl (%d, ...) = EBADF\n", a->fd);
+				ERROR_PRINTF("fcntl (%d, ...) = EBADF\r\n", a->fd);
 				SYSCALL_FAILURE(EBADF);
 			}
 			switch (a->cmd) {
@@ -1832,10 +1829,10 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 		case SYS_select: {
 			struct select_args *a = argp;
 			if (a->nd == 0 && a->tv == NULL) {
-				ERROR_PRINTF("thread %d waiting forever\n", current_thread);
+				ERROR_PRINTF("thread %d waiting forever\r\n", current_thread);
 				switch_thread(THREAD_WAIT_FOREVER, 0, 0);
 			}
-			ERROR_PRINTF("select(%d, %p, %p, %p, %p)\n", a->nd, a->in, a->ou, a->ex, a->tv);
+			ERROR_PRINTF("select(%d, %p, %p, %p, %p)\r\n", a->nd, a->in, a->ou, a->ex, a->tv);
 			break;
 		}
 		case SYS_gettimeofday: {
@@ -1886,7 +1883,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 		}
 		case SYS_setrlimit: {
 			struct __setrlimit_args *a = argp;
-			DEBUG_PRINTF("setrlimit (%d, {%d, %d})\n", a->which, a->rlp->rlim_cur, a->rlp->rlim_max);
+			DEBUG_PRINTF("setrlimit (%d, {%d, %d})\r\n", a->which, a->rlp->rlim_cur, a->rlp->rlim_max);
 			switch (a->which) {
 				case RLIMIT_STACK:
 					if (a->rlp->rlim_cur > USER_STACK_SIZE) {
@@ -1903,7 +1900,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				*a->oldlenp = sizeof(u_int);
 				SYSCALL_SUCCESS(0);
 			}
-			ERROR_PRINTF("sysctlbyname (\"%s\" ...)\n", a->name);
+			ERROR_PRINTF("sysctlbyname (\"%s\" ...)\r\n", a->name);
 			SYSCALL_FAILURE(ENOENT);
 		}
 		case SYS___sysctl: { // probably need to check buffer addresses and lengths
@@ -1946,31 +1943,31 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 							strlcpy(a->old, "i386", *a->oldlenp);
 							SYSCALL_SUCCESS(0);
 						case HW_NCPU:
-							DEBUG_PRINTF("hw.ncpu\n");
+							DEBUG_PRINTF("hw.ncpu\r\n");
 							*(u_int *)a->old = numcpu;
 							*a->oldlenp = sizeof(u_int);
 							SYSCALL_SUCCESS(0);
 						case HW_PAGESIZE:
-							DEBUG_PRINTF("hw.pagesize\n");
+							DEBUG_PRINTF("hw.pagesize\r\n");
 							*(u_int *)a->old = PAGE_SIZE;
 							*a->oldlenp = sizeof(u_int);
 							SYSCALL_SUCCESS(0);
 					}
 					case CTL_P1003_1B: switch (a->name[1]) {
 						case CTL_P1003_1B_PAGESIZE:
-							DEBUG_PRINTF("posix.pagesize\n");
+							DEBUG_PRINTF("posix.pagesize\r\n");
 							*(u_int *)a->old = PAGE_SIZE;
 							*a->oldlenp = sizeof(u_int);
 							SYSCALL_SUCCESS(0);
 					}
 				}
 			}
-			ERROR_PRINTF("__sysctl (%08x, %d, %08x, %d, %08x, %d)\n",
+			ERROR_PRINTF("__sysctl (%08x, %d, %08x, %d, %08x, %d)\r\n",
 				a->name, a->namelen,
 				a->old, *a->oldlenp,
 				a->new, a->newlen);
 			for (int i = 0; i < a->namelen; ++i) {
-				ERROR_PRINTF("  %d\n", a->name[i]);
+				ERROR_PRINTF("  %d\r\n", a->name[i]);
 			}
 			SYSCALL_FAILURE(ENOENT);
 		}
@@ -1981,7 +1978,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			SYSCALL_SUCCESS(0);
 		}
 		case SYS_issetugid: {
-			DEBUG_PRINTF("issetugid()\n");
+			DEBUG_PRINTF("issetugid()\r\n");
 			SYSCALL_SUCCESS(0);
 		}
 		case SYS_sched_yield: {
@@ -1990,20 +1987,20 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 		}
 		case SYS_sigprocmask: {
 			struct sigprocmask_args *a = argp;
-			DEBUG_PRINTF("sigprocmask (%d, %08x, %08x)\n", a->how, a->set, a->oset);
+			DEBUG_PRINTF("sigprocmask (%d, %08x, %08x)\r\n", a->how, a->set, a->oset);
 			SYSCALL_SUCCESS(0);
 		}
 		case SYS_sigaction: {
 			struct sigaction_args *a = argp;
-			DEBUG_PRINTF("sigaction (%d, %08x, %08x)\n", a->sig, a->act, a->oact);
+			DEBUG_PRINTF("sigaction (%d, %08x, %08x)\r\n", a->sig, a->act, a->oact);
 			SYSCALL_SUCCESS(0);
 		}
 		case SYS_getcontext:
-			ERROR_PRINTF("sending back bogus success for getcontext\n");
+			ERROR_PRINTF("sending back bogus success for getcontext\r\n");
 			SYSCALL_SUCCESS(0);
 		case SYS_thr_self: {
 			struct thr_self_args *a = argp;
-			DEBUG_PRINTF("thr_self()\n");
+			DEBUG_PRINTF("thr_self()\r\n");
 			*a->id = THREAD_ID_OFFSET + current_thread;
 			SYSCALL_SUCCESS(0);
 		}
@@ -2018,7 +2015,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 		case SYS_cpuset_getaffinity: {
 			struct cpuset_getaffinity_args *a = argp;
 			if (a->cpusetsize != sizeof(cpuset_t)) {
-				ERROR_PRINTF("cpuset size %d, expecting %d\n", a->cpusetsize, sizeof(cpuset_t)) ;
+				ERROR_PRINTF("cpuset size %d, expecting %d\r\n", a->cpusetsize, sizeof(cpuset_t)) ;
 				SYSCALL_FAILURE(ERANGE);
 			}
 			if (a->level == CPU_LEVEL_WHICH && a->which == CPU_WHICH_PID) {
@@ -2028,7 +2025,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				}
 				SYSCALL_SUCCESS(0);
 			}
-			ERROR_PRINTF("cpuset_getaffinity(%d, %d, %llx, %d, %08x)\n", a->level, a->which, a->id, a->cpusetsize, a->mask);
+			ERROR_PRINTF("cpuset_getaffinity(%d, %d, %llx, %d, %08x)\r\n", a->level, a->which, a->id, a->cpusetsize, a->mask);
 			break;
 		}
 		case SYS_mmap: {
@@ -2038,7 +2035,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			if (kern_mmap(&ret_addr, a->addr, a->len, a->prot, a->flags)) {
 				if (a->fd != -1 && a->fd < BOGFD_MAX && FDS[a->fd].type == BOGFD_FILE) {
 					if (a->pos == 0 && a->addr != NULL) { // && a->len > PAGE_SIZE) {
-						ERROR_PRINTF("add-symbol-file %s -o 0x%08x\n", FDS[a->fd].file->name, a->addr);
+						ERROR_PRINTF("add-symbol-file %s -o 0x%08x\r\n", FDS[a->fd].file->name, a->addr);
 					}
 
 					if (a->pos + a->len > FDS[a->fd].file->size) {
@@ -2064,7 +2061,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				++next_fd;
 			}
 			if (next_fd >= BOGFD_MAX) {
-				ERROR_PRINTF("pipe2 (...) = EMFILE (1)\n");
+				ERROR_PRINTF("pipe2 (...) = EMFILE (1)\r\n");
 				UNLOCK(all_fds, current_thread);
 				SYSCALL_FAILURE(EMFILE);
 			}
@@ -2075,17 +2072,17 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			}
 			if (next_fd >= BOGFD_MAX) {
 				next_fd = pipe1;
-				ERROR_PRINTF("pipe2 (...) = EMFILE (2)\n");
+				ERROR_PRINTF("pipe2 (...) = EMFILE (2)\r\n");
 				UNLOCK(all_fds, current_thread);
 				SYSCALL_FAILURE(EMFILE);
 			}
 			pipe2 = next_fd;
 			++next_fd;
 
-			DEBUG_PRINTF("pipe2 (%p, %08x)\n", a->fildes, a->flags);
+			DEBUG_PRINTF("pipe2 (%p, %08x)\r\n", a->fildes, a->flags);
 			if (!kern_mmap((uintptr_t*)&FDS[pipe1].pb, NULL, PAGE_SIZE, PROT_READ | PROT_WRITE | PROT_KERNEL, 0)) {
 				next_fd = pipe1;
-				ERROR_PRINTF("pipe2 (...) = ENOMEM\n");
+				ERROR_PRINTF("pipe2 (...) = ENOMEM\r\n");
 				UNLOCK(all_fds, current_thread);
 				SYSCALL_FAILURE(ENOMEM);
 			}
@@ -2101,7 +2098,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			FDS[pipe2].pb->length = 0;
 			a->fildes[0] = pipe1;
 			a->fildes[1] = pipe2;
-			ERROR_PRINTF("pipe2 -> %d <-> %d\n", pipe1, pipe2);
+			ERROR_PRINTF("pipe2 -> %d <-> %d\r\n", pipe1, pipe2);
 			UNLOCK(FDS[pipe1].lock, current_thread);
 			UNLOCK(FDS[pipe2].lock, current_thread);
 			SYSCALL_SUCCESS(0);
@@ -2117,7 +2114,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 		case SYS_fstat: {
 			struct fstat_args *a = argp;
 			if (a->fd < 0 || a->fd >= BOGFD_MAX) {
-				ERROR_PRINTF("fstat () = EBADF\n");
+				ERROR_PRINTF("fstat () = EBADF\r\n");
 				SYSCALL_FAILURE(EBADF);
 			}
 			if (FDS[a->fd].type == BOGFD_TERMIN || FDS[a->fd].type == BOGFD_TERMOUT) {
@@ -2134,13 +2131,13 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				a->sb->st_mode = S_IRUSR | S_IFREG | S_IRWXU;
 				SYSCALL_SUCCESS(0);
 			}
-			DEBUG_PRINTF("fstat (%d)\n", a->fd);
+			DEBUG_PRINTF("fstat (%d)\r\n", a->fd);
 			break;
 		}
 		case SYS_fstatfs: {
 			struct fstatfs_args *a = argp;
 			if (a->fd < 0 || a->fd >= BOGFD_MAX) {
-				ERROR_PRINTF("fstatfs () = EBADF\n");
+				ERROR_PRINTF("fstatfs () = EBADF\r\n");
 				SYSCALL_FAILURE(EBADF);
 			}
 			if ((FDS[a->fd].type == BOGFD_DIR || FDS[a->fd].type == BOGFD_FILE)) {
@@ -2149,7 +2146,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				strlcpy(a->buf->f_fstypename, "BogusFS", sizeof(a->buf->f_fstypename));
 				SYSCALL_SUCCESS(0);
 			}
-			ERROR_PRINTF("fstatfs (%d)\n", a->fd);
+			ERROR_PRINTF("fstatfs (%d)\r\n", a->fd);
 			SYSCALL_FAILURE(EBADF);
 		}
 		case SYS_fstatat: {
@@ -2175,13 +2172,13 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				a->buf->st_mode = S_IRUSR | S_IFDIR;
 				SYSCALL_SUCCESS(0);
 			}
-			DEBUG_PRINTF("stat (%s, %p) = ENOENT \n", a->path, a->buf);
+			DEBUG_PRINTF("stat (%s, %p) = ENOENT \r\n", a->path, a->buf);
 			SYSCALL_FAILURE(ENOENT);
 		}
 		case SYS_getdirentries: {
 			struct getdirentries_args *a = argp;
 			if (a->fd < 0 || a->fd >= BOGFD_MAX) {
-				ERROR_PRINTF("getdirentries () = EBADF\n");
+				ERROR_PRINTF("getdirentries () = EBADF\r\n");
 				SYSCALL_FAILURE(EBADF);
 			}
 			if (FDS[a->fd].type == BOGFD_DIR) {
@@ -2219,7 +2216,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				b->d_off = (off_t) FDS[a->fd].file;
 				SYSCALL_SUCCESS(b->d_reclen);
 			}
-			ERROR_PRINTF("getdirentries (%d)\n", a->fd);
+			ERROR_PRINTF("getdirentries (%d)\r\n", a->fd);
 			SYSCALL_FAILURE(EBADF);
 		}
 		case SYS_thr_new: {
@@ -2231,11 +2228,11 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				++next_thread;
 			}
 			if (next_thread >= MAX_THREADS) {
-				ERROR_PRINTF("thr_new (...) = EPROCLIM\n");
+				ERROR_PRINTF("thr_new (...) = EPROCLIM\r\n");
 				SYSCALL_FAILURE(EPROCLIM);
 			}
 			if (!kern_mmap(&stack_page, NULL, PAGE_SIZE, PROT_READ | PROT_WRITE | PROT_KERNEL, 0)) {
-				ERROR_PRINTF("thr_new (...) = ENOMEM\n");
+				ERROR_PRINTF("thr_new (...) = ENOMEM\r\n");
 				SYSCALL_FAILURE(ENOMEM);
 			}
 			explicit_bzero((void *)stack_page, PAGE_SIZE);
@@ -2249,7 +2246,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			bzero(&savearea[new_thread], sizeof(savearea[new_thread]));
 
 			uintptr_t new_stack_cur = setup_new_stack(threads[new_thread].kern_stack_top, threads[current_thread].kern_stack_top);
-			DEBUG_PRINTF("thr_new return (%d) on old thread (%d) cpu %d\n", new_thread, current_thread, current_cpu);
+			DEBUG_PRINTF("thr_new return (%d) on old thread (%d) cpu %d\r\n", new_thread, current_thread, current_cpu);
 			threads[new_thread].kern_stack_cur = new_stack_cur;
 			*a->param->child_tid = *a->param->parent_tid = THREAD_ID_OFFSET + new_thread;
 			struct interrupt_frame * new_frame = (struct interrupt_frame *) (threads[new_thread].kern_stack_top - sizeof(struct interrupt_frame));
@@ -2268,7 +2265,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				++next_fd;
 			}
 			if (next_fd >= BOGFD_MAX) {
-				ERROR_PRINTF("kqueue (...) = EMFILE\n");
+				ERROR_PRINTF("kqueue (...) = EMFILE\r\n");
 				UNLOCK(all_fds, current_thread);
 				SYSCALL_FAILURE(EMFILE);
 			}
@@ -2303,17 +2300,17 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				
 	if (call < SYS_MAXSYSCALL) {
 		unsigned int *args = argp;
-		ERROR_PRINTF("Got syscall %d (%s) (%08x, %08x) @%08x\n", call, syscallnames[call], args[0], args[1], args[-1]);
+		ERROR_PRINTF("Got syscall %d (%s) (%08x, %08x) @%08x\r\n", call, syscallnames[call], args[0], args[1], args[-1]);
 	} else {
-		ERROR_PRINTF("got unknown syscall %d\n", call);
+		ERROR_PRINTF("got unknown syscall %d\r\n", call);
 	}
-	halt ("halting\n", 0);
+	halt ("halting\r\n", 0);
 }
 
 int thr_new_new_thread()
 {
 	UNLOCK(thread_state, current_thread);
-	DEBUG_PRINTF("thr_new return on new thread (%d), cpu %d\n", current_thread, current_cpu);
+	DEBUG_PRINTF("thr_new return on new thread (%d), cpu %d\r\n", current_thread, current_cpu);
 	asm volatile ( "finit" :: ); // clear fpu/sse state
 	return 0;
 }
@@ -2323,9 +2320,9 @@ int thr_new_new_thread()
 void handle_gp(struct interrupt_frame *frame, uint32_t error_code)
 {
 	if (frame) {
-		ERROR_PRINTF("Got #GP (%u) IP: %08x cpu %d\n", error_code, frame->ip, current_cpu);
+		ERROR_PRINTF("Got #GP (%u) IP: %08x cpu %d\r\n", error_code, frame->ip, current_cpu);
 	} else {
-		ERROR_PRINTF("Got #GP, no stack frame cpu %d\n", current_cpu);
+		ERROR_PRINTF("Got #GP, no stack frame cpu %d\r\n", current_cpu);
 	}
 	halt(NULL, 0);
 }
@@ -2336,12 +2333,12 @@ void handle_pf(struct interrupt_frame *frame, uint32_t error_code)
 	asm volatile("mov %%cr2, %0" : "=a" (addr));
 
 	if (frame) {
-		ERROR_PRINTF("Got #PF (%u) address %08x, IP: %08x cpu %d, thread %d\n", error_code, addr, frame->ip, current_cpu, current_thread);
+		ERROR_PRINTF("Got #PF (%u) address %08x, IP: %08x cpu %d, thread %d\r\n", error_code, addr, frame->ip, current_cpu, current_thread);
 		kern_mmap_debug(addr);
 	} else {
-		ERROR_PRINTF("Got #PF, no stack frame, cpu %d\n", current_cpu);
+		ERROR_PRINTF("Got #PF, no stack frame, cpu %d\r\n", current_cpu);
 	}
-	halt("page fault\n", 0);
+	halt("page fault\r\n", 0);
 }
 
 __attribute__ ((interrupt))
@@ -2353,12 +2350,12 @@ void handle_ud(struct interrupt_frame *frame)
 
 void handle_error(unsigned int vector, uint32_t error_code, struct interrupt_frame *frame)
 {
-	ERROR_PRINTF("error vector %d\n", vector);
+	ERROR_PRINTF("error vector %d\r\n", vector);
 	switch (vector) {
 		case 0xd: handle_gp(frame, error_code); break;
 		case 0xe: handle_pf(frame, error_code); break;
 		default:
-			ERROR_PRINTF("unknown error (0x%x): 0x%x, IP %08x cpu %d, thread %d\n", vector, error_code, frame->ip, current_cpu, current_thread);
+			ERROR_PRINTF("unknown error (0x%x): 0x%x, IP %08x cpu %d, thread %d\r\n", vector, error_code, frame->ip, current_cpu, current_thread);
 	}
 }
 
@@ -2402,22 +2399,22 @@ void interrupt_setup()
 	if (rsdt == NULL) {
 		halt("ACPI is required, but could not find RSDP", 1);
 	}
-	ERROR_PRINTF("RSDT is at %p\n", rsdt);
+	ERROR_PRINTF("RSDT is at %p\r\n", rsdt);
 	if (! acpi_check_table(rsdt)) {
-		halt("Invalid ACPI RSDT table\n", 1);
+		halt("Invalid ACPI RSDT table\r\n", 1);
 	}
 	
 	if (! acpi_process_madt(rsdt)) {
-		halt("processing ACPI MADT (APIC) failed\n", 1);
+		halt("processing ACPI MADT (APIC) failed\r\n", 1);
 	}
 	
 	uint64_t base_msr = readmsr(0x1b);
 	
 	if (!(base_msr & 0x800)) {
-		halt("an enabled local APIC is required\n", 1);
+		halt("an enabled local APIC is required\r\n", 1);
 	}
 	if (local_apic != (base_msr & (~((1 << 12) - 1)))) {
-		ERROR_PRINTF("local_apic from APIC %08x does not match value from MSR %08x\n", local_apic, base_msr & (~((1 << 12) - 1)));
+		ERROR_PRINTF("local_apic from APIC %08x does not match value from MSR %08x\r\n", local_apic, base_msr & (~((1 << 12) - 1)));
 		halt(NULL, 1);
 	}
 	
@@ -2474,7 +2471,7 @@ void interrupt_setup()
 	IDTR.size = sizeof(IDT) - 1;
 	IDTR.offset = (uint32_t) &IDT;
 	asm volatile ( "lidt %0" :: "m" (IDTR) );
-	//ERROR_PRINTF("loaded idtl of size 0x%04x\n", IDTR.size);
+	//ERROR_PRINTF("loaded idtl of size 0x%04x\r\n", IDTR.size);
 }
 
 void *entrypoint;
@@ -2486,13 +2483,13 @@ void load_file(void *start, char *name, size_t size)
 {
 	Elf32_Ehdr * head = (Elf32_Ehdr *) start;
 	entrypoint = (void *) head->e_entry;
-	DEBUG_PRINTF ("elf entrypoint 0x%08x\n", head->e_entry);
+	DEBUG_PRINTF ("elf entrypoint 0x%08x\r\n", head->e_entry);
 	phnum = head->e_phnum;
 	phent = head->e_phentsize;
 	Elf32_Phdr *phead = phead_start = start + head->e_phoff;
 
-	DEBUG_PRINTF ("program binary size %d (0x%08x - 0x%08x)\n", size, start, start + size);
-	DEBUG_PRINTF ("%d program headers of size %d at %08x\n", phnum, phent, phead_start);
+	DEBUG_PRINTF ("program binary size %d (0x%08x - 0x%08x)\r\n", size, start, start + size);
+	DEBUG_PRINTF ("%d program headers of size %d at %08x\r\n", phnum, phent, phead_start);
 
 	uintptr_t first_addr = -1;
 	uintptr_t first_virtual = -1;
@@ -2509,8 +2506,8 @@ void load_file(void *start, char *name, size_t size)
 		++phead;
 	}
 
-	ERROR_PRINTF("load offsets %08x - %08x; virt %08x - %08x\n", first_addr, last_addr, first_virtual, last_virtual);
-	ERROR_PRINTF("file space %08x; virt space %08x\n", last_addr - first_addr, last_virtual - first_virtual);
+	ERROR_PRINTF("load offsets %08x - %08x; virt %08x - %08x\r\n", first_addr, last_addr, first_virtual, last_virtual);
+	ERROR_PRINTF("file space %08x; virt space %08x\r\n", last_addr - first_addr, last_virtual - first_virtual);
 	if (last_addr > size) {
 		halt("load beyond file, halting", 1);
 	}
@@ -2521,54 +2518,54 @@ void load_file(void *start, char *name, size_t size)
 
 
 	} else if (size >= last_addr) {
-		DEBUG_PRINTF("using existing file memory to load\n");
+		DEBUG_PRINTF("using existing file memory to load\r\n");
 		load_addr = (uintptr_t) start;
 	} else { */
 		if (!kern_mmap(&load_addr, 0, space, PROT_KERNEL | PROT_READ | PROT_WRITE, 0)){
-			ERROR_PRINTF("couldn't map to load initial executable\n");
+			ERROR_PRINTF("couldn't map to load initial executable\r\n");
 		}
 		explicit_bzero((void *) load_addr, space);
 //	}
 	if (load_addr != first_virtual) {
 		entrypoint = entrypoint - first_virtual + load_addr;
-		ERROR_PRINTF("elf entrypoint moved to 0x%08x\n", entrypoint);
+		ERROR_PRINTF("elf entrypoint moved to 0x%08x\r\n", entrypoint);
 	}
 
-	ERROR_PRINTF("add-symbol-file %s -o 0x%08x\n", name, load_addr);
+	ERROR_PRINTF("add-symbol-file %s -o 0x%08x\r\n", name, load_addr);
 
 	phead = phead_start;
 	size_t last_vaddr = 0;
 	for (int i = 0; i < head->e_phnum; ++i) {
 		if (phead->p_type == PT_LOAD) {
-			DEBUG_PRINTF( "  %d: PT_LOAD offset %08x, virt %08x, filesize 0x%08x, memsize 0x%08x\n",
+			DEBUG_PRINTF( "  %d: PT_LOAD offset %08x, virt %08x, filesize 0x%08x, memsize 0x%08x\r\n",
 				i, phead->p_offset, phead->p_vaddr,
 				phead->p_filesz, phead->p_memsz);
-			DEBUG_PRINTF( "      load address %08x - %08x\n", phead->p_vaddr + (load_addr - first_virtual), phead->p_memsz + phead->p_vaddr + (load_addr - first_virtual));
+			DEBUG_PRINTF( "      load address %08x - %08x\r\n", phead->p_vaddr + (load_addr - first_virtual), phead->p_memsz + phead->p_vaddr + (load_addr - first_virtual));
 			if (phead->p_vaddr < last_vaddr) {
-				ERROR_PRINTF("elf header %d has p_vaddr < last_vaddr; halting\n", i);
+				ERROR_PRINTF("elf header %d has p_vaddr < last_vaddr; halting\r\n", i);
 				halt(NULL, 1);
 			}
 			if (phead->p_vaddr > last_vaddr) {
 				size_t count = phead->p_vaddr - last_vaddr;
-				ERROR_PRINTF("zeroing %d bytes from %08x to %08x\n", count, load_addr + last_vaddr, load_addr + last_vaddr + count);
+				ERROR_PRINTF("zeroing %d bytes from %08x to %08x\r\n", count, load_addr + last_vaddr, load_addr + last_vaddr + count);
 				explicit_bzero((uint8_t *)(load_addr + last_vaddr), count);
 			}
 
 			if (phead->p_filesz > phead->p_memsz) {
-				ERROR_PRINTF("elf header %d has p_filesz > p_memsz; halting\n", i);
+				ERROR_PRINTF("elf header %d has p_filesz > p_memsz; halting\r\n", i);
 				halt(NULL, 1);
 			}
 			uint8_t *src = start + phead->p_offset;
 			uint8_t *dst = (void*) (load_addr - first_virtual +  phead->p_vaddr);
 			if (src != dst) {
-				ERROR_PRINTF("copying %d bytes from %08x to %08x\n", phead->p_filesz, src, dst);
+				ERROR_PRINTF("copying %d bytes from %08x to %08x\r\n", phead->p_filesz, src, dst);
 				memcpy(dst, src, phead->p_filesz);
 			}
 			last_vaddr = phead->p_vaddr + phead->p_filesz;
 			uint32_t scratch;
 			// TODO match permissions to load flags
 			if (!kern_mmap(&scratch, (void *)(load_addr + phead->p_vaddr), phead->p_memsz + ((load_addr + phead->p_vaddr) & (PAGE_SIZE -1)), PROT_READ|PROT_WRITE|PROT_FORCE, 0)) {
-				ERROR_PRINTF("couldn't map ELF load section %08x\n", load_addr + phead->p_vaddr);
+				ERROR_PRINTF("couldn't map ELF load section %08x\r\n", load_addr + phead->p_vaddr);
 			}
 		}
 		++phead;
@@ -2578,7 +2575,7 @@ void load_file(void *start, char *name, size_t size)
 	}
 	size_t count = virtual_space - last_vaddr;
 	if (count) {
-		ERROR_PRINTF("zeroing final %d bytes from %08x to %08x\n", count, load_addr + last_vaddr, load_addr + last_vaddr + count);
+		ERROR_PRINTF("zeroing final %d bytes from %08x to %08x\r\n", count, load_addr + last_vaddr, load_addr + last_vaddr + count);
 		explicit_bzero((uint8_t*) (load_addr + last_vaddr), count);
 	}
 	kern_munmap(PROT_KERNEL, load_addr, virtual_space);
@@ -2630,30 +2627,30 @@ void idle() {
 void setup_cpus()
 {
 	if (numcpu >= MAX_THREADS) {
-		ERROR_PRINTF("MAX_THREADS set too low, minimum is numcpu (%d) + 1; 2 * numcpu would be better\n", numcpu);
+		ERROR_PRINTF("MAX_THREADS set too low, minimum is numcpu (%d) + 1; 2 * numcpu would be better\r\n", numcpu);
 		halt("too many CPUs", 1);
 	}
 
-	ERROR_PRINTF("kernel TLS %08x - %08x\n", &__tdata_start, &__tdata_end);
+	ERROR_PRINTF("kernel TLS %08x - %08x\r\n", &__tdata_start, &__tdata_end);
 	// add a pointer to the end, and align both start and end
 	size_t raw_tls_size = &__tdata_end - &__tdata_start;
 	size_t tls_start_padding = (uintptr_t)&__tdata_start & MAX_ALIGN;
 	size_t tls_end_padding = (((uintptr_t)&__tdata_end + sizeof(uintptr_t) + MAX_ALIGN) & ~MAX_ALIGN) - (uintptr_t)&__tdata_end;
 	size_t padded_tls_size = raw_tls_size + tls_start_padding + tls_end_padding;
-	ERROR_PRINTF("TLS size %d, padded %d\n", raw_tls_size, padded_tls_size);
+	ERROR_PRINTF("TLS size %d, padded %d\r\n", raw_tls_size, padded_tls_size);
 
 	uintptr_t kernel_tls;
 	if (!kern_mmap(&kernel_tls, NULL, numcpu * padded_tls_size, PROT_READ | PROT_WRITE | PROT_KERNEL, MAP_STACK)) {
-		halt("couldn't allocate Kernel TLS memory\n", 1);
+		halt("couldn't allocate Kernel TLS memory\r\n", 1);
 	}
 	explicit_bzero((void *)kernel_tls, (numcpu * padded_tls_size + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1));
-	ERROR_PRINTF("kernel_tls at %p\n", kernel_tls);
+	ERROR_PRINTF("kernel_tls at %p\r\n", kernel_tls);
 
 	threads[0].state = THREAD_RUNNING;
 	CPU_ZERO(&threads[0].cpus);
 	threads[0].kern_stack_top = (uintptr_t) &stack_top;
 	unsigned int my_apic_id = local_apic_read(0x20) >> 24;
-	ERROR_PRINTF("my apic id %x\n", my_apic_id);
+	ERROR_PRINTF("my apic id %x\r\n", my_apic_id);
 	size_t this_cpu = -1;
 
 	for (int i = 0; i < numcpu; ++i) {
@@ -2726,7 +2723,7 @@ void setup_cpus()
 	asm volatile ("mov %0, %%gs" :: "a"((GDT_GSBASE_OFFSET + 2 * this_cpu)* sizeof(GDT[0])));
 	current_cpu = this_cpu;
 	if (current_cpu == -1) {
-		halt("could not find boot processor in cpu list?\n", 1);
+		halt("could not find boot processor in cpu list?\r\n", 1);
 	}
 }
 
@@ -2734,16 +2731,16 @@ void setup_entrypoint()
 {
 	struct hardcoded_file * file = find_file("/beam");
 	if (!file) {
-		ERROR_PRINTF("couldn't find /beam\n");
+		ERROR_PRINTF("couldn't find /beam\r\n");
 	}
 	FDS[next_fd].type = BOGFD_FILE;
 	FDS[next_fd].file = file;
 	FDS[next_fd].pos = file->start;
 	++next_fd;
 	if (!kern_mmap(&user_stack, NULL, USER_STACK_SIZE, PROT_WRITE | PROT_READ, MAP_STACK | MAP_ANON)) {
-		halt("couldn't get map for user stack\n", 0);
+		halt("couldn't get map for user stack\r\n", 0);
 	}
-	//ERROR_PRINTF("%p\n", user_stack);
+	//ERROR_PRINTF("%p\r\n", user_stack);
 	user_stack += USER_STACK_SIZE; // we actually want to keep track of the top of the stack
 
 	void* new_top = (void*) user_stack;
@@ -2834,13 +2831,13 @@ void setup_entrypoint()
 	*(int *)new_top = (sizeof(argv) / sizeof (char*)) - 1;
 
 	if (cpus_initing) {
-		ERROR_PRINTF ("waiting for cpus to init\n");
+		ERROR_PRINTF ("waiting for cpus to init\r\n");
 		while (cpus_initing) {
 			asm volatile ( "hlt" :: );
 		}
 	}
 
-	DEBUG_PRINTF ("jumping to %08x\n", entrypoint);
+	DEBUG_PRINTF ("jumping to %08x\r\n", entrypoint);
 	start_entrypoint(new_top, entrypoint, ((GDT_GSBASE_OFFSET + 1)* sizeof(GDT[0])) | 0x3);
 }
 
@@ -2849,21 +2846,21 @@ void init_cpus() {
 		if (current_cpu == i) {
 			cpus[i].flags |= CPU_STARTED;
 		} else if ((cpus[i].flags & (CPU_ENABLED|CPU_STARTED)) == CPU_ENABLED) {
-			ERROR_PRINTF("trying to INIT cpu %d\n", i);
+			ERROR_PRINTF("trying to INIT cpu %d\r\n", i);
 			local_apic_write(0x310, cpus[i].apic_id << 24);
 			local_apic_write(0x300, 0x04500);
 		} else {
-			halt("numcpus probably shouldn't include disabled cpus??\n", 0);
+			halt("numcpus probably shouldn't include disabled cpus??\r\n", 0);
 		}
 	}
 	if (current_cpu == -1) {
-		halt("could not find boot processor in cpu list?\n", 0);
+		halt("could not find boot processor in cpu list?\r\n", 0);
 	}
 }
 
 int start_cpu(size_t cpu, uint8_t page) {
 	uint32_t command_word = (0x04600 | page);
-	ERROR_PRINTF("trying to START cpu %d: %x\n", cpu, command_word);
+	ERROR_PRINTF("trying to START cpu %d: %x\r\n", cpu, command_word);
 	local_apic_write(0x310, cpus[cpu].apic_id << 24);
 	local_apic_write(0x300, command_word);
 
@@ -2873,7 +2870,7 @@ int start_cpu(size_t cpu, uint8_t page) {
 			return 1;
 		}
 	}
-	ERROR_PRINTF("trying to START cpu %d a second time\n", cpu);
+	ERROR_PRINTF("trying to START cpu %d a second time\r\n", cpu);
 	local_apic_write(0x300, command_word);
 	max_wait = TIMER_COUNT + 10;
 	while (TIMER_COUNT < max_wait) {
@@ -2881,7 +2878,7 @@ int start_cpu(size_t cpu, uint8_t page) {
 			return 1;
 		}
 	}
-	ERROR_PRINTF("couldn't start cpu %d\n", cpu);
+	ERROR_PRINTF("couldn't start cpu %d\r\n", cpu);
 	cpus[cpu].flags &= ~CPU_ENABLED;
 	return 0;
 }
@@ -2889,7 +2886,7 @@ int start_cpu(size_t cpu, uint8_t page) {
 void start_cpus() {
 	LOCK(thread_state, current_thread);
 	if (numcpu > 1 && LOW_PAGE == 0) {
-		ERROR_PRINTF("Couldn't find a low page to host the application processor trampoline, no SMP for you\n");
+		ERROR_PRINTF("Couldn't find a low page to host the application processor trampoline, no SMP for you\r\n");
 		return;
 	}
 
@@ -2932,15 +2929,15 @@ void start_ap() {
 	uint16_t gs_segment = (GDT_GSBASE_OFFSET + 2 * this_cpu) * sizeof(GDT[0]);
 	asm volatile ("mov %0, %%gs" :: "a"(gs_segment));
 
-	ERROR_PRINTF("my apic id %x\n", my_apic_id);
+	ERROR_PRINTF("my apic id %x\r\n", my_apic_id);
 
 	uint64_t base_msr = readmsr(0x1b);
 
 	if (!(base_msr & 0x800)) {
-		halt("an enabled local APIC is required\n", 0);
+		halt("an enabled local APIC is required\r\n", 0);
 	}
 	if (local_apic != (base_msr & (~((1 << 12) - 1)))) {
-		ERROR_PRINTF("local_apic from APIC %08x does not match value from MSR %08x\n", local_apic, base_msr & (~((1 << 12) - 1)));
+		ERROR_PRINTF("local_apic from APIC %08x does not match value from MSR %08x\r\n", local_apic, base_msr & (~((1 << 12) - 1)));
 		halt(NULL, 0);
 	}
 
@@ -2971,7 +2968,7 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 	setup_fds();
  
 	// Display some messages
-	ERROR_PRINTF("Hello, World!\n");
+	ERROR_PRINTF("Hello, World!\r\n");
 	enable_sse();
 	interrupt_setup();
 
@@ -2981,11 +2978,11 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 	
 	kern_mmap_init(mb->mmap_length, mb->mmap_addr);
 	if (!kern_mmap(&scratch, (void *)local_apic, PAGE_SIZE, PROT_KERNEL | PROT_READ | PROT_WRITE | PROT_FORCE, 0)) {
-		halt("couldn't map space for Local APIC\n", 1);
+		halt("couldn't map space for Local APIC\r\n", 1);
 	}
 	for (size_t i = 0; i < io_apic_count; ++i) {
 		if (!kern_mmap(&scratch, (void *)io_apics[i].address, PAGE_SIZE, PROT_KERNEL | PROT_READ | PROT_WRITE | PROT_FORCE, 0)) {
-			halt("couldn't map space for IO-APIC\n", 1);
+			halt("couldn't map space for IO-APIC\r\n", 1);
 		}
 	}
 	setup_cpus();
@@ -2994,34 +2991,34 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 	init_cpus();
 	unsigned int cpus_inited = TIMER_COUNT;
 	
-	ERROR_PRINTF("kernel read-only %08x - %08x\n", &__executable_start, &__etext);
+	ERROR_PRINTF("kernel read-only %08x - %08x\r\n", &__executable_start, &__etext);
 
 	if (!kern_mmap(&scratch, &__executable_start, &__etext - &__executable_start, PROT_KERNEL | PROT_READ, 0)) {
-		halt("couldn't map read only kernel section\n", 1);
+		halt("couldn't map read only kernel section\r\n", 1);
 	}
 
-	ERROR_PRINTF("kernel read-write %08x - %08x\n", &__data_start, &__edata);
+	ERROR_PRINTF("kernel read-write %08x - %08x\r\n", &__data_start, &__edata);
 	if (!kern_mmap(&scratch, &__data_start, &__edata - &__data_start, PROT_KERNEL | PROT_READ | PROT_WRITE, 0)) {
-		halt("couldn't map read/write kernel section\n", 1);
+		halt("couldn't map read/write kernel section\r\n", 1);
 	}
 	
 	if (!kern_mmap(&scratch, (void *)vga_buffer, VGA_BUFFER_SIZE, PROT_KERNEL | PROT_FORCE | PROT_READ | PROT_WRITE, 0)) {
-		ERROR_PRINTF("couldn't map vga buffer\n");
+		ERROR_PRINTF("couldn't map vga buffer\r\n");
 	}
 	
-	DEBUG_PRINTF("kernel main at %08x\n", kernel_main);
-	DEBUG_PRINTF("Multiboot magic: %08x (%s)\n", mb_magic, (char *) mb->boot_loader_name);
-	DEBUG_PRINTF("Multiboot info at %08x (%08x)\n", mb, &mb);
-	DEBUG_PRINTF("mem range: %08x-%08x\n", mb->mem_lower, mb->mem_upper);
-	DEBUG_PRINTF("modules: %d @ %08x\n", mb->mods_count, mb->mods_addr);
+	DEBUG_PRINTF("kernel main at %08x\r\n", kernel_main);
+	DEBUG_PRINTF("Multiboot magic: %08x (%s)\r\n", mb_magic, (char *) mb->boot_loader_name);
+	DEBUG_PRINTF("Multiboot info at %08x (%08x)\r\n", mb, &mb);
+	DEBUG_PRINTF("mem range: %08x-%08x\r\n", mb->mem_lower, mb->mem_upper);
+	DEBUG_PRINTF("modules: %d @ %08x\r\n", mb->mods_count, mb->mods_addr);
 	
-	DEBUG_PRINTF("command line: %s\n", mb->cmdline);
+	DEBUG_PRINTF("command line: %s\r\n", mb->cmdline);
 	char * filestart = strchrnul((char *)mb->cmdline, ' ');
 	while (*filestart == ' ') { ++filestart; }
 	char * fileend = strchrnul(filestart, ' ');
 	char filename [256];
 	strncpy(filename, filestart, fileend - filestart);
-	DEBUG_PRINTF("file to load %s\n", filename);
+	DEBUG_PRINTF("file to load %s\r\n", filename);
 
 	size_t mods_count = mb->mods_count;
 	multiboot_module_t *mods = (void *)mb->mods_addr;
@@ -3030,13 +3027,13 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 
 	kern_mmap(&scratch, (void *) mods, mods_count * sizeof(mods), PROT_KERNEL | PROT_READ | PROT_FORCE, 0);
 	for (int mod = 0; mod < mods_count; ++mod) {
-		DEBUG_PRINTF("Module %d (%s):\n 0x%08x-0x%08x\n", mod, mods[mod].cmdline, mods[mod].mod_start, mods[mod].mod_end);
+		DEBUG_PRINTF("Module %d (%s):\r\n 0x%08x-0x%08x\r\n", mod, mods[mod].cmdline, mods[mod].mod_start, mods[mod].mod_end);
 		init_files(&mods[mod]);
 	}
 	
 	struct hardcoded_file * file = find_file(filename);
 	if (file) {
-		DEBUG_PRINTF("loading %s at %08x\n", filename, file->start);
+		DEBUG_PRINTF("loading %s at %08x\r\n", filename, file->start);
 		load_file(file->start, file->name, file->size);
 	}
 	while (TIMER_COUNT == cpus_inited) {

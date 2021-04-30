@@ -40,7 +40,7 @@ void * acpi_find_table(void * name, void * rsdt) {
 				return  (void *)table->TableOffsetEntry[i];
 			}
 		}
-		DEBUG_PRINTF("couldn't find %s in XSDT\n", name);
+		DEBUG_PRINTF("couldn't find %s in XSDT\r\n", name);
 		return NULL;
 	} else if (bcmp(t->Signature, ACPI_SIG_RSDT, ACPI_NAMESEG_SIZE) == 0) {
 		ACPI_TABLE_RSDT * table = (ACPI_TABLE_RSDT *)rsdt;
@@ -49,10 +49,10 @@ void * acpi_find_table(void * name, void * rsdt) {
 				return  (void *)table->TableOffsetEntry[i];
 			}
 		}
-		DEBUG_PRINTF("couldn't find %s in RSDT\n", name);
+		DEBUG_PRINTF("couldn't find %s in RSDT\r\n", name);
 		return NULL;
 	} else {
-		ERROR_PRINTF("RSDT is not an RSDT or XSDT\n");
+		ERROR_PRINTF("RSDT is not an RSDT or XSDT\r\n");
 		return NULL;
 	}
 }
@@ -62,11 +62,11 @@ int acpi_process_madt(void * rsdt) {
 	numcpu = 0; timer_gsirq = 0; io_apic_count = 0;
 	ACPI_TABLE_MADT *madt = (ACPI_TABLE_MADT *)acpi_find_table(ACPI_SIG_MADT, rsdt);
 	if (madt == NULL) {
-		ERROR_PRINTF("couldn't find MADT\n");
+		ERROR_PRINTF("couldn't find MADT\r\n");
 		return 0;
 	}
 	if (!(acpi_checksum((void *) madt, madt->Header.Length) == 0)) {
-		ERROR_PRINTF("MADT checksum failed\n");
+		ERROR_PRINTF("MADT checksum failed\r\n");
 		return 0;
 	}
 	local_apic = madt->Address;
@@ -77,20 +77,20 @@ int acpi_process_madt(void * rsdt) {
 			ACPI_MADT_LOCAL_APIC *data = (ACPI_MADT_LOCAL_APIC *)p;
 			if (data->LapicFlags & ACPI_MADT_ENABLED) {
 				if (numcpu < MAX_CPUS) {
-					ERROR_PRINTF("Processor %d, APIC %d, Flags %x\n", data->ProcessorId, data->Id, data->LapicFlags);
+					ERROR_PRINTF("Processor %d, APIC %d, Flags %x\r\n", data->ProcessorId, data->Id, data->LapicFlags);
 					cpus[numcpu].flags = CPU_ENABLED;
 					cpus[numcpu].apic_id = data->Id;
 					++numcpu;
 				} else {
-					ERROR_PRINTF("Ignoring processor %d, APIC %d; more than MAX_CPUS (%d)\n", data->ProcessorId, data->Id, MAX_CPUS);
+					ERROR_PRINTF("Ignoring processor %d, APIC %d; more than MAX_CPUS (%d)\r\n", data->ProcessorId, data->Id, MAX_CPUS);
 				}
 			} else {
-				ERROR_PRINTF("DISABLED! Processor %d, APIC %d, Flags %x\n", data->ProcessorId, data->Id, data->LapicFlags);
+				ERROR_PRINTF("DISABLED! Processor %d, APIC %d, Flags %x\r\n", data->ProcessorId, data->Id, data->LapicFlags);
 			}
 		} else if (subhead->Type == ACPI_MADT_TYPE_IO_APIC && subhead->Length == sizeof(ACPI_MADT_IO_APIC)) {
 			ACPI_MADT_IO_APIC *data = (ACPI_MADT_IO_APIC *)p;
 			if (io_apic_count == MAX_IO_APICS) {
-				ERROR_PRINTF("Too many IO-APICS (limit %d); recompile with a higher limit for your machine!\n", MAX_IO_APICS);
+				ERROR_PRINTF("Too many IO-APICS (limit %d); recompile with a higher limit for your machine!\r\n", MAX_IO_APICS);
 				return 0;
 			}
 			io_apics[io_apic_count].address = (volatile uint32_t *)data->Address;
@@ -101,7 +101,7 @@ int acpi_process_madt(void * rsdt) {
 			d >>= 24;
 			d &= 0x0F;
 			if (d != data->Id) {
-				ERROR_PRINTF("IO-APIC id (%d) doesn't match id from MADT (%d)\n", d, data->Id);
+				ERROR_PRINTF("IO-APIC id (%d) doesn't match id from MADT (%d)\r\n", d, data->Id);
 				//return 0;
 			}
 			io_apics[io_apic_count].address[0] = 1;
@@ -116,17 +116,17 @@ int acpi_process_madt(void * rsdt) {
 			if (data->Bus == 0 && data->SourceIrq == 0) {
 				timer_gsirq = data->GlobalIrq;
 				timer_flags = data->IntiFlags;
-				ERROR_PRINTF("timer irq is global IRQ %d (flags %x)\n", timer_gsirq, data->IntiFlags);
+				ERROR_PRINTF("timer irq is global IRQ %d (flags %x)\r\n", timer_gsirq, data->IntiFlags);
 			} else {
-				ERROR_PRINTF("ISO: Bus %d, SourceIRQ %d, GlobalIRQ %d, Flags %x\n",
+				ERROR_PRINTF("ISO: Bus %d, SourceIRQ %d, GlobalIRQ %d, Flags %x\r\n",
 				             data->Bus, data->SourceIrq, data->GlobalIrq, data->IntiFlags);
 			}
 		} else if (subhead->Type == ACPI_MADT_TYPE_LOCAL_APIC_NMI && subhead->Length == sizeof(ACPI_MADT_LOCAL_APIC_NMI)) {
 			ACPI_MADT_LOCAL_APIC_NMI *data = (ACPI_MADT_LOCAL_APIC_NMI *)p;
-			ERROR_PRINTF("NMI: Processor %d, Flags %x, Lint %d\n",
+			ERROR_PRINTF("NMI: Processor %d, Flags %x, Lint %d\r\n",
 				data->ProcessorId, data->IntiFlags, data->Lint);
 		} else {
-			ERROR_PRINTF("uknown MADT item, type %d, length %d\n", subhead->Type, subhead->Length);
+			ERROR_PRINTF("uknown MADT item, type %d, length %d\r\n", subhead->Type, subhead->Length);
 		}
 		p += subhead->Length;
 	}

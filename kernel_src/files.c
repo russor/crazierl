@@ -22,7 +22,7 @@ void init_files(multiboot_module_t *mod) {
 	kern_mmap(&scratch, mod, sizeof (*mod), PROT_READ | PROT_KERNEL | PROT_FORCE, 0);
 	uintptr_t start = mod->mod_start;
 	if (mod->mod_end - start < 8) {
-		ERROR_PRINTF("initrd is too small to be useful %d\n", mod->mod_end - start);
+		ERROR_PRINTF("initrd is too small to be useful %d\r\n", mod->mod_end - start);
 		return;
 	}
 	kern_mmap(&scratch, (void *)start, mod->mod_end - start, PROT_READ | PROT_KERNEL | PROT_FORCE, 0);
@@ -37,10 +37,10 @@ void init_files(multiboot_module_t *mod) {
 
 	size_t total_len = total_namelen + fatlen;
 	if (!kern_mmap(&fat_and_names, NULL, total_len, PROT_READ | PROT_WRITE | PROT_KERNEL, MAP_ANON | MAP_STACK)) {
-		ERROR_PRINTF("couldn't allocate %d bytes for filenames and file table\n", total_namelen);
+		ERROR_PRINTF("couldn't allocate %d bytes for filenames and file table\r\n", total_namelen);
 		return;
 	}
-	DEBUG_PRINTF("zeroing out fat_and_names %p, %d\n", fat_and_names, total_len);
+	DEBUG_PRINTF("zeroing out fat_and_names %p, %d\r\n", fat_and_names, total_len);
 
 	hardcoded_files = (void*) fat_and_names;
 	hardcoded_files->count = files;
@@ -71,9 +71,9 @@ void init_files(multiboot_module_t *mod) {
 			mmaplen = (mmaplen & ~(PAGE_SIZE -1)) + PAGE_SIZE;
 		}
 
-		DEBUG_PRINTF("allocating %d bytes (%d) for file %s\n", mmaplen, filelen, (char *) start);
+		DEBUG_PRINTF("allocating %d bytes (%d) for file %s\r\n", mmaplen, filelen, (char *) start);
 		if (!kern_mmap(&file, NULL, mmaplen, PROT_READ | PROT_WRITE | PROT_KERNEL, MAP_ANON | MAP_STACK)) {
-			ERROR_PRINTF("couldn't allocate %d bytes (%d) for file %s\n", mmaplen, filelen, (char *)start);
+			ERROR_PRINTF("couldn't allocate %d bytes (%d) for file %s\r\n", mmaplen, filelen, (char *)start);
 			return;
 		}
 
@@ -87,7 +87,7 @@ void init_files(multiboot_module_t *mod) {
 		if (compressedlen) {
 			start += sizeof(uint32_t);
 			//if (LZ4_decompress_safe((char *)start, (char *)file, compressedlen, filelen) != filelen) {
-				ERROR_PRINTF("couldn't decompress %s\n", hardcoded_files->files[i].name);
+				ERROR_PRINTF("couldn't decompress %s\r\n", hardcoded_files->files[i].name);
 				return;
 			//}
 		} else {
@@ -106,7 +106,7 @@ void init_files(multiboot_module_t *mod) {
 
 struct hardcoded_file * find_file(const char * name) {
 	if (hardcoded_files == NULL) {
-		ERROR_PRINTF("find_file when files aren't initialized\n");
+		ERROR_PRINTF("find_file when files aren't initialized\r\n");
 		return NULL;
 	}
 	for (int i = 0; i < hardcoded_files->count; ++i) {
@@ -123,7 +123,7 @@ struct hardcoded_file * find_file(const char * name) {
 
 struct hardcoded_file * find_dir(const char * name, size_t len, struct hardcoded_file *i) {
 	if (hardcoded_files == NULL) {
-		ERROR_PRINTF("find_dir when files aren't initialized\n");
+		ERROR_PRINTF("find_dir when files aren't initialized\r\n");
 		return NULL;
 	}
 	if (i == NULL) {

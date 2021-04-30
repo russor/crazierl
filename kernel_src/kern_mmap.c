@@ -45,7 +45,7 @@ uintptr_t kern_mmap_physical(uintptr_t addr) {
 void kern_mmap_debug(uintptr_t addr) {
 	uint32_t *direntry = pagetable_direntry(addr);
 	uint32_t *table_entry = pagetable_entry(*direntry, addr);
-	ERROR_PRINTF("logical %08x; dir %08x -> %08x; page %08x -> %08x\n", addr, direntry, *direntry, table_entry, *table_entry);
+	ERROR_PRINTF("logical %08x; dir %08x -> %08x; page %08x -> %08x\r\n", addr, direntry, *direntry, table_entry, *table_entry);
 }
 
 
@@ -68,16 +68,16 @@ void add_page_mapping (uint16_t flags, uintptr_t logical, uintptr_t physical) {
 		if (unlikely(!PAGE_SETUP_FINISHED || (flags & PAGE_FORCE))) {
 			*directory_entry = (PAGE_TABLE_BASE + ((logical >> PAGE_DIRECTORY_BITS) * PAGE_SIZE)) | (flags & (PAGE_SIZE -1));
 		} else {
-			halt("Trying to setup a mapping without a directory entry\n", 0);
+			halt("Trying to setup a mapping without a directory entry\r\n", 0);
 		}
 	}
 	
 	// update flags
 	if ((flags & PAGE_USER) && !(*directory_entry & PAGE_USER)) {
-		//DEBUG_PRINTF("Adding user flag to page_directory for %08x -> %08x\n", logical, physical);
+		//DEBUG_PRINTF("Adding user flag to page_directory for %08x -> %08x\r\n", logical, physical);
 		*directory_entry |= (PAGE_USER | PAGE_BOTH_UK);
 	} else if (!(flags & PAGE_USER) && (*directory_entry & PAGE_USER)) {
-		//DEBUG_PRINTF("Adding both flag to page_directory for %08x -> %08x\n", logical, physical);
+		//DEBUG_PRINTF("Adding both flag to page_directory for %08x -> %08x\r\n", logical, physical);
 		*directory_entry |= (PAGE_USER | PAGE_BOTH_UK);
 	}
 	
@@ -94,17 +94,17 @@ void add_page_mapping (uint16_t flags, uintptr_t logical, uintptr_t physical) {
 		if (unlikely(!PAGE_SETUP_FINISHED || (flags & PAGE_FORCE))){
 			*table_entry = (physical & ~(PAGE_SIZE -1)) | (flags & (PAGE_SIZE - 1));
 		} else {
-			DEBUG_PRINTF("table_entry %p (%x), directory_entry %p (%x), logical %p\n",
+			DEBUG_PRINTF("table_entry %p (%x), directory_entry %p (%x), logical %p\r\n",
 				table_entry, *table_entry, directory_entry, *directory_entry, logical);
-			halt("Trying to setup a mapping without a page table entry\n", 0);
+			halt("Trying to setup a mapping without a page table entry\r\n", 0);
 		}
 	}
 	// update flags
 	if ((flags & PAGE_USER) && !(*table_entry & PAGE_USER)) {
-		//DEBUG_PRINTF("Adding user flag to page_directory for %08x -> %08x\n", logical, physical);
+		//DEBUG_PRINTF("Adding user flag to page_directory for %08x -> %08x\r\n", logical, physical);
 		*table_entry |= (PAGE_USER | PAGE_BOTH_UK);
 	} else if (!(flags & PAGE_USER) && (*table_entry & PAGE_USER)) {
-		//DEBUG_PRINTF("Adding both flag to page_directory for %08x -> %08x\n", logical, physical);
+		//DEBUG_PRINTF("Adding both flag to page_directory for %08x -> %08x\r\n", logical, physical);
 		*table_entry |= (PAGE_USER | PAGE_BOTH_UK);
 	}
 
@@ -131,7 +131,7 @@ void kern_munmap (uint16_t mode, uintptr_t addr, size_t size)
 	if (size & (PAGE_SIZE -1)) {
 		size = (size & ~(PAGE_SIZE -1)) + PAGE_SIZE;
 	}
-	DEBUG_PRINTF("unmapping %08x bytes at %08x\n", size, addr);
+	DEBUG_PRINTF("unmapping %08x bytes at %08x\r\n", size, addr);
 	for (; size; addr += PAGE_SIZE, size -= PAGE_SIZE) {
 		int access_changed = 0;
 		uint32_t * table_entry = pagetable_entry(*(pagetable_direntry(addr)), addr);
@@ -180,13 +180,13 @@ void kern_munmap (uint16_t mode, uintptr_t addr, size_t size)
 void kern_mmap_init (unsigned int length, unsigned int addr)
 {
 	uintptr_t mmap;
-	DEBUG_PRINTF ("memory map at 0x%08x, length %d\n", addr, length);
+	DEBUG_PRINTF ("memory map at 0x%08x, length %d\r\n", addr, length);
 	for (mmap = addr; mmap < (addr + length); mmap += ((multiboot_memory_map_t *)mmap)->size + sizeof (((multiboot_memory_map_t *)mmap)->size)) {
 		multiboot_memory_map_t * mmm = (multiboot_memory_map_t *) mmap;
 		if (mmm->type == 1 && (mmm->addr + mmm->len - 1) <= SIZE_MAX) {
 			uintptr_t addr = mmm->addr;
 			uintptr_t len = mmm->len;
-			DEBUG_PRINTF("Available memory at 0x%08x; 0x%08x (%u) bytes\n", addr, len, len);
+			DEBUG_PRINTF("Available memory at 0x%08x; 0x%08x (%u) bytes\r\n", addr, len, len);
 			if (addr < ONE_MB) {
 				if (addr < PAGE_SIZE && addr + len >= 2 * PAGE_SIZE) {
 					LOW_PAGE = PAGE_SIZE;
@@ -199,12 +199,12 @@ void kern_mmap_init (unsigned int length, unsigned int addr)
 					}
 				}
 				if (addr + len <= ONE_MB) {
-					DEBUG_PRINTF(" ignoring, because whole range is under 1 MB\n");
+					DEBUG_PRINTF(" ignoring, because whole range is under 1 MB\r\n");
 					continue;
 				} else {
 					len -= (ONE_MB - addr);
 					addr = ONE_MB;
-					DEBUG_PRINTF(" treating as 0x%08x, 0x%08x (%d) bytes; to avoid memory under 1 MB\n", addr, len, len);
+					DEBUG_PRINTF(" treating as 0x%08x, 0x%08x (%d) bytes; to avoid memory under 1 MB\r\n", addr, len, len);
 				}
 			}
 			if (addr & (PAGE_SIZE -1)) {
@@ -214,11 +214,11 @@ void kern_mmap_init (unsigned int length, unsigned int addr)
 				} else {
 					len = 0;
 				}
-				DEBUG_PRINTF ("  adjusting address to page boundary, 0x%08x, 0x%08x (%d) bytes\n", addr, len, len);
+				DEBUG_PRINTF ("  adjusting address to page boundary, 0x%08x, 0x%08x (%d) bytes\r\n", addr, len, len);
 			}
 			if (len & (PAGE_SIZE -1)) {
 				len &= ~(PAGE_SIZE -1);
-				DEBUG_PRINTF ("  adjusting length to page boundary, 0x%08x, 0x%08x (%d) bytes\n", addr, len, len);
+				DEBUG_PRINTF ("  adjusting length to page boundary, 0x%08x, 0x%08x (%d) bytes\r\n", addr, len, len);
 			}
 
 			if (PAGE_DIRECTORY == 0 && len >= (PAGE_SIZE * PAGE_SIZE) + PAGE_SIZE) {
@@ -241,10 +241,10 @@ void kern_mmap_init (unsigned int length, unsigned int addr)
 		} else {
 			uintptr_t addr = mmm->addr;
 			uintptr_t len = mmm->len;
-			DEBUG_PRINTF("unavailable memory (%d) at 0x%08x; 0x%08x (%u) bytes\n", mmm->type, addr, len, len);
+			DEBUG_PRINTF("unavailable memory (%d) at 0x%08x; 0x%08x (%u) bytes\r\n", mmm->type, addr, len, len);
 		}
 	}
-	ERROR_PRINTF("finished setting up pages\n");
+	ERROR_PRINTF("finished setting up pages\r\n");
 	PAGE_SETUP_FINISHED = 1;
 }
 
@@ -258,11 +258,11 @@ int kern_mmap (uintptr_t *ret, void * addr, size_t len, int prot, int flags)
 	}
 	addr = (void*)((uintptr_t)addr & ~(PAGE_SIZE -1)); // align to page, just in case
 	if (addr != NULL && !((prot & PROT_FORCE) || (prot & PROT_KERNEL)) && !mem_available((uintptr_t)addr, len)) {
-		ERROR_PRINTF("range %08x, %08x not available; looking for anything!\n", addr, len);
+		ERROR_PRINTF("range %08x, %08x not available; looking for anything!\r\n", addr, len);
 		addr = NULL;
 	}
 
-	DEBUG_PRINTF("looking for 0x%x bytes at %08x\n", len, addr);
+	DEBUG_PRINTF("looking for 0x%x bytes at %08x\r\n", len, addr);
 	
 	uint16_t mappingflags = 0;
 	if (prot & PROT_READ) {
@@ -311,8 +311,8 @@ int kern_mmap (uintptr_t *ret, void * addr, size_t len, int prot, int flags)
 		}
 		if (!found) {
 			*ret = ENOMEM;
-			ERROR_PRINTF("unable to allocate\n");
-			ERROR_PRINTF("kern_mmap (%08x (%08x), %08x, %08x, %x, %x)\n", *ret, ret, addr, len, prot, flags);
+			ERROR_PRINTF("unable to allocate\r\n");
+			ERROR_PRINTF("kern_mmap (%08x (%08x), %08x, %08x, %x, %x)\r\n", *ret, ret, addr, len, prot, flags);
 			UNLOCK(mmap_lock, current_thread);
 			return 0;
 		}
@@ -320,7 +320,7 @@ int kern_mmap (uintptr_t *ret, void * addr, size_t len, int prot, int flags)
 		*ret = (uintptr_t) addr;
 	}
 	add_page_mappings(mappingflags, *ret, len);
-	DEBUG_PRINTF("kern_mmap (%08x (%08x), %08x, %08x, %x, %x)\n", *ret, ret, addr, len, prot, flags);
+	DEBUG_PRINTF("kern_mmap (%08x (%08x), %08x, %08x, %x, %x)\r\n", *ret, ret, addr, len, prot, flags);
 	UNLOCK(mmap_lock, current_thread);
 	return 1;
 }
@@ -331,7 +331,7 @@ void kern_mmap_enable_paging() {
 	asm volatile("mov %%cr0, %0" : "=a" (a));
 	a|= 0x80000001; 
 	a&= 0x9FFFFFFF;
-	DEBUG_PRINTF("setting cr0 to %08x\n", a);
+	DEBUG_PRINTF("setting cr0 to %08x\r\n", a);
 	asm volatile("mov %0, %%cr0" :: "a"(a));
 }
 
