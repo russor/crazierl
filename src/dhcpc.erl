@@ -26,7 +26,7 @@ go() ->
               >>,
     udp:send(0, ?CLIENT_PORT, ?BROADCAST, ?SERVER_PORT, Discovery),
     Options = receive
-       {udp, {?BROADCAST, ?CLIENT_PORT, ServerIp, ?SERVER_PORT}, 
+       {udp, {_, ?CLIENT_PORT, _, ?SERVER_PORT},
              << 2, 1, 6, _Hops,
                 Xid:4/binary,
                 _Secs:16, _Flags:16, _CIAddr:32,
@@ -55,7 +55,7 @@ go() ->
               >>,
     udp:send(0, ?CLIENT_PORT, ?BROADCAST, ?SERVER_PORT, Request),
     receive
-       {udp, {?BROADCAST, ?CLIENT_PORT, ServerIp, ?SERVER_PORT}, 
+       {udp, {_, ?CLIENT_PORT, _, ?SERVER_PORT},
              << 2, 1, 6, _Hops,
                 Xid:4/binary,
                 _Secs:16, _Flags:16, _CIAddr:32,
