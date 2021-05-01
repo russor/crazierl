@@ -89,6 +89,7 @@ static ERL_NIF_TERM bcopy_to_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM ar
 	if ((offset + binary.size) > resource->length) { return enif_make_badarg(env); }
 
 	bcopy(binary.data, (void *)(resource->start + offset), binary.size);
+	__sync_synchronize();
 
 	return enif_make_atom(env, "ok");
 }
@@ -106,6 +107,7 @@ static ERL_NIF_TERM bcopy_from_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM 
 	ERL_NIF_TERM binary;
 	unsigned char * bindata = enif_make_new_binary(env, length, &binary);
 
+	__sync_synchronize();
 	bcopy((void *) (resource->start + offset), bindata, length);
 
 	return binary;
