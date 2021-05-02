@@ -103,9 +103,8 @@ reset_loop(MMIO) ->
 loop(Device, MMIO, MacAddr, Socket, RxQ, TxQ = #q{avail = 0}) ->
 	{RxQ1, TxQ1} = receive
 		{udp, Socket, _, _, _} ->
-			Status = crazierl:bcopy_from(MMIO, ?IRQ_STATUS, 2),
-			io:format("got irq ~p~n", [Status]),
-			crazierl:bcopy_to(MMIO, ?IRQ_STATUS, Status),
+			%Status = crazierl:bcopy_from(MMIO, ?IRQ_STATUS, 2),
+			crazierl:bcopy_to(MMIO, ?IRQ_STATUS, <<16#FFFF:16>>),
 			{check_queue(RxQ, read), check_queue(TxQ, write)};
 		{ping, From} ->
 			From ! pong,
@@ -116,12 +115,12 @@ loop(Device, MMIO, MacAddr, Socket, RxQ, TxQ = #q{avail = 0}) ->
 loop(Device, MMIO, MacAddr, Socket, RxQ, TxQ) ->
 	{RxQ1, TxQ1} = receive
 		{udp, Socket, _, _, _} ->
-			Status = crazierl:bcopy_from(MMIO, ?IRQ_STATUS, 2),
+			%Status = crazierl:bcopy_from(MMIO, ?IRQ_STATUS, 2),
 			%case Status of 
 			%	<<1, 0>> -> ok;
 			%	_ -> io:format("got irq ~p~n", [Status])
 			%end,
-			crazierl:bcopy_to(MMIO, ?IRQ_STATUS, Status),
+			crazierl:bcopy_to(MMIO, ?IRQ_STATUS, <<16#FFFF:16>>),
 			{check_queue(RxQ, read), check_queue(TxQ, write)};
 		{'$gen_call', From, {send, {DestMac, EtherType}, Payload}} ->
 			Packet = <<DestMac:48, MacAddr:48, EtherType:16, Payload/binary>>,
