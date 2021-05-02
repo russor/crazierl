@@ -2765,6 +2765,9 @@ void setup_entrypoint()
 			"-progname", "erl", "--", "-home", "/",
 			"-pz", "/obj/",
 			"-s", "crazierl",
+			"-sbwt", "none",
+			"-sbwtdcpu", "none",
+			"-sbwtdio", "none",
 			"--", 
 			NULL};
 
