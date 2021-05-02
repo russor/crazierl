@@ -542,7 +542,7 @@ void wake_cpu_for_thread(size_t thread) {
 	int cpu = CPU_FFS(&t_cpus) - 1;
 	while (cpu != -1) {
 		if (cpus[cpu].flags & CPU_IDLE) {
-			//wake_cpu(cpu);
+			wake_cpu(cpu);
 			break;
 		}
 		CPU_CLR(cpu, &t_cpus);
