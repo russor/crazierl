@@ -692,7 +692,7 @@ void handle_irq(unsigned int vector)
 					write(fd, "!", 1);
 				}
 			}
-			if (!found) { // && !UNCLAIMED_IOAPIC_INT) {
+			if (!found && !UNCLAIMED_IRQ) {
 				UNCLAIMED_IRQ = 1;
 				ERROR_PRINTF("unexpected interrupt vector %X on cpu %d\r\n", vector, current_cpu);
 			}
@@ -874,41 +874,38 @@ size_t kern_read(int fd, void * buf, size_t nbyte, int force_async) {
 	}
 }
 
+void umtx_wake(void * obj, u_long count) {
+	uintptr_t phys = kern_mmap_physical((uintptr_t) obj);
+	LOCK(thread_state, current_thread);
+	for (int thread = 0; count > 0 && thread < MAX_THREADS; ++thread) {
+		if (threads[thread].state == THREAD_UMTX_WAIT && threads[thread].wait_target == phys) {
+			threads[thread].state = THREAD_RUNNABLE;
+			wake_cpu_for_thread(thread);
+			--count;
+		}
+	}
+	UNLOCK(thread_state, current_thread);
+}
+
 // separate function, because uint64_t breaks stack setup for thr_new otherwise
 int kern_umtx_op(struct _umtx_op_args *a) {
 	switch (a->op) {
 		case UMTX_OP_WAKE: {
-			uintptr_t phys = kern_mmap_physical((uintptr_t) a->obj);
-			u_long count = a->val;
-			LOCK(thread_state, current_thread);
-			for (int thread = 0; count > 0 && thread < MAX_THREADS; ++thread) {
-				if (threads[thread].state == THREAD_UMTX_WAIT && threads[thread].wait_target == phys) {
-					threads[thread].state = THREAD_RUNNABLE;
-					wake_cpu_for_thread(thread);
-					--count;
-				}
-			}
-			UNLOCK(thread_state, current_thread);
+			umtx_wake(a->obj, a->val);
 			return 0;
 		}
 		case UMTX_OP_NWAKE_PRIVATE: {
 			for (int i = 0; i < a->val; ++i) {
-				uintptr_t phys = kern_mmap_physical(((uintptr_t *)a->obj)[i]);
-				LOCK(thread_state, current_thread);
-				for (int thread = 0; thread < MAX_THREADS; ++thread) {
-					if (threads[thread].state == THREAD_UMTX_WAIT && threads[thread].wait_target == phys) {
-						threads[thread].state = THREAD_RUNNABLE;
-						wake_cpu_for_thread(thread);
-					}
-				}
-				UNLOCK(thread_state, current_thread);
+				umtx_wake((((void **)a->obj)[i]), MAX_THREADS);
 			}
 			return 0;
 		}
+		case UMTX_OP_WAIT:
 		case UMTX_OP_WAIT_UINT:
 		case UMTX_OP_WAIT_UINT_PRIVATE: {
 			LOCK(thread_state, current_thread);
-			if (*(u_int *)a->obj == a->val) {
+			if ((a->op == UMTX_OP_WAIT && *(u_long *)a->obj == a->val) ||
+			    (a->op != UMTX_OP_WAIT && *(u_int *)a->obj == a->val)) {
 				uint64_t timeout = 0;
 				if ((size_t) a->uaddr1 == sizeof(struct _umtx_time)) {
 					struct _umtx_time *utime = (struct _umtx_time *)a->uaddr2;
@@ -979,7 +976,7 @@ int kern_umtx_op(struct _umtx_op_args *a) {
 	}
 
 	ERROR_PRINTF("_umtx_op(%08x, %d, %d, %08x, %08x)\r\n", a->obj, a->op, a->val, a->uaddr1, a->uaddr2);
-	halt("unknown umtx op", 0);
+	halt("unknown umtx op\r\n", 0);
 }
 
 // separate function, because uint64_t breaks stack setup for thr_new otherwise
@@ -1332,6 +1329,13 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 {	
 	void *argp = (void *)(iframe->sp + sizeof(iframe->sp));
 	switch(call) {
+	        case SYS_exit: {
+			struct sys_exit_args *a = argp;
+			ERROR_PRINTF("exit %d\r\n", a->rval);
+			IDTR.size = 0;
+			asm volatile ( "lidt %0" :: "m" (IDTR) );
+			wake_cpu(current_cpu);
+		}
 		case SYS_read: {
 			struct read_args *a = argp;
 			ssize_t read = kern_read(a->fd, a->buf, a->nbyte, 0);
@@ -2227,16 +2231,19 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			while (threads[next_thread].state != THREAD_EMPTY && next_thread < MAX_THREADS) {
 				++next_thread;
 			}
-			if (next_thread >= MAX_THREADS) {
+			size_t new_thread = next_thread;
+			if (new_thread >= MAX_THREADS) {
 				ERROR_PRINTF("thr_new (...) = EPROCLIM\r\n");
 				SYSCALL_FAILURE(EPROCLIM);
 			}
-			if (!kern_mmap(&stack_page, NULL, PAGE_SIZE, PROT_READ | PROT_WRITE | PROT_KERNEL, 0)) {
+			if (threads[new_thread].kern_stack_top != 0) {
+				stack_page = threads[new_thread].kern_stack_top - PAGE_SIZE;
+			} else if (!kern_mmap(&stack_page, NULL, PAGE_SIZE, PROT_READ | PROT_WRITE | PROT_KERNEL, 0)) {
 				ERROR_PRINTF("thr_new (...) = ENOMEM\r\n");
 				SYSCALL_FAILURE(ENOMEM);
 			}
+
 			explicit_bzero((void *)stack_page, PAGE_SIZE);
-			size_t new_thread = next_thread;
 			++next_thread;
 			threads[new_thread].state = THREAD_INITING;
 			threads[new_thread].cpus = threads[current_thread].cpus;
@@ -2257,6 +2264,20 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			new_frame->flags &= ~CARRY;
 			threads[new_thread].state = THREAD_RUNNABLE;
 			SYSCALL_SUCCESS(0);
+		}
+		case SYS_thr_exit: {
+			struct thr_exit_args *a = argp;
+			if (a->state != NULL) {
+				*(a->state) = 1;
+			}
+			umtx_wake(a->state, MAX_THREADS);
+			LOCK(thread_state, current_thread);
+
+			// TODO, check if there's any other non-empty thread
+			if (current_thread < next_thread) {
+				next_thread = current_thread;
+			}
+			switch_thread(THREAD_EMPTY, 0, 1);
 		}
 		case SYS_clock_getres: SYSCALL_FAILURE(EINVAL); // TODO clock stuff
 		case SYS_kqueue: {
