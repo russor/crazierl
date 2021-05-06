@@ -60,5 +60,5 @@ reader_call(get_mtu, _From, State) ->
 writer_init() -> eth_port:get_instance().
 
 writer_cast({send, Packet}, State) ->
-    gen_server:call(rtl_8168, {send, Packet}),
+    gen_server:call(ethernet_sender, {send, Packet}),
     {noreply, State}.

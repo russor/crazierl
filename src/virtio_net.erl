@@ -46,7 +46,7 @@ check(#pci_device{common = #pci_common{vendor = 16#1AF4, device_id = 16#1000}}, 
 check(#pci_device{common = #pci_common{vendor = 16#1AF4, device_id = 16#1041}}, _Args) -> true.
 
 attach(Device, _Args) ->
-	register(?MODULE, self()),
+	register(ethernet_sender, self()),
 	Common = Device#pci_device.common,
 	Capabilities = parse_capabilities(Common#pci_common.capabilities, #{}),
 	{ok, CommonMap} = map_structure(common_cfg, Device, Capabilities),

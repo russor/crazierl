@@ -37,7 +37,7 @@
 check(#pci_device{common = #pci_common{vendor = 16#10EC, device_id = 16#8168}}, _Args) -> true.
 
 attach(Device, _Args) ->
-	register(?MODULE, self()),
+	register(ethernet_sender, self()),
 	Common = Device#pci_device.common,
 
 	Bar = element(3, Device#pci_device.bars),

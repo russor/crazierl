@@ -27,14 +27,7 @@ start() ->
 	pci:attach(virtio_net, []),
 	pci:attach(rtl_8168, []),
 	try
-		virtio_net ! {ping, self()},
-		receive
-			pong -> ok
-		end
-	catch _:_ -> ok
-	end,
-	try
-		rtl_8168 ! {ping, self()},
+		ethernet_sender ! {ping, self()},
 		receive
 			pong -> ok
 		end
