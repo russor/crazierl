@@ -5,8 +5,7 @@
 		owner,
 		io_port,
 		irq,
-		buffer,
-		looped
+		buffer
 }).
 
 start(IoPort, Interrupt) ->
@@ -19,7 +18,7 @@ init(Owner, IoPort, Interrupt) ->
 	]),
 	crazierl:outb(IoPort + 1, 2#11), % request irq for data avail and transmitter empty
 	crazierl:outb(IoPort, 16#13), % XOFF
-	loop(port_loop(#s{owner = Owner, io_port = IoPort, irq = InterruptSocket, buffer = <<>>, looped = 0})).
+	loop(port_loop(#s{owner = Owner, io_port = IoPort, irq = InterruptSocket, buffer = <<>>})).
 
 loop(State = #s{buffer = B, irq = Irq}) ->
 	NewState = receive
@@ -34,7 +33,7 @@ loop(State = #s{buffer = B, irq = Irq}) ->
 	end,
 	loop(NewState).
 
-port_loop(State = #s{io_port = Port, buffer = B, looped = L}) ->
+port_loop(State = #s{io_port = Port, buffer = B}) ->
 	Status = crazierl:inb(Port + 5),
 	case Status band 2 of
 		1 -> error_logger:error_msg("com port ~.16B overrun");
@@ -42,19 +41,15 @@ port_loop(State = #s{io_port = Port, buffer = B, looped = L}) ->
 	end,
 	case {Status band 1, Status band 32} of
 		{1, _} ->
-			C = crazierl:inb(Port),
-			State#s.owner ! {self(), [C]},
+			State#s.owner ! {self(), [crazierl:inb(Port)]},
 			port_loop(State); % prioritize reading over writing!
 		{0, 32} when B /= <<>> ->
 			<<C:8, NewB/binary>> = B,
 			crazierl:outb(Port, C),
-			port_loop(State#s{buffer = NewB, looped = 0});
+			port_loop(State#s{buffer = NewB});
 		{0, 32} ->
 			% clear possible transmit OK interrupt
 			_InterruptId = crazierl:inb(Port + 2),
 			State;
-	        {0, 0} when B /= <<>> andalso L < 1000 ->
-	                erlang:yield(),
-	                port_loop(State#s{looped = L + 1});
 		_ -> State
 	end.
