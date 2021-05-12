@@ -63,8 +63,11 @@
 		pushl %ebx // push multiboot header
 		pushl %eax // push multiboot magic
 
+		mov (GDT), %ax
+		mov %ax, tramp_gdtr
 		mov $GDT, %eax
 		mov %eax, 2 + GDT
+		mov %eax, 2 + tramp_gdtr
 		// setup the Global Descriptor Table with static values
 		lgdtl (%eax)
 		jmpl $0x18, $reload_CS
@@ -863,13 +866,14 @@
 
 	.code16 // APs start in real mode
 	ap_trampoline:
-		mov $GDT, %eax
-		// setup the Global Descriptor Table with static values
-		lgdtl (%eax)
+		cli
+		mov $(tramp_gdtr - ap_trampoline), %eax
+		lgdtl %cs:(%eax)
 		mov %cr0, %eax
 		or $1, %al
 		mov %eax, %cr0 // enable protected mode
 		jmpl $0x18, $ap_trampoline2 // bounce to the second part of the trampoline
+	tramp_gdtr: .byte 0,0,0,0,0,0
 
 	.code32
 	ap_trampoline2:
