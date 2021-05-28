@@ -252,18 +252,13 @@ DECLARE_LOCK(mmap_lock);
 
 int kern_mmap (uintptr_t *ret, void * addr, size_t len, int prot, int flags)
 {
-	LOCK(mmap_lock, current_thread);
-	if (len & (PAGE_SIZE -1)) {
-		len = (len & ~(PAGE_SIZE - 1)) + PAGE_SIZE;
+	unsigned int alignsize = PAGE_SIZE;
+	if (flags & MAP_ALIGNMENT_MASK) {
+		alignsize = 1 << ((flags & MAP_ALIGNMENT_MASK) >> MAP_ALIGNMENT_SHIFT);
+		if (alignsize < PAGE_SIZE) {
+			alignsize = PAGE_SIZE;
+		}
 	}
-	addr = (void*)((uintptr_t)addr & ~(PAGE_SIZE -1)); // align to page, just in case
-	if (addr != NULL && !((prot & PROT_FORCE) || (prot & PROT_KERNEL)) && !mem_available((uintptr_t)addr, len)) {
-		ERROR_PRINTF("range %08x, %08x not available; looking for anything!\r\n", addr, len);
-		addr = NULL;
-	}
-
-	DEBUG_PRINTF("looking for 0x%x bytes at %08x\r\n", len, addr);
-	
 	uint16_t mappingflags = 0;
 	if (prot & PROT_READ) {
 		mappingflags |= PAGE_PRESENT;
@@ -278,10 +273,25 @@ int kern_mmap (uintptr_t *ret, void * addr, size_t len, int prot, int flags)
 		mappingflags |= PAGE_FORCE;
 	}
 
+	LOCK(mmap_lock, current_thread);
+	if (len & (PAGE_SIZE -1)) {
+		len = (len & ~(PAGE_SIZE - 1)) + PAGE_SIZE;
+	}
+	addr = (void*)((uintptr_t)addr & ~(PAGE_SIZE -1)); // align to page, just in case
+	if (addr != NULL && !((prot & PROT_FORCE) || (prot & PROT_KERNEL)) && !mem_available((uintptr_t)addr, len)) {
+		ERROR_PRINTF("range %08x, %08x not available; looking for anything!\r\n", addr, len);
+		addr = NULL;
+	} else if (addr != NULL && ((uintptr_t)addr & (alignsize - 1))) {
+		ERROR_PRINTF("range %08x, %08x doesn't meet alignment size %08x; looking for anything!\r\n", addr, len, alignsize);
+		addr = NULL;
+	}
+
+	DEBUG_PRINTF("looking for 0x%x bytes at %08x\r\n", len, addr);
+
 	if (!addr) {
 		int found = 0;
 		if (flags & MAP_STACK) {
-			*ret = MAX_ADDR - len;
+			*ret = (MAX_ADDR - len) & ~(alignsize - 1);
 			while (*ret > LEAST_ADDR) {
 				if (mem_available(*ret, len)) {
 					if (*ret == MAX_ADDR - len) {
@@ -292,10 +302,10 @@ int kern_mmap (uintptr_t *ret, void * addr, size_t len, int prot, int flags)
 				} else if (*ret == MAX_ADDR - len && !mem_available(MAX_ADDR - PAGE_SIZE, PAGE_SIZE)) {
 					MAX_ADDR -= PAGE_SIZE;
 				}
-				*ret -= PAGE_SIZE;
+				*ret -= alignsize;
 			}
 		} else {
-			*ret = LEAST_ADDR;
+			*ret = LEAST_ADDR & ~(alignsize - 1);
 			while (*ret + len < MAX_ADDR) {
 				if (mem_available(*ret, len)) {
 					if (*ret == LEAST_ADDR) {
@@ -306,7 +316,7 @@ int kern_mmap (uintptr_t *ret, void * addr, size_t len, int prot, int flags)
 				} else if (*ret == LEAST_ADDR && mem_available(*ret, PAGE_SIZE)) {
 					LEAST_ADDR += PAGE_SIZE;
 				}
-				*ret += PAGE_SIZE;
+				*ret += alignsize;
 			}
 		}
 		if (!found) {
