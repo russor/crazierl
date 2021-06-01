@@ -735,17 +735,16 @@
 		call err_handler
 
 	err_handler:
-		xchg %ebp, (%esp)
-		push %eax
-		mov %ebp, %eax
-		mov %esp, %ebp
-		addl $4, %ebp
+		xchg %ebp, 0x4(%esp) // exchange ebp with error code
+		xchg %eax, (%esp)    // exchange eax with gen_err IP
 		push %ecx
 		push %edx
+		mov %ebp, %edx       // copy error code to edx
+		lea 0xC(%esp), %ebp  // point ebp to stack after old ebp
 
-		lea 0x8(%ebp), %ecx
+		lea 0x4(%ebp), %ecx
 		pushl %ecx	// interrupt frame address
-		pushl 0x4(%ebp) // error_code
+		pushl %edx	// error_code
 		sub $(gen_error), %eax
 		shr $3, %eax
 		pushl %eax		// interrupt vector
