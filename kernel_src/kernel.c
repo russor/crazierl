@@ -1788,7 +1788,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 							FDS[fd].type = BOGFD_PIPE;
 							FDS[fd].pipe = &FDS[a->s];
 							FDS[fd].pb = (struct pipe_buffer *)((uintptr_t)FDS[a->s].pb + (PAGE_SIZE >> 1));
-							FDS[a->s].pb->length = 0;
+							FDS[fd].pb->length = 0;
 							check_bnotes_fd(&FDS[a->s]);
 							check_bnotes_fd(&FDS[fd]);
 							UNLOCK(FDS[fd].lock, current_thread);
