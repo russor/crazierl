@@ -53,7 +53,7 @@ int mem_available (uintptr_t addr, size_t len)
 {
 	while (len) {
 		uint32_t * page_table_entry = pagetable_entry(*(pagetable_direntry(addr)), addr);
-		if (*page_table_entry == 0 || *page_table_entry & PAGE_PRESENT) {
+		if (*page_table_entry == 0 || (*page_table_entry & PAGE_PRESENT)) {
 			return 0;
 		}
 		addr += PAGE_SIZE;
@@ -101,11 +101,15 @@ void add_page_mapping (uint16_t flags, uintptr_t logical, uintptr_t physical) {
 	}
 	// update flags
 	if ((flags & PAGE_USER) && !(*table_entry & PAGE_USER)) {
-		//DEBUG_PRINTF("Adding user flag to page_directory for %08x -> %08x\r\n", logical, physical);
-		*table_entry |= (PAGE_USER | PAGE_BOTH_UK);
+		if (*table_entry & (PAGE_PRESENT)) {
+			//DEBUG_PRINTF("Adding user flag to page_directory for %08x -> %08x\r\n", logical, physical);
+			*table_entry |= (PAGE_USER | PAGE_BOTH_UK);
+		} else {
+			*table_entry |= PAGE_USER;
+		}
 	} else if (!(flags & PAGE_USER) && (*table_entry & PAGE_USER)) {
 		//DEBUG_PRINTF("Adding both flag to page_directory for %08x -> %08x\r\n", logical, physical);
-		*table_entry |= (PAGE_USER | PAGE_BOTH_UK);
+		*table_entry |= PAGE_BOTH_UK;
 	}
 
 	if ((flags & PAGE_READWRITE) && !(*table_entry & PAGE_READWRITE)) {
@@ -124,6 +128,7 @@ void add_page_mappings (uint16_t mappingflags, uintptr_t addr, size_t len) {
 	}
 }
 
+DECLARE_LOCK(mmap_lock);
 
 void kern_munmap (uint16_t mode, uintptr_t addr, size_t size)
 {
@@ -131,7 +136,8 @@ void kern_munmap (uint16_t mode, uintptr_t addr, size_t size)
 	if (size & (PAGE_SIZE -1)) {
 		size = (size & ~(PAGE_SIZE -1)) + PAGE_SIZE;
 	}
-	DEBUG_PRINTF("unmapping %08x bytes at %08x\r\n", size, addr);
+	DEBUG_PRINTF("unmapping %08x bytes at %08x (mode %x)\r\n", size, addr, mode);
+	LOCK(mmap_lock, current_thread);
 	for (; size; addr += PAGE_SIZE, size -= PAGE_SIZE) {
 		int access_changed = 0;
 		uint32_t * table_entry = pagetable_entry(*(pagetable_direntry(addr)), addr);
@@ -142,7 +148,7 @@ void kern_munmap (uint16_t mode, uintptr_t addr, size_t size)
 			switch (*table_entry & (PAGE_USER | PAGE_BOTH_UK)) {
 				case PAGE_USER:
 					access_changed = 1;
-					*table_entry &= ~(PAGE_PRESENT | PAGE_USER);
+					*table_entry &= ~(PAGE_PRESENT | PAGE_READWRITE | PAGE_USER);
 					break;
 				case PAGE_USER | PAGE_BOTH_UK:
 					access_changed = 1;
@@ -156,7 +162,7 @@ void kern_munmap (uint16_t mode, uintptr_t addr, size_t size)
 					break;
 				case 0:
 					access_changed = 1;
-					*table_entry &= ~PAGE_PRESENT;
+					*table_entry &= ~(PAGE_PRESENT | PAGE_READWRITE);
 			}
 		}
 		if (access_changed) {
@@ -175,6 +181,7 @@ void kern_munmap (uint16_t mode, uintptr_t addr, size_t size)
 			}
 		}
 	}
+	UNLOCK(mmap_lock, current_thread);
 }
 
 void kern_mmap_init (unsigned int length, unsigned int addr)
@@ -248,7 +255,6 @@ void kern_mmap_init (unsigned int length, unsigned int addr)
 	PAGE_SETUP_FINISHED = 1;
 }
 
-DECLARE_LOCK(mmap_lock);
 
 int kern_mmap (uintptr_t *ret, void * addr, size_t len, int prot, int flags)
 {
@@ -265,6 +271,9 @@ int kern_mmap (uintptr_t *ret, void * addr, size_t len, int prot, int flags)
 	}
 	if (prot & PROT_WRITE) {
 		mappingflags |= PAGE_READWRITE;
+		if (! (prot & PROT_READ)) {
+			halt("weird protection, write but not read\r\n", 0);
+		}
 	}
 	if (!(prot & PROT_KERNEL)) {
 		mappingflags |= PAGE_USER;
