@@ -51,7 +51,13 @@ static ERL_NIF_TERM map_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 	if (!enif_get_uint(env, argv[0], &start)) { return enif_make_badarg(env); }
 	if (!enif_get_uint(env, argv[1], &length)) { return enif_make_badarg(env); }
 
-	void * ret = mmap((void *)start, length, PROT_READ | PROT_WRITE | PROT_FORCE, 0, -1, 0);
+	void * ret;
+	if (start) {
+		ret = mmap((void *)start, length, PROT_READ | PROT_WRITE | PROT_FORCE, 0, -1, 0);
+	} else {
+		ret = mmap((void *)start, length, PROT_READ | PROT_WRITE, 0, -1, 0);
+	}
+
 	if ((start != 0 && ((uintptr_t) ret == start)) ||
 	    (start == 0 && ((uintptr_t) ret != start))) {
 		struct mmap_resource *resource = enif_alloc_resource(MMAP_TYPE, sizeof(struct mmap_resource));;
