@@ -1828,6 +1828,9 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					FDS[a->fd].flags = (FDS[a->fd].flags & (O_NONBLOCK | O_APPEND | O_DIRECT | O_ASYNC)) | a->arg;
 					SYSCALL_SUCCESS(0);
 				}
+				case F_ISUNIONSTACK: {
+					SYSCALL_SUCCESS(0);
+				}
 			}
 		}
 		case SYS_select: {
@@ -1916,10 +1919,11 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 							strlcpy(a->old, "FreeBSD", *a->oldlenp);
 							SYSCALL_SUCCESS(0);
 						case KERN_OSRELEASE:
-							strlcpy(a->old, "12.2-RELEASE-p3", *a->oldlenp);
+							strlcpy(a->old, "13.0-RELEASE", *a->oldlenp);
 							SYSCALL_SUCCESS(0);
 						case KERN_VERSION:
-							strlcpy(a->old, "FreeBSD 12.2-RELEASE-p3 GENERIC", *a->oldlenp);
+							strlcpy(a->old, "FreeBSD 13.0-RELEASE #0 releng/13.0-n244733-ea31abc261f: Fri Apr  9 04:24:09 UTC 2021\
+    root@releng1.nyi.freebsd.org:/usr/obj/usr/src/amd64.amd64/sys/GENERIC", *a->oldlenp);
 							SYSCALL_SUCCESS(0);
 						case KERN_HOSTNAME:
 							strlcpy(a->old, "node0.crazierl.org", *a->oldlenp);
@@ -1929,7 +1933,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 							SYSCALL_SUCCESS(0);
 						}
 						case KERN_OSRELDATE:
-							*(u_int *)a->old = 1202000; // pretend to be freebsd 12.2 for now
+							*(u_int *)a->old = 1300139; // pretend to be freebsd 13.0 for now
 							*a->oldlenp = sizeof(uint);
 							SYSCALL_SUCCESS(0);
 						case KERN_USRSTACK:
@@ -2529,13 +2533,13 @@ void load_file(void *start, char *name, size_t size)
 
 	ERROR_PRINTF("load offsets %08x - %08x; virt %08x - %08x\r\n", first_addr, last_addr, first_virtual, last_virtual);
 	ERROR_PRINTF("file space %08x; virt space %08x\r\n", last_addr - first_addr, last_virtual - first_virtual);
-	if (last_addr > size) {
-		halt("load beyond file, halting", 1);
-	}
 	uintptr_t virtual_space = last_virtual - first_virtual;
 	uintptr_t space = max (last_addr - first_addr, last_virtual - first_virtual);
 	load_addr = 0;
 /*	if (0) { // kern_mmap_could_map(first_virtual, last_virtual)) {
+	if (last_addr > size) {
+		halt("load beyond file, halting\r\n", 1);
+	}
 
 
 	} else if (size >= last_addr) {

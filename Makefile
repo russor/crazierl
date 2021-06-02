@@ -71,7 +71,7 @@ clean:
 
 $(OTPDIR)/bin/erl:
 	mkdir -p ../erlang-runtime$(ERLANG_VERSION)
-	INSTALL_AS_USER=1 pkg --root ../erlang-runtime$(ERLANG_VERSION) -o ABI=FreeBSD:12:i386 install -y erlang-runtime$(ERLANG_VERSION)
+	INSTALL_AS_USER=1 pkg --root ../erlang-runtime$(ERLANG_VERSION) -o ABI=FreeBSD:13:i386 install -y erlang-runtime$(ERLANG_VERSION)
 
 
 $(OTPDIR)/bin/erl.patched: $(OTPDIR)/bin/erl
@@ -80,15 +80,12 @@ $(OTPDIR)/bin/erl.patched: $(OTPDIR)/bin/erl
 
 $(OTPDIR)/bin/erlc: $(OTPDIR)/bin/erl.patched
 
-obj/mykernel.elf: obj/start.o $(KERNEL_OBJS) $(FBSD_KERNEL_OBJS) $(BEARSSL_OBJS)
-	clang -m32 -g -static -ffreestanding -nostdlib -T linker.ld $^ -o obj/mykernel.elf -gdwarf-2
+ALL_KERNEL_OBJS = $(KERNEL_OBJS) $(FBSD_KERNEL_OBJS) $(BEARSSL_OBJS) obj/start.o
+$(OBJDIR)/mykernel.elf: $(ALL_KERNEL_OBJS) linker.ld
+	clang -m32 -g -static -ffreestanding -nostdlib -Xlinker -Tlinker.ld -Xlinker $(ALL_KERNEL_OBJS)  -o obj/mykernel.elf -gdwarf-2
 
 obj/start.o: start.s | $(DEPDIR)
 	clang -m32 -g -gdwarf-2 -c $^ -o $@
-
-
-debugnative:
-	BINDIR=`pwd`/../otp_src_R12B-5/bin/ gdb $(RTLD) -ex 'break _start' -ex 'run -- -root `pwd`/../otp_src_R12B-5 -progname erl -- -home /home/toast'
 
 INITRD_FILES := cfg/inetrc obj/etcpip.app /usr/share/misc/termcap.db obj/libuserland.so obj/crazierl_nif.so obj/checksum.so $(TCPIP_OBJS) $(ERLANG_OBJS)
 
@@ -122,7 +119,7 @@ $(KERNEL_OBJS): $(OBJDIR)/%.o: %.c $(DEPDIR)/%.c.d | $(DEPDIR)
 	mv -f $(DEPDIR)/$*.c.d.T $(DEPDIR)/$*.c.d && touch $@
 
 $(FBSD_KERNEL_OBJS): $(OBJDIR)/%.o: $(DEPDIR)/%.c.d | $(DEPDIR)
-	$(KERNEL_COMPILER) $(DEPFLAGS) -MF $(DEPDIR)/$*.c.d.T $(subst __,/,/usr/src/$*.c) -o $@
+	$(KERNEL_COMPILER) -I. $(DEPFLAGS) -MF $(DEPDIR)/$*.c.d.T $(subst __,/,/usr/src/$*.c) -o $@
 	mv -f $(DEPDIR)/$*.c.d.T $(DEPDIR)/$*.c.d && touch $@
 
 $(BEARSSL_OBJS): $(OBJDIR)/%.o: $(DEPDIR)/%.c.d | $(DEPDIR)
