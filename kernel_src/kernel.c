@@ -2395,16 +2395,6 @@ uint64_t readmsr (uint32_t msr)
 	return ret;
 }
 
-
-uint16_t pit_counter()
-{
-	outb(0x43, 0x0b); // latch channel 0 in PIT
-	uint16_t counter = inb(0x40);
-	counter |= (inb(0x40) << 8);
-	return counter;
-}
-
-
 void interrupt_setup()
 {
 	// setup PIC before disabling, so spurious interrupts hit vector 0xF7
