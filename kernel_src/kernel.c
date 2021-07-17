@@ -1939,6 +1939,9 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 						case KERN_USRSTACK:
 							*(uintptr_t *)a->old = user_stack;
 							SYSCALL_SUCCESS(0);
+						case KERN_IOV_MAX:
+							*(uintptr_t *)a->old = IOV_MAX;
+							SYSCALL_SUCCESS(0);
 					}
 					case CTL_VM: switch (a->name[1]) {
 						case VM_OVERCOMMIT:
@@ -1977,6 +1980,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			for (int i = 0; i < a->namelen; ++i) {
 				ERROR_PRINTF("  %d\r\n", a->name[i]);
 			}
+			halt("sysctl\r\n", 0);
 			SYSCALL_FAILURE(ENOENT);
 		}
 		case SYS_clock_gettime: {
