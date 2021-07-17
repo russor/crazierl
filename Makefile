@@ -1,4 +1,4 @@
-ERLANG_VERSION=23
+ERLANG_VERSION=24
 
 OBJDIR := obj
 DEPDIR := $(OBJDIR)/.deps
@@ -102,7 +102,7 @@ obj/initrd: hardcode_files.pl $(INITRD_FILES) Makefile
 obj/libuserland.so: $(USER_OBJS)
 	clang -m32 -fpic -shared -Wl,-soname,libuserland.so -o obj/libuserland.so $^
 
-obj/crazierl_nif.so: crazierl_nif.c
+obj/crazierl_nif.so: crazierl_nif.c $(OTPDIR)/bin/erl
 	$(NIF_COMPILER) $< -o $@
 
 obj/checksum.so: ../erlang-tcpip/c_src/checksum.c
@@ -118,7 +118,7 @@ $(ERLANG_OBJS): $(OBJDIR)/%.beam : %.erl $(DEPDIR)/%.d | $(DEPDIR) $(OTPDIR)/bin
 	$(OTPDIR)/bin/erlc -o $(OBJDIR)/ -MMD -MF $(DEPDIR)/$*.d $<
 
 $(ERLANG_OVERRIDE_OBJS): $(OBJDIR)/%.beam : overrides/%.erl $(DEPDIR)/%.d $(OBJDIR)/hook_module.beam | $(DEPDIR) $(OTPDIR)/bin/erlc
-	$(OTPDIR)/bin/erlc -pz $(shell pwd)/$(OBJDIR)/ -o $(OBJDIR)/ -MMD -MF $(DEPDIR)/$*.d '+{parse_transform,hook_module}' $<
+	$(OTPDIR)/bin/erlc -I $(OTPDIR)/lib/kernel-*/include -pz $(shell pwd)/$(OBJDIR)/ -o $(OBJDIR)/ -MMD -MF $(DEPDIR)/$*.d '+{parse_transform,hook_module}' $<
 
 $(KERNEL_OBJS): $(OBJDIR)/%.o: %.c $(DEPDIR)/%.c.d | $(DEPDIR)
 	$(KERNEL_COMPILER) $(DEPFLAGS) -MF $(DEPDIR)/$*.c.d.T $< -I /usr/src/libexec/rtld-elf/ -I /usr/src/sys/ -I /usr/src/contrib/bearssl/inc/ -o $@
