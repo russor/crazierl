@@ -4,8 +4,12 @@ OBJDIR := obj
 DEPDIR := $(OBJDIR)/.deps
 DEPFLAGS = -MT $@ -MMD -MP
 
+ERLANG_OVERRIDES = $(wildcard overrides/*.erl)
+
 ERLANG_SRCS = $(wildcard *.erl)
 ERLANG_OBJS = $(ERLANG_SRCS:%.erl=$(OBJDIR)/%.beam)
+ERLANG_OVERRIDE_OBJS = $(ERLANG_OVERRIDES:overrides/%.erl=$(OBJDIR)/%.beam)
+INITRD_ERLANG_OBJS = $(filter-out $(OBJDIR)/hook_module.beam,$(ERLANG_OBJS)) $(ERLANG_OVERRIDE_OBJS)
 KERNEL_SRCS = kernel.c files.c kern_mmap.c acpi.c strtol.c rand.c
 KERNEL_OBJS = $(KERNEL_SRCS:%.c=$(OBJDIR)/%.o)
 
@@ -87,11 +91,10 @@ $(OBJDIR)/mykernel.elf: $(ALL_KERNEL_OBJS) linker.ld
 obj/start.o: start.s | $(DEPDIR)
 	clang -m32 -g -gdwarf-2 -c $^ -o $@
 
-INITRD_FILES := cfg/inetrc obj/etcpip.app /usr/share/misc/termcap.db obj/libuserland.so obj/crazierl_nif.so obj/checksum.so $(TCPIP_OBJS) $(ERLANG_OBJS)
+INITRD_FILES := cfg/inetrc obj/etcpip.app /usr/share/misc/termcap.db obj/libuserland.so obj/crazierl_nif.so obj/checksum.so $(TCPIP_OBJS) $(INITRD_ERLANG_OBJS)
 
 obj/initrd: hardcode_files.pl $(INITRD_FILES) Makefile
 	./hardcode_files.pl $(RTLD) $(OTPDIR) \
-		OTPDIR/lib/kernel-*/ebin/erl_ddll.beam \
 		OTPDIR/lib/crypto-*/ebin/crypto.beam OTPDIR/lib/crypto-*/priv/lib/crypto.so OTPDIR/lib/crypto-*/priv/lib/crypto_callback.so \
 		$(INITRD_FILES) > obj/initrd.tmp
 	mv obj/initrd.tmp obj/initrd
@@ -114,6 +117,9 @@ $(TCPIP_OBJS): $(OBJDIR)/%.beam : ../erlang-tcpip/src/%.erl $(DEPDIR)/%.d | $(DE
 $(ERLANG_OBJS): $(OBJDIR)/%.beam : %.erl $(DEPDIR)/%.d | $(DEPDIR) $(OTPDIR)/bin/erlc
 	$(OTPDIR)/bin/erlc -o $(OBJDIR)/ -MMD -MF $(DEPDIR)/$*.d $<
 
+$(ERLANG_OVERRIDE_OBJS): $(OBJDIR)/%.beam : overrides/%.erl $(DEPDIR)/%.d $(OBJDIR)/hook_module.beam | $(DEPDIR) $(OTPDIR)/bin/erlc
+	$(OTPDIR)/bin/erlc -pz $(shell pwd)/$(OBJDIR)/ -o $(OBJDIR)/ -MMD -MF $(DEPDIR)/$*.d '+{parse_transform,hook_module}' $<
+
 $(KERNEL_OBJS): $(OBJDIR)/%.o: %.c $(DEPDIR)/%.c.d | $(DEPDIR)
 	$(KERNEL_COMPILER) $(DEPFLAGS) -MF $(DEPDIR)/$*.c.d.T $< -I /usr/src/libexec/rtld-elf/ -I /usr/src/sys/ -I /usr/src/contrib/bearssl/inc/ -o $@
 	mv -f $(DEPDIR)/$*.c.d.T $(DEPDIR)/$*.c.d && touch $@
@@ -131,6 +137,6 @@ $(USER_OBJS) : $(OBJDIR)/user.%.o: %.c $(DEPDIR)/user.%.c.d | $(DEPDIR)
 	mv -f $(DEPDIR)/user.$*.c.d.T $(DEPDIR)/user.$*.c.d && touch $@
 
 $(DEPDIR): ; @mkdir -p $@
-DEPFILES := $(ERLANG_OBJS:$(OBJDIR)/%.beam=$(DEPDIR)/%.d) $(TCPIP_OBJS:$(OBJDIR)/%.beam=$(DEPDIR)/%.d) $(KERNEL_SRCS:%.c=$(DEPDIR)/%.c.d) $(FBSD_KERNEL_SRCS:%.c=$(DEPDIR)/%.c.d) $(BEARSSL_SRCS:%.c=$(DEPDIR)/%.c.d) $(USER_SRCS:%.c=$(DEPDIR)/user.%.c.d) $(NIF_SRCS:%.c=$(DEPDIR)/nif.%.d)
+DEPFILES := $(ERLANG_OBJS:$(OBJDIR)/%.beam=$(DEPDIR)/%.d) $(ERLANG_OVERRIDE_OBJS:$(OBJDIR)/%.beam=$(DEPDIR)/%.d) $(TCPIP_OBJS:$(OBJDIR)/%.beam=$(DEPDIR)/%.d) $(KERNEL_SRCS:%.c=$(DEPDIR)/%.c.d) $(FBSD_KERNEL_SRCS:%.c=$(DEPDIR)/%.c.d) $(BEARSSL_SRCS:%.c=$(DEPDIR)/%.c.d) $(USER_SRCS:%.c=$(DEPDIR)/user.%.c.d) $(NIF_SRCS:%.c=$(DEPDIR)/nif.%.d)
 $(DEPFILES):
 include $(wildcard $(DEPFILES))

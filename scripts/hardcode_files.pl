@@ -67,6 +67,7 @@ my @nodes = Erlang::Parser->parse($start_script);
 my $statement = $nodes[0]->defs()->[0]->stmts()->[0] or die "can't parse start.script";
 
 my @path = ();
+my %basenames = ();
 foreach my $element (@{$statement->elems()->[2]->elems()}) {
 	my ($key, $val) = @{$element->elems()};
 	if ($key->atom eq 'path') {
@@ -85,6 +86,7 @@ foreach my $element (@{$statement->elems()->[2]->elems()}) {
 				my $full_name = "$OTP_DIR/$path_name";
 				if (-r $full_name) {
 					$FILES{$path_name} = slurp ($full_name);
+					$basenames{basename($path_name)} = $path_name;
 					$found = 1;
 				}
 			}
@@ -114,6 +116,10 @@ foreach my $f (@LOCAL_FILES) {
 	my $file;
 	open $file, '<', "$path" or die "can't open $path: $!";
 	$f =~ s@^/@@;
+	my $alt = $basenames{basename($f)};
+	if ($alt) {
+		$f = $alt;
+	}
 	{
 		local $/ = undef;
 		$FILES{$f} = <$file>;
