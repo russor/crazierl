@@ -34,6 +34,7 @@ start() ->
 	catch _:_ -> ok
 	end,
 	example_host:start(),
+	example_host2:start(),
 	dhcpc:go().
 
 open_interrupt(Irq) ->

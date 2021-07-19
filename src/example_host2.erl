@@ -1,4 +1,4 @@
--module (example_host).
+-module (example_host2).
 
 % example tcp listener
 
@@ -9,19 +9,19 @@ start() ->
 	spawn(fun init/0).
 
 init() ->
-	Sock = etcpip_socket:listen(80),
+	{ok, Sock} = gen_tcp:listen(8080, [{inet_backend, socket}, binary, {packet, 0}, {active, false}, {reuseaddr, true}]),
 	io:format("Sock ~w~n", [Sock]),
 	accept_loop(Sock).
 
 accept_loop(ListenSock) ->
-	Socket = etcpip_socket:accept(ListenSock),
+	{ok, Socket} = gen_tcp:accept(ListenSock),
 	_Worker = spawn(?MODULE, worker_loop, [Socket, <<>>]),
 	accept_loop(ListenSock).
 
 worker_loop(Socket, Bin) ->
 	case erlang:decode_packet(http_bin, Bin, []) of
 		{more, _} -> 
-			Data = etcpip_socket:recv(Socket, 4096),
+			{ok, Data} = gen_tcp:recv(Socket, 0),
 			worker_loop(Socket, <<Bin/binary, Data/binary>>);
 		{ok, {http_request, Method, Uri, Version}, Rest} ->
 			header_loop(Socket, {Method, Uri, Version}, [], Rest)
@@ -30,7 +30,7 @@ worker_loop(Socket, Bin) ->
 header_loop(Socket, Request, Headers, Bin) ->
 	case erlang:decode_packet(httph_bin, Bin, []) of
 		{more, _} -> 
-			Data = etcpip_socket:recv(Socket, 4096),
+			{ok, Data} = gen_tcp:recv(Socket, 0),
 			header_loop(Socket, Request, Headers, <<Bin/binary, Data/binary>>);
 		{ok, http_eoh, _Rest} ->
 			output(Socket, Request, lists:reverse(Headers));
@@ -40,21 +40,21 @@ header_loop(Socket, Request, Headers, Bin) ->
 
 output(Socket, {_Method, {abs_path, <<"/process_info">>}, _Version}, _Headers) ->
 	Response = <<"HTTP/1.0 200 OK\r\nConnection: close\r\nContent-Type: text/plain\r\n\r\n">>,
-	etcpip_socket:send(Socket, Response),
+	gen_tcp:send(Socket, Response),
 	lists:foreach(fun (P) ->
-		etcpip_socket:send(Socket, iolist_to_binary(io_lib:format(
+		gen_tcp:send(Socket, iolist_to_binary(io_lib:format(
 			"~n~p~n~p~n", [P, process_info(P)])))
 	end, processes()),
 
-	etcpip_socket:close(Socket);
+	gen_tcp:close(Socket);
 
 output(Socket, {_Method, {abs_path, <<"/processes">>}, _Version}, _Headers) ->
 	Response = iolist_to_binary([
 		"HTTP/1.0 200 OK\r\nConnection: close\r\nContent-Type: text/plain\r\n\r\n",
 	        io_lib:format("~B", [length(processes())]), "\r\n"
 	        ]),
-	etcpip_socket:send(Socket, Response),
-	etcpip_socket:close(Socket);
+	gen_tcp:send(Socket, Response),
+	gen_tcp:close(Socket);
 
 output(Socket, {_Method, {abs_path, <<"/memory">>}, _Version}, _Headers) ->
 	Response = iolist_to_binary([
@@ -62,11 +62,11 @@ output(Socket, {_Method, {abs_path, <<"/memory">>}, _Version}, _Headers) ->
 	        io_lib:format("~w", [erlang:memory()]), "\r\n"
 	        ]),
 
-	etcpip_socket:send(Socket, Response),
-	etcpip_socket:close(Socket);
+	gen_tcp:send(Socket, Response),
+	gen_tcp:close(Socket);
 
 output(Socket, {_Method, _Uri, _Version}, _Headers) ->
 	Response = <<"HTTP/1.0 404 Not Found\r\nConnection: close\r\nContent-Type: text/plain\r\n\r\n"
 		"Not found\r\n">>,
-	etcpip_socket:send(Socket, Response),
-	etcpip_socket:close(Socket).
+	gen_tcp:send(Socket, Response),
+	gen_tcp:close(Socket).
