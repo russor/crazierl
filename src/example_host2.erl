@@ -9,7 +9,7 @@ start() ->
 	spawn(fun init/0).
 
 init() ->
-	{ok, Sock} = gen_tcp:listen(8080, [{inet_backend, socket}, binary, {packet, 0}, {active, false}, {reuseaddr, true}]),
+	{ok, Sock} = gen_tcp:listen(8080, [{inet_backend, socket}, binary, {packet, 0}, {active, false}, {reuseaddr, true}, {ip, any}]),
 	io:format("Sock ~w~n", [Sock]),
 	accept_loop(Sock).
 
@@ -20,7 +20,7 @@ accept_loop(ListenSock) ->
 
 worker_loop(Socket, Bin) ->
 	case erlang:decode_packet(http_bin, Bin, []) of
-		{more, _} -> 
+		{more, _} ->
 			{ok, Data} = gen_tcp:recv(Socket, 0),
 			worker_loop(Socket, <<Bin/binary, Data/binary>>);
 		{ok, {http_request, Method, Uri, Version}, Rest} ->
@@ -29,7 +29,7 @@ worker_loop(Socket, Bin) ->
 
 header_loop(Socket, Request, Headers, Bin) ->
 	case erlang:decode_packet(httph_bin, Bin, []) of
-		{more, _} -> 
+		{more, _} ->
 			{ok, Data} = gen_tcp:recv(Socket, 0),
 			header_loop(Socket, Request, Headers, <<Bin/binary, Data/binary>>);
 		{ok, http_eoh, _Rest} ->
