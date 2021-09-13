@@ -14,7 +14,7 @@ init() ->
 	accept_loop(Sock).
 
 accept_loop(ListenSock) ->
-	Socket = etcpip_socket:accept(ListenSock),
+	{ok, Socket} = etcpip_socket:accept(ListenSock),
 	_Worker = spawn(?MODULE, worker_loop, [Socket, <<>>]),
 	accept_loop(ListenSock).
 
