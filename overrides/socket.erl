@@ -1,4 +1,4 @@
--hook([open/4, setopt/3, bind/2, listen/2, accept/2]).
+-hook([open/4, setopt/3, bind/2, listen/2, accept/2, recv/3, recv/4]).
 -include_lib("kernel/src/socket.erl").
 
 hook_open(inet, stream, tcp, Opts) ->
@@ -21,3 +21,9 @@ hook_accept({etcpip, Sock}, Timeout) ->
 		O -> O
 	end;
 hook_accept(Sock, Timeout) -> real_accept(Sock, Timeout).
+
+hook_recv({etcpip, Sock}, Length, Options, Timeout) -> etcpip_socket:recv(Sock, Length, Options, Timeout);
+hook_recv(Sock, Length, Options, Timeout) -> real_recv(Sock, Length, Options, Timeout).
+
+hook_recv({etcpip, Sock}, Length, Timeout) -> etcpip_socket:recv(Sock, Length, Timeout);
+hook_recv(Sock, Length, Timeout) -> real_recv(Sock, Length, Timeout).
