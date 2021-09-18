@@ -1,4 +1,4 @@
--hook([open/4, setopt/3, bind/2, listen/2, accept/2, recv/3, recv/4]).
+-hook([open/4, setopt/3, getopt/2, bind/2, listen/2, accept/2, recv/3, recv/4, close/1]).
 -include_lib("kernel/src/socket.erl").
 
 hook_open(inet, stream, tcp, Opts) ->
@@ -8,6 +8,9 @@ hook_open(Domain, Type, Protocol, Opts) -> real_open(Domain, Type, Protocol, Opt
 
 hook_setopt({etcpip, Sock}, Opt, Val) -> etcpip_socket:setopt(Sock, Opt, Val);
 hook_setopt(Sock, Opt, Val) -> real_setopt(Sock, Opt, Val).
+
+hook_getopt({etcpip, Sock}, Opt) -> etcpip_socket:getopt(Sock, Opt);
+hook_getopt(Sock, Opt) -> real_getopt(Sock, Opt).
 
 hook_bind({etcpip, Sock}, Addr) -> etcpip_socket:bind(Sock, Addr);
 hook_bind(Sock, Addr) -> real_bind(Sock, Addr).
@@ -27,3 +30,8 @@ hook_recv(Sock, Length, Options, Timeout) -> real_recv(Sock, Length, Options, Ti
 
 hook_recv({etcpip, Sock}, Length, Timeout) -> etcpip_socket:recv(Sock, Length, Timeout);
 hook_recv(Sock, Length, Timeout) -> real_recv(Sock, Length, Timeout).
+
+hook_close({etcpip, Sock}) ->
+	io:format("ignore closing ~p~n", [Sock]),
+	ok;
+hook_close(Other) -> real_close(Other).
