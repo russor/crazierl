@@ -21,7 +21,7 @@ accept_loop(ListenSock) ->
 worker_loop(Socket, Bin) ->
 	case erlang:decode_packet(http_bin, Bin, []) of
 		{more, _} -> 
-			Data = etcpip_socket:recv(Socket, 4096),
+			{ok, Data} = etcpip_socket:recv(Socket, 4096),
 			worker_loop(Socket, <<Bin/binary, Data/binary>>);
 		{ok, {http_request, Method, Uri, Version}, Rest} ->
 			header_loop(Socket, {Method, Uri, Version}, [], Rest)
@@ -30,7 +30,7 @@ worker_loop(Socket, Bin) ->
 header_loop(Socket, Request, Headers, Bin) ->
 	case erlang:decode_packet(httph_bin, Bin, []) of
 		{more, _} -> 
-			Data = etcpip_socket:recv(Socket, 4096),
+			{ok, Data} = etcpip_socket:recv(Socket, 4096),
 			header_loop(Socket, Request, Headers, <<Bin/binary, Data/binary>>);
 		{ok, http_eoh, _Rest} ->
 			output(Socket, Request, lists:reverse(Headers));
