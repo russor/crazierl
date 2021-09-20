@@ -2787,6 +2787,7 @@ void setup_entrypoint()
 			"-sbwt", "none",
 			"-sbwtdcpu", "none",
 			"-sbwtdio", "none",
+			"-kernel", "inet_backend", "socket",
 			"--", 
 			NULL};
 

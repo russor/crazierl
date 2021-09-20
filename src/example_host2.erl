@@ -9,7 +9,8 @@ start() ->
 	spawn(fun init/0).
 
 init() ->
-	{ok, Sock} = gen_tcp:listen(8080, [{inet_backend, socket}, binary, {packet, 0}, {active, false}, {reuseaddr, true}, {ip, any}]),
+%	{ok, Sock} = gen_tcp:listen(8080, [{inet_backend, socket}, binary, {packet, 0}, {active, false}, {reuseaddr, true}, {ip, any}]),
+	{ok, Sock} = gen_tcp:listen(8080, [binary, {packet, 0}, {active, false}, {reuseaddr, true}, {ip, any}]),
 	io:format("Sock ~w~n", [Sock]),
 	accept_loop(Sock).
 
