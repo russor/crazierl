@@ -1,0 +1,14 @@
+current next steps:
+
+*) tune tcp-ip as needed
+
+*) get dist to work (milestone 2)
+
+*) port to amd64 (milestone 3: release)
+
+*) commercial cloud images
+   Amazon, GCP, Digital Ocean, etc
+
+*) (more) real network card drivers
+
+*) port to aarch64
