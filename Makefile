@@ -91,9 +91,13 @@ $(OBJDIR)/mykernel.elf: $(ALL_KERNEL_OBJS) linker.ld
 obj/start.o: start.s | $(DEPDIR)
 	clang -m32 -g -gdwarf-2 -c $^ -o $@
 
-INITRD_FILES := cfg/inetrc obj/etcpip.app /usr/share/misc/termcap.db obj/libuserland.so obj/crazierl_nif.so obj/checksum.so $(TCPIP_OBJS) $(INITRD_ERLANG_OBJS)
+INITRD_FILES := .erlang.cookie cfg/inetrc obj/etcpip.app /usr/share/misc/termcap.db obj/libuserland.so obj/crazierl_nif.so obj/checksum.so $(TCPIP_OBJS) $(INITRD_ERLANG_OBJS)
 
-obj/initrd: hardcode_files.pl $(INITRD_FILES) Makefile
+.erlang.cookie: gen_cookie.escript $(OTPDIR)/bin/escript
+	$(OTPDIR)/bin/escript gen_cookie.escript > .erlang.cookie.tmp
+	mv .erlang.cookie.tmp .erlang.cookie
+
+obj/initrd: hardcode_files.pl extract_start.escript $(OTPDIR)/bin/escript $(INITRD_FILES) Makefile
 	./hardcode_files.pl $(RTLD) $(OTPDIR) \
 		OTPDIR/lib/crypto-*/ebin/crypto.beam OTPDIR/lib/crypto-*/priv/lib/crypto.so OTPDIR/lib/crypto-*/priv/lib/crypto_callback.so \
 		$(INITRD_FILES) > obj/initrd.tmp

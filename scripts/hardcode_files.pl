@@ -5,7 +5,6 @@ use warnings;
 use Cwd;
 use File::Basename;
 use bytes;
-use Erlang::Parser;
 use Data::Dumper;
 use File::Temp;
 #use Compress::LZ4;
@@ -61,25 +60,22 @@ foreach my $l (@LDD) {
 $FILES{'beam'} = slurp ("$BEAM");
 $FILES{'bin/start.boot'} = slurp("$OTP_DIR/bin/start.boot");
 
-my $start_script = "myfun() -> \n";
-$start_script .= slurp ("$OTP_DIR/bin/start.script");
-my @nodes = Erlang::Parser->parse($start_script);
-my $statement = $nodes[0]->defs()->[0]->stmts()->[0] or die "can't parse start.script";
+my @start_script = `$OTP_DIR/bin/escript ./extract_start.escript $OTP_DIR/bin/start.script`;
+die "couldn't run extract_start.escript" unless $? == 0;
 
+chomp (@start_script);
 my @path = ();
 my %basenames = ();
-foreach my $element (@{$statement->elems()->[2]->elems()}) {
-	my ($key, $val) = @{$element->elems()};
-	if ($key->atom eq 'path') {
+foreach my $line (@start_script) {
+	my ($type, @rest) = split /\t/, $line;
+	if ($type eq 'path') {
 		@path = ();
-		foreach my $p (@{$val->elems()}) {
-			$p = $p->string;
+		foreach my $p (@rest) {
 			$p =~ s@^\$ROOT/@@;
 			push @path, $p;
 		}
-	} elsif ($key->atom eq 'primLoad') {
-		foreach my $m (@{$val->elems()}) {
-			$m = $m->atom;
+	} elsif ($type eq 'primLoad') {
+		foreach my $m (@rest) {
 			my $found = 0;
 			foreach my $p (@path) {
 				my $path_name = "$p/$m.beam";
