@@ -75,7 +75,7 @@ clean:
 
 $(OTPDIR)/bin/erl:
 	mkdir -p ../erlang-runtime$(ERLANG_VERSION)
-	INSTALL_AS_USER=1 pkg --root ../erlang-runtime$(ERLANG_VERSION) -o ABI=FreeBSD:13:i386 install -y erlang-runtime$(ERLANG_VERSION)
+	INSTALL_AS_USER=1 pkg -R ../tut/cfg --root ../erlang-runtime$(ERLANG_VERSION) -o ABI=FreeBSD:13:i386 install -r latest -y erlang-runtime$(ERLANG_VERSION)
 
 
 $(OTPDIR)/bin/erl.patched: $(OTPDIR)/bin/erl
