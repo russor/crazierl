@@ -1,4 +1,4 @@
--hook([open/4, setopt/3, getopt/2, bind/2, listen/2, accept/2, recv/4, send/4, close/1]).
+-hook([open/4, setopt/3, getopt/2, bind/2, listen/2, accept/2, recv/4, send/4, close/1, sockname/1, peername/1, info/1]).
 -include_lib("kernel/src/socket.erl").
 
 hook_open(inet, stream, tcp, Opts) ->
@@ -33,3 +33,12 @@ hook_send(Sock, Data, Flags, Timeout) -> real_send(Sock, Data, Flags, Timeout).
 
 hook_close({etcpip, Sock}) -> etcpip_socket:close(Sock);
 hook_close(Other) -> real_close(Other).
+
+hook_sockname({etcpip, Sock}) -> etcpip_socket:sockname(Sock);
+hook_sockname(Other) -> real_sockname(Other).
+
+hook_peername({etcpip, Sock}) -> etcpip_socket:peername(Sock);
+hook_peername(Other) -> real_peername(Other).
+
+hook_info({etcpip, Sock}) -> etcpip_socket:info(Sock);
+hook_info(Other) -> real_info(Other).

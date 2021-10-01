@@ -55,7 +55,7 @@ NIF_COMPILER=clang -m32 -fpic -g -gdwarf-2 -shared -I$(OTPDIR)/usr/include/
 
 run: obj/mykernel.elf obj/initrd
 	qemu-system-i386 --no-reboot -display none -smp 1 -s -m 512 -serial mon:stdio -kernel obj/mykernel.elf -append $(RTLD) -initrd obj/initrd \
-		-netdev user,id=mynet0,hostfwd=tcp:127.0.0.1:7780-:80,hostfwd=tcp:127.0.0.1:7781-:8080 -device virtio-net,netdev=mynet0 -object filter-dump,id=mynet0,netdev=mynet0,file=/tmp/crazierl.pcap
+		-netdev user,id=mynet0,hostfwd=tcp:127.0.0.1:7780-:80,hostfwd=tcp:127.0.0.1:7781-:8080,hostfwd=tcp:127.0.0.1:4370-:1 -device virtio-net,netdev=mynet0 -object filter-dump,id=mynet0,netdev=mynet0,file=/tmp/crazierl.pcap
 
 netboot: obj/mykernel.elf obj/initrd
 	cp $^ /usr/local/www/apache24/data/tftpboot/crazierl/
@@ -65,6 +65,9 @@ debug: obj/mykernel.elf obj/initrd
 
 noisy: obj/mykernel.elf obj/initrd
 	qemu-system-i386 -display none -smp 2 -d nochain,exec,cpu_reset,guest_errors -s  -m 256 -serial mon:stdio -kernel obj/mykernel.elf -append $(RTLD) -initrd obj/initrd
+
+dist: .erlang.cookie obj/crazierl_epmd.beam $(OTPDIR)/bin/erl obj/gen_tcp_dist.beam
+	$(OTPDIR)/bin/erl -no_epmd -proto_dist gen_tcp -epmd_module crazierl_epmd -sname 'host@localhost' -pz $(shell pwd)/$(OBJDIR) -setcookie $(shell cat .erlang.cookie)
 
 debugger:
 	gdb -ex "set confirm off" -ex "add-symbol-file obj/mykernel.elf" -ex "add-symbol-file $$(find $(OTPDIR) -name beam.smp)" -ex "target remote localhost:1234"
@@ -83,6 +86,7 @@ $(OTPDIR)/bin/erl.patched: $(OTPDIR)/bin/erl
 	touch $(OTPDIR)/bin/erl.patched
 
 $(OTPDIR)/bin/erlc: $(OTPDIR)/bin/erl.patched
+$(OTPDIR)/bin/escript: $(OTPDIR)/bin/erlc
 
 ALL_KERNEL_OBJS = $(KERNEL_OBJS) $(FBSD_KERNEL_OBJS) $(BEARSSL_OBJS) obj/start.o
 $(OBJDIR)/mykernel.elf: $(ALL_KERNEL_OBJS) linker.ld
@@ -100,6 +104,7 @@ INITRD_FILES := .erlang.cookie cfg/inetrc obj/etcpip.app /usr/share/misc/termcap
 obj/initrd: hardcode_files.pl extract_start.escript $(OTPDIR)/bin/escript $(INITRD_FILES) Makefile
 	./hardcode_files.pl $(RTLD) $(OTPDIR) \
 		OTPDIR/lib/crypto-*/ebin/crypto.beam OTPDIR/lib/crypto-*/priv/lib/crypto.so OTPDIR/lib/crypto-*/priv/lib/crypto_callback.so \
+		OTPDIR/lib/runtime_tools-*/ebin/dbg.beam \
 		$(INITRD_FILES) > obj/initrd.tmp
 	mv obj/initrd.tmp obj/initrd
 
