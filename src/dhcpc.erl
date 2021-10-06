@@ -23,7 +23,7 @@ go() ->
                  0:1024, % file
                  99, 130, 83, 99, % magic cookie
                  53, 1, 1, % DHCP Discover
-                 55, 2, 12, 15, % parameter request Host Name, Domain Name
+                 55, 3, 3, 12, 15, % parameter request Router, Host Name, Domain Name
                  255 % End
               >>,
     udp:send(0, ?CLIENT_PORT, ?BROADCAST, ?SERVER_PORT, Discovery),
