@@ -22,7 +22,9 @@ go() ->
                  0:512, % sname
                  0:1024, % file
                  99, 130, 83, 99, % magic cookie
-                 53, 1, 1, 255 % DHCP Discover
+                 53, 1, 1, % DHCP Discover
+                 55, 2, 12, 15, % parameter request Host Name, Domain Name
+                 255 % End
               >>,
     udp:send(0, ?CLIENT_PORT, ?BROADCAST, ?SERVER_PORT, Discovery),
     Options = receive
@@ -66,6 +68,17 @@ go() ->
            O2 = parse_options(RawOptions2, #{}),
            %io:format("dhcp offer IP ~.16B~nOptions ~w~n", [MyAddr, O2]),
            io:format("Ip ~.16B, Netmask ~.16B, Gateway ~.16B~n", [MyAddr, maps:get(subnet_mask, O2), maps:get(router, O2)]),
+           case {maps:get(hostname, O2, undefined), maps:get(domain_name, O2, undefined)} of
+                {undefined, undefined} ->
+                    NodeName = io_lib:format("crazierl@noname_~.16B", [MyAddr]),
+                    net_kernel:start([binary_to_atom(iolist_to_binary(NodeName)), shortnames]);
+                {Hostname, undefined} ->
+                    NodeName = io_lib:format("crazierl@~s", [Hostname]),
+                    net_kernel:start([binary_to_atom(iolist_to_binary(NodeName)), shortnames]);
+                {Hostname, Domain} ->
+                    NodeName = io_lib:format("crazierl@~s.~s", [Hostname, Domain]),
+                    net_kernel:start([binary_to_atom(iolist_to_binary(NodeName)), longnames])
+           end,
            etcpip_socket:new_ip(MyAddr, maps:get(subnet_mask, O2), maps:get(router, O2));
         M -> io:format("got ~w~n", [M])
     end.
@@ -92,8 +105,11 @@ parse_options(<<6, N, PrimaryDNS:32, _OtherDNS:(N - 4)/binary, Rest/binary>>, Ma
 parse_options(<<51, 4, Time:32, Rest/binary>>, Map) -> parse_options(Rest, Map#{lease_time => Time});
 % Server Identifier
 parse_options(<<54, 4, IP:32, Rest/binary>>, Map) -> parse_options(Rest, Map#{server_id => IP});
+% Hostname
+parse_options(<<12, Len, Name:Len/binary, Rest/binary>>, Map) -> parse_options(Rest, Map#{hostname => Name});
+% Domain name
+parse_options(<<15, Len, Name:Len/binary, Rest/binary>>, Map) -> parse_options(Rest, Map#{domain_name => Name});
 parse_options(<<0, Rest/binary>>, Map) -> parse_options(Rest, Map);
 parse_options(<<255, _/binary>>, Map) -> Map;
 parse_options(<<N, Len, Data:Len/binary, Rest/binary>>, Map) -> parse_options(Rest, Map#{{unknown, N} => Data}).
-
 
