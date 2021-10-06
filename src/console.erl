@@ -21,16 +21,19 @@ open_console(#s{ ports = []}) ->
 	error_logger:error_msg("no ports for console");
 open_console(State) ->
 	{ok, STDIN} = gen_udp:open(0, [
+	        {inet_backend, inet},
 		{ifaddr, {local, "/kern/fd/0"}},
 		{active, true},
 		binary
 	]),
 	{ok, STDOUT} = gen_udp:open(0, [
+	        {inet_backend, inet},
 		{ifaddr, {local, "/kern/fd/1"}},
 		{active, true},
 		binary
 	]),
 	{ok, STDERR} = gen_udp:open(0, [
+	        {inet_backend, inet},
 		{ifaddr, {local, "/kern/fd/2"}},
 		{active, true},
 		binary
@@ -49,6 +52,6 @@ loop (State = #s{ports = Ports, stdin = IN, stdout = OUT, stderr = ERR}) ->
 		{_Port, Data} ->
 			gen_udp:send(IN, Data);
 		Other ->
-			io:format("console unexpected input ~p", [Other])
+			io:format("console unexpected input ~p~n", [Other])
 	end,
 	loop(State).

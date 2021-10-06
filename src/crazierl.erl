@@ -40,6 +40,7 @@ start() ->
 open_interrupt(Irq) ->
         Path = io_lib:format("/kern/irq/~B", [Irq]),
         {ok, Socket} = gen_udp:open(0, [
+	        {inet_backend, inet},
                 {ifaddr, {local, Path}},
                 {active, true}
         ]),

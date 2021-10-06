@@ -36,6 +36,7 @@ start(IoPort, Interrupt) ->
 init(Owner, IoPort, Interrupt) ->
 	register(?MODULE, self()),
 	{ok, InterruptSocket} = gen_udp:open(0, [
+	        {inet_backend, inet},
 		{ifaddr, {local, Interrupt}},
 		{active, true}
 	]),

@@ -2790,7 +2790,7 @@ void setup_entrypoint()
 			"-kernel", "inet_backend", "socket",
 			"-proto_dist", "gen_tcp",
 			"-epmd_module", "crazierl_epmd",
-			//"-kernel", "inet_dist_listen_min", "4370",
+			"-kernel", "inet_dist_listen_min", "4370",
 			"-no_epmd",
 			"--", 
 			NULL};

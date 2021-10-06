@@ -157,7 +157,7 @@ loop(Device, MacAddr, RxSocket, TxSocket, RxQ, TxQ) ->
 			From ! pong,
 			{RxQ, TxQ};
 		Other ->
-			io:format("got message ~p", [Other]),
+			io:format("virtio: got message ~p~n", [Other]),
 			{RxQ, TxQ}
 	end,
 	loop(Device, MacAddr, RxSocket, TxSocket, RxQ1, TxQ1).
