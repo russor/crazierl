@@ -67,7 +67,10 @@ noisy: obj/mykernel.elf obj/initrd
 	qemu-system-i386 -display none -smp 2 -d nochain,exec,cpu_reset,guest_errors -s  -m 256 -serial mon:stdio -kernel obj/mykernel.elf -append $(RTLD) -initrd obj/initrd
 
 dist: .erlang.cookie obj/crazierl_epmd.beam $(OTPDIR)/bin/erl obj/gen_tcp_dist.beam
-	$(OTPDIR)/bin/erl -no_epmd -proto_dist gen_tcp -epmd_module crazierl_epmd -sname 'host@localhost' -pz $(shell pwd)/$(OBJDIR) -setcookie $(shell cat .erlang.cookie)
+	$(OTPDIR)/bin/erl -no_epmd -proto_dist gen_tcp -epmd_module crazierl_epmd -sname host -pz $(shell pwd)/$(OBJDIR) -setcookie $(shell cat .erlang.cookie)
+
+remote-shell: .erlang.cookie obj/crazierl_epmd.beam $(OTPDIR)/bin/erl obj/gen_tcp_dist.beam
+	$(OTPDIR)/bin/erl -no_epmd -proto_dist gen_tcp -epmd_module crazierl_epmd -remsh 'crazierl@localhost' -sname shell -pz $(shell pwd)/$(OBJDIR) -setcookie $(shell cat .erlang.cookie)
 
 debugger:
 	gdb -ex "set confirm off" -ex "add-symbol-file obj/mykernel.elf" -ex "add-symbol-file $$(find $(OTPDIR) -name beam.smp)" -ex "target remote localhost:1234"
