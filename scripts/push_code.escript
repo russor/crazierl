@@ -32,11 +32,13 @@ main(Dest, Modules) ->
 			io:format("no modules changed~n", []),
 			halt(0);
 		_ ->
+			LoadedModules = lists:map(fun({X, _, _}) -> X end, ToLoad),
+			erpc:call(Node, lists, foreach, [fun code:soft_purge/1, LoadedModules], infinity),
 			AtomicResult = erpc:call(Node, code, atomic_load, [ToLoad], infinity),
 			case AtomicResult of
 				ok ->
 					io:format("code loaded succssfully, modules: ~p~n",
-						  [lists:map(fun({X, _, _}) -> X end, ToLoad)]),
+						  [LoadedModules]),
 					halt(0);
 				_ ->
 					io:format("code load failed ~p~n", [AtomicResult]),
