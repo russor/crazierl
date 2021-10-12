@@ -33,11 +33,6 @@ REAL_BEARSSL_SRCS = rand/hmac_drbg.c mac/hmac.c hash/sha2small.c codec/dec32be.c
 BEARSSL_SRCS = $(foreach file, $(REAL_BEARSSL_SRCS), $(subst /,__,$(file)))
 BEARSSL_OBJS = $(BEARSSL_SRCS:%.c=$(OBJDIR)/%.o)
 
-
-
-USER_SRCS = userland.c files.c
-USER_OBJS = $(USER_SRCS:%.c=$(OBJDIR)/user.%.o)
-
 TCPIP_SRCS = $(filter-out %eth_port.erl,$(wildcard ../erlang-tcpip/src/*.erl))
 TCPIP_OBJS = $(TCPIP_SRCS:../erlang-tcpip/src/%.erl=$(OBJDIR)/%.beam)
 
@@ -50,7 +45,6 @@ endif
 OTPDIR=../erlang-runtime$(ERLANG_VERSION)/usr/local/lib/erlang$(ERLANG_VERSION)
 
 KERNEL_COMPILER=clang -m32 -mno-sse -g -ffreestanding -gdwarf-2 -c -DCRAZIERL_KERNEL
-USER_COMPILER=clang -m32 -fpic -g -gdwarf-2 -c -DCRAZIERL_USER
 NIF_COMPILER=clang -m32 -fpic -g -gdwarf-2 -shared -I$(OTPDIR)/usr/include/
 
 
@@ -87,7 +81,7 @@ debugger:
 
 .PHONY: clean $(OTPDIR)/bin/erlc
 clean:
-	rm -f obj/initrd obj/mykernel.elf obj/*.o obj/*.beam obj/*.so obj/initrd.tmp obj/.deps/*.d
+	rm -f obj/initrd obj/mykernel.elf obj/*.o obj/*.beam obj/*.so obj/initrd.tmp obj/.deps/*.d obj/*.app
 
 $(OTPDIR)/bin/erl:
 	mkdir -p ../erlang-runtime$(ERLANG_VERSION)
@@ -108,7 +102,7 @@ $(OBJDIR)/mykernel.elf: $(ALL_KERNEL_OBJS) linker.ld
 obj/start.o: start.s | $(DEPDIR)
 	clang -m32 -g -gdwarf-2 -c $^ -o $@
 
-INITRD_FILES := .erlang.cookie cfg/inetrc obj/etcpip.app /usr/share/misc/termcap.db obj/libuserland.so obj/crazierl_nif.so obj/checksum.so $(TCPIP_OBJS) $(INITRD_ERLANG_OBJS)
+INITRD_FILES := .erlang.cookie cfg/inetrc obj/etcpip.app /usr/share/misc/termcap.db obj/crazierl_nif.so obj/checksum.so $(TCPIP_OBJS) $(INITRD_ERLANG_OBJS)
 
 .erlang.cookie: gen_cookie.escript $(OTPDIR)/bin/escript
 	$(OTPDIR)/bin/escript gen_cookie.escript > .erlang.cookie.tmp
@@ -120,9 +114,6 @@ obj/initrd: hardcode_files.pl extract_start.escript $(OTPDIR)/bin/escript $(INIT
 		OTPDIR/lib/runtime_tools-*/ebin/dbg.beam \
 		$(INITRD_FILES) > obj/initrd.tmp
 	mv obj/initrd.tmp obj/initrd
-
-obj/libuserland.so: $(USER_OBJS)
-	clang -m32 -fpic -shared -Wl,-soname,libuserland.so -o obj/libuserland.so $^
 
 obj/crazierl_nif.so: crazierl_nif.c $(OTPDIR)/bin/erl
 	$(NIF_COMPILER) $< -o $@
@@ -154,11 +145,7 @@ $(BEARSSL_OBJS): $(OBJDIR)/%.o: $(DEPDIR)/%.c.d | $(DEPDIR)
 	$(KERNEL_COMPILER) -I /usr/src/contrib/bearssl/src/ -I /usr/src/contrib/bearssl/inc/ $(DEPFLAGS) -MF $(DEPDIR)/$*.c.d.T $(subst __,/,/usr/src/contrib/bearssl/src/$*.c) -o $@
 	mv -f $(DEPDIR)/$*.c.d.T $(DEPDIR)/$*.c.d && touch $@
 
-$(USER_OBJS) : $(OBJDIR)/user.%.o: %.c $(DEPDIR)/user.%.c.d | $(DEPDIR)
-	$(USER_COMPILER) $(DEPFLAGS)  -MF $(DEPDIR)/user.$*.c.d.T $< -o $@
-	mv -f $(DEPDIR)/user.$*.c.d.T $(DEPDIR)/user.$*.c.d && touch $@
-
 $(DEPDIR): ; @mkdir -p $@
-DEPFILES := $(ERLANG_OBJS:$(OBJDIR)/%.beam=$(DEPDIR)/%.d) $(ERLANG_OVERRIDE_OBJS:$(OBJDIR)/%.beam=$(DEPDIR)/%.d) $(TCPIP_OBJS:$(OBJDIR)/%.beam=$(DEPDIR)/%.d) $(KERNEL_SRCS:%.c=$(DEPDIR)/%.c.d) $(FBSD_KERNEL_SRCS:%.c=$(DEPDIR)/%.c.d) $(BEARSSL_SRCS:%.c=$(DEPDIR)/%.c.d) $(USER_SRCS:%.c=$(DEPDIR)/user.%.c.d) $(NIF_SRCS:%.c=$(DEPDIR)/nif.%.d)
+DEPFILES := $(ERLANG_OBJS:$(OBJDIR)/%.beam=$(DEPDIR)/%.d) $(ERLANG_OVERRIDE_OBJS:$(OBJDIR)/%.beam=$(DEPDIR)/%.d) $(TCPIP_OBJS:$(OBJDIR)/%.beam=$(DEPDIR)/%.d) $(KERNEL_SRCS:%.c=$(DEPDIR)/%.c.d) $(FBSD_KERNEL_SRCS:%.c=$(DEPDIR)/%.c.d) $(BEARSSL_SRCS:%.c=$(DEPDIR)/%.c.d) $(NIF_SRCS:%.c=$(DEPDIR)/nif.%.d)
 $(DEPFILES):
 include $(wildcard $(DEPFILES))

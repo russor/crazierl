@@ -1336,6 +1336,9 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			asm volatile ( "lidt %0" :: "m" (IDTR) );
 			wake_cpu(current_cpu);
 		}
+		case SYS_fork: {
+			SYSCALL_FAILURE(EAGAIN);
+		}
 		case SYS_read: {
 			struct read_args *a = argp;
 			ssize_t read = kern_read(a->fd, a->buf, a->nbyte, 0);
@@ -1628,6 +1631,9 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			UNLOCK(FDS[a->fdes].lock, current_thread);
 			SYSCALL_SUCCESS(0);
 		}
+		case SYS_access: {
+			SYSCALL_FAILURE(ENOENT);
+		}
 		case SYS_ioctl: {
 			struct ioctl_args *a = argp;
 			DEBUG_PRINTF("ioctl (%d, %08lx, ...)\r\n", a->fd, a->com);
@@ -1663,6 +1669,9 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			}
 			DEBUG_PRINTF("fd %d, parm_len %ld, cmd %ld, group %c\r\n", a->fd, IOCPARM_LEN(a->com), a->com & 0xff, (char) IOCGROUP(a->com));
 			SYSCALL_FAILURE(ENOTTY);
+		}
+		case SYS_readlink: {
+			SYSCALL_FAILURE(ENOENT);
 		}
 		case SYS_munmap: {
 			struct munmap_args *a = argp;
@@ -1854,6 +1863,9 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			}
 			SYSCALL_SUCCESS(0);
 		}
+		case SYS_getsockopt: {
+			SYSCALL_FAILURE(EBADF);
+		}
 		case SYS_sysarch: {
 			struct sysarch_args *a = argp;
 			switch (a->op) {
@@ -1993,6 +2005,14 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			DEBUG_PRINTF("issetugid()\r\n");
 			SYSCALL_SUCCESS(0);
 		}
+		case SYS___getcwd: {
+			struct __getcwd_args *a = argp;
+			if (a->buflen >= 2) {
+				strlcpy(a->buf, "/", a->buflen);
+				SYSCALL_SUCCESS(0);
+			}
+			SYSCALL_FAILURE(EINVAL);
+		}
 		case SYS_sched_yield: {
 			switch_thread(THREAD_RUNNABLE, 0, 0);
 			SYSCALL_SUCCESS(0);
@@ -2023,6 +2043,14 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			} else {
 				SYSCALL_FAILURE(-ret);
 			}
+		}
+		case SYS_rtprio_thread: {
+			struct rtprio_thread_args *a = argp;
+			if (a->function == RTP_LOOKUP) {
+				a->rtp->type = RTP_PRIO_NORMAL;
+				SYSCALL_SUCCESS(0);
+			}
+			break;
 		}
 		case SYS_cpuset_getaffinity: {
 			struct cpuset_getaffinity_args *a = argp;
@@ -2064,6 +2092,14 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			} else {
 				SYSCALL_FAILURE(ret_addr);
 			}
+		}
+		case SYS_socketpair: {
+		        struct socketpair_args *spa = argp;
+			struct pipe2_args x;
+			x.fildes = spa->rsv;
+			x.flags = 0;
+			argp = &x;
+			/* fall-through */
 		}
 		case SYS_pipe2: {
 			struct pipe2_args *a = argp;
@@ -2774,8 +2810,6 @@ void setup_entrypoint()
 	// set up environment
 	char * env[] = {"BINDIR=/", "ERL_INETRC=/cfg/inetrc",
 		"TERM=vt100",
-		"LD_32_PRELOAD=/obj/libuserland.so",
-		"LD_PRELOAD=/obj/libuserland.so",
 		//"LD_32_DEBUG=1",
 		NULL};
 	// set up arguments
