@@ -18,6 +18,7 @@
 -define (RX_DESC, 16#E4).
 -define (TX_MAX, 16#EC).
 
+-define (MAX_RXLEN, 16#1FFF).
 -define (Q_LEN, 32).
 -define (Q_DESC_SIZE, 16).
 -define (Q_DESC_TABLE_LEN, (?Q_DESC_SIZE * ?Q_LEN)).
@@ -59,7 +60,7 @@ attach(Device, _Args) ->
 	crazierl:bcopy_to(MMIO, ?CFG_ENABLE, <<16#c0>>), % unlock configuration
 
 	crazierl:bcopy_to(MMIO, ?RX_CFG, <<16#E70E:16/little>>), % unlimited dma, not promiscuous
-	crazierl:bcopy_to(MMIO, ?RX_MAX, <<16#1FFF:16/little>>),
+	crazierl:bcopy_to(MMIO, ?RX_MAX, <<?MAX_RXLEN:16/little>>),
 	{_, RxPhysical} = crazierl:map_addr(RxQ#q.map),
 	crazierl:bcopy_to(MMIO, ?RX_DESC, <<RxPhysical:64/little>>),
 
@@ -202,7 +203,7 @@ process_packet(Queue = #q{map = Map, idx = Idx}, Header) ->
 	  _:1, _RXWatchDogExp:1, _RXErr:1, _Runt:1, _CrcError:1, _Protocol:2, _IPChecksum:1,
 	  0:1, End:1, FirstSegment:1, LastSegment:1, _Multicast:1, _ToMe:1, _Broacast:1, _:1>> = Header,
         
-        Length = LengthAndFlags band 16#3FF,
+        Length = LengthAndFlags band ?MAX_RXLEN,
         Packet = crazierl:bcopy_from(Map, ?Q_DESC_TABLE_LEN + (?Q_BUFFER_SIZE * Idx), Length),
 	case {FirstSegment, LastSegment} of
 		{1, 1} -> ok;
