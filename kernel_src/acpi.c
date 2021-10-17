@@ -4,15 +4,10 @@
 #include <contrib/dev/acpica/include/actbl.h>
 #include "common.h"
 #include "acpi.h"
+#include "apic.h"
 
-uintptr_t local_apic;
 unsigned int numcpu;
-uint8_t timer_gsirq;
-uint8_t timer_flags;
-unsigned int io_apic_count;
 
-#define MAX_IO_APICS 8
-struct io_apic io_apics[MAX_IO_APICS];
 
 struct cpu cpus[MAX_CPUS];
 
@@ -121,6 +116,7 @@ int acpi_process_madt(void * rsdt) {
 				ERROR_PRINTF("ISO: Bus %d, SourceIRQ %d, GlobalIRQ %d, Flags %x\r\n",
 				             data->Bus, data->SourceIrq, data->GlobalIrq, data->IntiFlags);
 			}
+
 		} else if (subhead->Type == ACPI_MADT_TYPE_LOCAL_APIC_NMI && subhead->Length == sizeof(ACPI_MADT_LOCAL_APIC_NMI)) {
 			ACPI_MADT_LOCAL_APIC_NMI *data = (ACPI_MADT_LOCAL_APIC_NMI *)p;
 			ERROR_PRINTF("NMI: Processor %d, Flags %x, Lint %d\r\n",

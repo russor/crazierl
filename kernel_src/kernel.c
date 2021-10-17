@@ -9,6 +9,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+#include "apic.h"
 
 extern const char *syscallnames[];
 extern void * handle_int_80;
@@ -34,11 +35,13 @@ extern uintptr_t tss_esp0;
 char **environ = {NULL};
 char *__progname = "crazierlkernel";
 
-#define PORT_PIC1 0x20
-#define PORT_PIC2 0xA0
 #define PORT_COM1 0x3f8   /* COM1 */
 
 #define PIC_INTERRUPT_ACK 0x20
+
+
+
+
 
 // First, let's do some basic checks to make sure we are using our x86-elf cross-compiler correctly
 #if defined(__linux__)
@@ -428,15 +431,6 @@ void term_printf(const char* format, ...)
        write(2, foo, strlen(foo));
 }
 
-void local_apic_write(unsigned int reg, uint32_t value)
-{
-	*(uint32_t *)(local_apic + reg) = value;
-}
-
-uint32_t local_apic_read(unsigned int reg) {
-	return *(uint32_t *)(local_apic + reg);
-}
-
 _Noreturn
 void halt(char * message, int dontpropagate) {
 	find_cursor();
@@ -661,7 +655,11 @@ void handle_irq(unsigned int vector)
 	switch (vector) {
 		case TIMER_VECTOR: {
 			++TIMER_COUNT;
-			fixed_point_time += FIXED_POINT_TIME_NANOSECOND(0, 54925438); // PIT timer is 54.92... ms
+			fixed_point_time += FIXED_POINT_TIME_NANOSECOND(0, CLOCK_MS * 1000000);
+
+			// TODO: If we want to schedule in 100ms slices, we can wait for 10 of these interrupts
+			// or have a countdown timer
+//			fixed_point_time += FIXED_POINT_TIME_NANOSECOND(0, 54925438); // PIT timer is 54.92... ms
 			if (cpus_initing) {
 				break;
 			}
@@ -703,37 +701,6 @@ void handle_irq(unsigned int vector)
 void handle_unknown_error(struct interrupt_frame *frame, uint32_t irq, uint32_t error_code)
 {
 	ERROR_PRINTF("Got unexpected error %d (%d) IP: %08x cpu %d", irq, error_code, frame->ip, current_cpu);
-	halt(NULL, 0);
-}
-
-void ioapic_set_gsi_vector(unsigned int irq, uint8_t flags, uint8_t vector, uint8_t physcpu) {
-	int ioapic = 0;
-	unsigned int origirq = irq;
-	while (ioapic < io_apic_count) {
-		if (irq < io_apics[ioapic].numintr) {
-			uint8_t index = (irq * 2) + 0x10;
-			uint32_t lo, hi;
-
-			lo = vector;
-			if (flags & 8) { // level triggered
-				lo |= 0x8000;
-			}
-			if (flags & 2) { // active low
-				lo |= 0x2000;
-			}
-			hi = physcpu << 24;
-			
-			io_apics[ioapic].address[0] = index;
-			io_apics[ioapic].address[4] = lo;
-			io_apics[ioapic].address[0] = index + 1;
-			io_apics[ioapic].address[4] = hi;
-			return;
-		} else {
-			irq -= io_apics[ioapic].numintr;
-		}
-		++ioapic;
-	}
-	ERROR_PRINTF("couldn't find IO-APIC for irq %d\r\n", origirq);
 	halt(NULL, 0);
 }
 
@@ -2028,7 +1995,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			SYSCALL_SUCCESS(0);
 		}
 		case SYS_getcontext:
-			ERROR_PRINTF("sending back bogus success for getcontext\r\n");
+			ERROR_PRINTF("xxx sending back bogus success for getcontext\r\n");
 			SYSCALL_SUCCESS(0);
 		case SYS_thr_self: {
 			struct thr_self_args *a = argp;
@@ -2435,20 +2402,10 @@ uint64_t readmsr (uint32_t msr)
 	return ret;
 }
 
+
 void interrupt_setup()
 {
-	// setup PIC before disabling, so spurious interrupts hit vector 0xF7
-	outb(PORT_PIC1, 0x11); // request initialization
-	outb(PORT_PIC2, 0x11);
-	outb(PORT_PIC1 + 1, 0xF0); // offset interrupts by 0xF0
-	outb(PORT_PIC2 + 1, 0xF0); // offset interrupts by 0xF0
-	outb(PORT_PIC1 + 1, 0x4); // indicate slave PIC on IRQ 2
-	outb(PORT_PIC2 + 1, 0x2); // indicate slave PIC is slave
-	outb(PORT_PIC1 + 1, 0x01); // set to 8086 mode
-	outb(PORT_PIC2 + 1, 0x01); // set to 8086 mode
-	outb(PORT_PIC1 + 1, 0xFF); // mask all interrupts
-	outb(PORT_PIC2 + 1, 0xFF); // mask all interrupts
-
+	pic_setup(0xF0, 0xF0);
 
 	char * rsdt = acpi_find_rsdt(NULL);
 	if (rsdt == NULL) {
@@ -2472,7 +2429,6 @@ void interrupt_setup()
 		ERROR_PRINTF("local_apic from APIC %08x does not match value from MSR %08x\r\n", local_apic, base_msr & (~((1 << 12) - 1)));
 		halt(NULL, 1);
 	}
-	
 
 	// vector spurious intererrupts to 0xFF and enable APIC
 	local_apic_write(0xF0, 0x1FF);
@@ -3032,6 +2988,7 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 	ERROR_PRINTF("Hello, World!\r\n");
 	enable_sse();
 	interrupt_setup();
+	clock_setup();
 
 	get_time();
 
