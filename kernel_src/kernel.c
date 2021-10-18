@@ -202,7 +202,8 @@ uint64_t fixed_point_time;
 #define FIXED_POINT_TIME_NANOSECOND(seconds, nanoseconds) (((uint64_t) seconds << 24) + (((uint64_t) nanoseconds << 24) / 1000000000))
 #define FIXED_POINT_SECONDS(fpt)(fpt >> 24)
 #define FIXED_POINT_MILLISECONDS(fpt) (((fpt & ((1 << 24) -1)) * 1000) >> 24)
-#define FIXED_POINT_NANOSECONDS(fpt) (((fpt & ((1 << 24) -1)) * 1000000000) >> 24)
+#define FIXED_POINT_MICROSECONDS(fpt) (((fpt & ((1 << 24) -1)) * 1000000) >> 24)
+#define FIXED_POINT_NANOSECONDS(fpt)  (((fpt & ((1 << 24) -1)) * 1000000000) >> 24)
 
 uintptr_t user_stack;
 
@@ -1321,6 +1322,22 @@ int kern_kevent(struct kevent_args *a) {
 	return nevents;
 }
 
+
+// separate function, because uint64_t breaks stack setup for thr_new otherwise
+void kern_clock_gettimeofday (struct timeval *tp) {
+	// XXX should be atomic copy
+	uint64_t time = fixed_point_time;
+	tp->tv_sec = FIXED_POINT_SECONDS(time);
+	tp->tv_usec = FIXED_POINT_MICROSECONDS(time);
+}
+// separate function, because uint64_t breaks stack setup for thr_new otherwise
+void kern_clock_gettime (struct timespec *tp) {
+	// XXX should be atomic copy
+	uint64_t time = fixed_point_time;
+	tp->tv_sec = FIXED_POINT_SECONDS(time);
+	tp->tv_nsec = FIXED_POINT_NANOSECONDS(time);
+}
+
 #define CARRY 1
 #define SYSCALL_SUCCESS(ret) { iframe->flags &= ~CARRY; return ret; }
 #define SYSCALL_FAILURE(ret) { iframe->flags |= CARRY; return ret; }
@@ -1854,8 +1871,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 		case SYS_gettimeofday: {
 			struct gettimeofday_args *a = argp;
 			if (a->tp != NULL) {
-				a->tp->tv_sec = FIXED_POINT_SECONDS(fixed_point_time);
-				a->tp->tv_usec = 0; // FIXED_POINT_MILLISECONDS(fixed_point_time);
+				kern_clock_gettimeofday(a->tp);
 			}
 			if (a->tzp != NULL) {
 				a->tzp->tz_minuteswest = 0;
@@ -1997,8 +2013,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 		}
 		case SYS_clock_gettime: {
 			struct clock_gettime_args *a = argp;
-			a->tp->tv_sec = FIXED_POINT_SECONDS(fixed_point_time);
-			a->tp->tv_nsec = 0; // FIXED_POINT_NANOSECONDS(fixed_point_time);
+			kern_clock_gettime(a->tp);
 			SYSCALL_SUCCESS(0);
 		}
 		case SYS_issetugid: {
