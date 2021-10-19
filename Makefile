@@ -76,6 +76,12 @@ remote-shell-hw: .erlang.cookie obj/crazierl_epmd.beam $(OTPDIR)/bin/erl obj/gen
 push-code: $(TCPIP_OBJS) $(INITRD_ERLANG_OBJS) $(OTPDIR)/bin/escript
 	ERL_FLAGS="-hidden -sname pusher -no_epmd -proto_dist gen_tcp -epmd_module crazierl_epmd -pa $(shell pwd)/$(OBJDIR) -setcookie $(shell cat .erlang.cookie)" $(OTPDIR)/bin/escript push_code.escript 'crazierl@localhost' $(TCPIP_OBJS) $(INITRD_ERLANG_OBJS)
 
+timer-offset: $(OTPDIR)/bin/escript
+	@ERL_FLAGS="-hidden -sname timer -no_epmd -proto_dist gen_tcp -epmd_module crazierl_epmd -pa $(shell pwd)/$(OBJDIR) -setcookie $(shell cat .erlang.cookie)" $(OTPDIR)/bin/escript timer_offset.escript 'crazierl@localhost'
+
+timer-offset-hw: $(OTPDIR)/bin/escript
+	@ERL_FLAGS="-hidden -name timer -no_epmd -proto_dist gen_tcp -epmd_module crazierl_epmd -pa $(shell pwd)/$(OBJDIR) -setcookie $(shell cat .erlang.cookie)" $(OTPDIR)/bin/escript timer_offset.escript $(HWNODE)
+
 push-code-hw: $(TCPIP_OBJS) $(INITRD_ERLANG_OBJS) $(OTPDIR)/bin/escript
 	ERL_FLAGS="-hidden -name pusher -no_epmd -proto_dist gen_tcp -epmd_module crazierl_epmd -pa $(shell pwd)/$(OBJDIR) -setcookie $(shell cat .erlang.cookie)" $(OTPDIR)/bin/escript push_code.escript $(HWNODE) $(TCPIP_OBJS) $(INITRD_ERLANG_OBJS)
 
