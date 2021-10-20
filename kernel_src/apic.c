@@ -117,7 +117,7 @@ void load_pit(uint16_t ms)
 	// https://wiki.osdev.org/Programmable_Interval_Timer
 
 
-	uint16_t counter = (ms * 3579545) / 1000;
+	uint16_t counter = (ms * 3579545) / 3000;
 
 	uint8_t existing = inb(PIT_CH2_GATE);
 	existing = 0xFF & ((existing & 0xfd) | 1); // disable speaker + counting 
