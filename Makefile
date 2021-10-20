@@ -55,7 +55,7 @@ run: obj/mykernel.elf obj/initrd
 build: obj/mykernel.elf obj/initrd
 	echo "Built"
 
-netboot: obj/mykernel.elf obj/initrdpp
+netboot: obj/mykernel.elf obj/initrd
 	cp $^ /usr/local/www/apache24/data/tftpboot/crazierl/
 
 debug: obj/mykernel.elf obj/initrd
