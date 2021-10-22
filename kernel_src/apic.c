@@ -182,16 +182,16 @@ void clock_setup()
 
 	uint64_t ticks = 0xFFFFFFFF - local_apic_read(APIC_TIMER_CURRENT);
 
-	ERROR_PRINTF("Clock: %u ticks have occurred in %d ms\r\n", ticks, calibms);
+	ERROR_PRINTF("Clock: %llu ticks have occurred in %d ms\r\n", ticks, calibms);
 
 	tsc_ticks_per_s = (ticks * 16 * (1000 / calibms));
-    ERROR_PRINTF("Clock: Est speed (Mhz): %u\r\n", tsc_ticks_per_s / 1000000);
+    ERROR_PRINTF("Clock: Est speed (Mhz): %llu\r\n", tsc_ticks_per_s / 1000000);
 
 	// Ok, now we disable the PIT timer by putting it into one-shot mode and not firing it
 	outb(PIT_CMD,  0b00110000); // 0x43 = Command regisger
 
 	uint64_t clock_ticks = (tsc_ticks_per_s / (1000 / CLOCK_MS)) / 16;
-	ERROR_PRINTF("Clock: Will interrupt every %d using %u\r\n", CLOCK_MS, clock_ticks);
+	ERROR_PRINTF("Clock: Will interrupt every %d using %llu\r\n", CLOCK_MS, clock_ticks);
 
 	local_apic_write(APIC_TIMER_INITIAL, clock_ticks);
 	local_apic_write(APIC_LVT_TIMER, 0x20 | APIC_TIMER_PERIODIC );
