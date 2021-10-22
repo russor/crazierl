@@ -4,6 +4,7 @@ OBJDIR := obj
 DEPDIR := $(OBJDIR)/.deps
 DEPFLAGS = -MT $@ -MMD -MP
 HWNODE ?= 'crazierl@crazierlp.ruka.org'
+ROOTDIR := 
 
 ERLANG_OVERRIDES = $(wildcard overrides/*.erl)
 
@@ -11,7 +12,7 @@ ERLANG_SRCS = $(wildcard *.erl)
 ERLANG_OBJS = $(ERLANG_SRCS:%.erl=$(OBJDIR)/%.beam)
 ERLANG_OVERRIDE_OBJS = $(ERLANG_OVERRIDES:overrides/%.erl=$(OBJDIR)/%.beam)
 INITRD_ERLANG_OBJS = $(filter-out $(OBJDIR)/hook_module.beam,$(ERLANG_OBJS)) $(ERLANG_OVERRIDE_OBJS)
-KERNEL_SRCS = kernel.c files.c kern_mmap.c acpi.c strtol.c rand.c
+KERNEL_SRCS = kernel.c files.c kern_mmap.c acpi.c strtol.c rand.c apic.c
 KERNEL_OBJS = $(KERNEL_SRCS:%.c=$(OBJDIR)/%.o)
 
 REAL_FBSD_KERNEL_SRCS = lib/libc/quad/qdivrem.c lib/libc/quad/udivdi3.c \
@@ -36,10 +37,10 @@ BEARSSL_OBJS = $(BEARSSL_SRCS:%.c=$(OBJDIR)/%.o)
 TCPIP_SRCS = $(filter-out %eth_port.erl,$(wildcard ../erlang-tcpip/src/*.erl))
 TCPIP_OBJS = $(TCPIP_SRCS:../erlang-tcpip/src/%.erl=$(OBJDIR)/%.beam)
 
-ifeq ($(wildcard /libexec/ld-elf32.so.1),)
-	RTLD=/libexec/ld-elf.so.1
+ifeq ($(wildcard $(ROOTDIR)/libexec/ld-elf32.so.1),)
+	RTLD=$(ROOTDIR)/libexec/ld-elf.so.1
 else
-	RTLD=/libexec/ld-elf32.so.1
+	RTLD=$(ROOTDIR)/libexec/ld-elf32.so.1
 endif
 #OTPDIR=../installed/lib/erlang
 OTPDIR=../erlang-runtime$(ERLANG_VERSION)/usr/local/lib/erlang$(ERLANG_VERSION)
@@ -47,10 +48,12 @@ OTPDIR=../erlang-runtime$(ERLANG_VERSION)/usr/local/lib/erlang$(ERLANG_VERSION)
 KERNEL_COMPILER=clang -m32 -mno-sse -g -ffreestanding -gdwarf-2 -c -DCRAZIERL_KERNEL
 NIF_COMPILER=clang -m32 -fpic -g -gdwarf-2 -shared -I$(OTPDIR)/usr/include/
 
-
 run: obj/mykernel.elf obj/initrd
 	qemu-system-i386 --no-reboot -display none -smp 1 -s -m 512 -serial mon:stdio -kernel obj/mykernel.elf -append $(RTLD) -initrd obj/initrd \
 		-netdev user,hostname=localhost,id=mynet0,hostfwd=tcp:127.0.0.1:7780-:80,hostfwd=tcp:127.0.0.1:7781-:8080,hostfwd=tcp:127.0.0.1:4370-:4370 -device virtio-net,netdev=mynet0 -object filter-dump,id=mynet0,netdev=mynet0,file=/tmp/crazierl.pcap
+
+build: obj/mykernel.elf obj/initrd
+	echo "Built"
 
 netboot: obj/mykernel.elf obj/initrd
 	cp $^ /usr/local/www/apache24/data/tftpboot/crazierl/

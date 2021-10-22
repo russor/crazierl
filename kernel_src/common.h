@@ -65,5 +65,4 @@ static inline unsigned int max(unsigned int a, unsigned int b) {
 	return b;
 }
 
-
 #endif
