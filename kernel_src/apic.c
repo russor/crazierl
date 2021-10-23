@@ -1,5 +1,6 @@
 #include "apic.h"
 #include "common.h"
+#include <cpuid.h>
 
 // Ideally things related to APIC (Advanced Programmable Interrupt Controller), but also
 // includes other things in the arena of general PIC and interrupts, so more thematic
@@ -7,6 +8,7 @@
 
 #define APIC_DISABLE	0x10000
 #define APIC_TIMER_PERIODIC	0x20000
+#define APIC_TIMER_TSCDEADLINE	0x40000
 
 #define APIC_TPR		0x080	// Task Priority Register
 #define APIC_LDR		0x0D0
@@ -25,6 +27,25 @@
 #define PORT_PIC2_DATA	0xA1
 
 #define PIC_INTERRUPT_ACK 0x20
+
+static inline void wrmsr(uint32_t msr, uint64_t value)
+{
+	uint32_t low = value & 0xFFFFFFFF;
+	uint32_t high = value >> 32;
+	asm volatile(
+		"wrmsr" :: "c"(msr), "a"(low), "d"(high)
+	);
+
+}
+
+static inline uint64_t rdmsr(uint32_t msr)
+{
+	uint32_t low = 0;
+	uint32_t high = 0;
+	asm volatile("rdmsr" : "=a"(low), "=d"(high) : "c"(msr));
+
+	return (uint64_t)high << 32 | low;
+}
 
 static inline void outb(uint16_t port, uint8_t val)
 {
@@ -48,6 +69,8 @@ uint8_t timer_gsirq;
 uint8_t timer_flags;
 unsigned int io_apic_count;
 uint64_t tsc_ticks_per_s;
+uint64_t _tsc_clock_ticks;
+int tsc_inited = 0;
 
 //extern struct io_apic io_apics[];
 
@@ -101,6 +124,8 @@ void ioapic_set_gsi_vector(unsigned int irq, uint8_t flags, uint8_t vector, uint
 
 #define PIT_OUT			0x20
 #define PIT_GATE		0x01
+
+#define MSR_TSC_DEADLINE	0x6E0
 
 void load_pit(uint16_t ms)
 {
@@ -164,38 +189,69 @@ void pit_wait()
 	} while ( ((val & 0x20) == 0)) ;
 }
 
+
+void _arm_tsc_deadline()
+{
+
+	// TODO: We should actually do CPUID check to verify TSC Deadline mode is available
+	// Timer is actually per logical processor, do we need it to always be process 0?
+	//local_apic_write(APIC_TIMER_INITIAL, clock_ticks);
+	uint64_t current_time = __rdtsc();
+	local_apic_write(APIC_LVT_TIMER, APIC_TIMER_TSCDEADLINE );
+	ERROR_PRINTF("Current deadline MSR (BEFORE): %llu\r\n", rdmsr(MSR_TSC_DEADLINE));
+	uint32_t eax, ebx,ecx,edx;
+	__cpuid(1, eax, ebx,ecx, edx);
+	ERROR_PRINTF("CPUID: %x, %d", ecx, (ecx >> 24) & 1);
+	wrmsr(MSR_TSC_DEADLINE, current_time + _tsc_clock_ticks);
+	ERROR_PRINTF("Current deadline MSR (AFTER): %llu\r\n", rdmsr(MSR_TSC_DEADLINE));
+	//local_apic_write(APIC_TIMER_DIVIDE, 0x3); // div 16
+}
+
+void reschedule_system_clock()
+{
+	if (likely(tsc_inited)) {
+		_arm_tsc_deadline();
+	}
+}
 // Initially based on https://wiki.osdev.org/APIC_timer
 void clock_setup()
 {
 	ERROR_PRINTF("Starting clock timer calibration\r\n");
-	// divider 16
 	local_apic_write(APIC_LVT_TIMER, 0x20);
-	local_apic_write(APIC_TIMER_DIVIDE, 0x3);
+
+	// divider 16 - when doing One-shot or periodic
+//	local_apic_write(APIC_TIMER_DIVIDE, 0x3);
 
 	uint16_t calibms = 10;
 	load_pit(calibms);
 	local_apic_write(APIC_TIMER_INITIAL, 0xFFFFFFFF);
 
+	uint64_t initial_time = __rdtsc();
 	pit_wait();
+	uint64_t ticks = __rdtsc() - initial_time;
 
 	local_apic_write(APIC_LVT_TIMER, APIC_DISABLE);
 
-	uint64_t ticks = 0xFFFFFFFF - local_apic_read(APIC_TIMER_CURRENT);
+//	uint64_t ticks = 0xFFFFFFFF - local_apic_read(APIC_TIMER_CURRENT);
 
 	ERROR_PRINTF("Clock: %llu ticks have occurred in %d ms\r\n", ticks, calibms);
 
-	tsc_ticks_per_s = (ticks * 16 * (1000 / calibms));
-    ERROR_PRINTF("Clock: Est speed (Mhz): %llu\r\n", tsc_ticks_per_s / 1000000);
+//	tsc_ticks_per_s = (ticks * 16 * (1000 / calibms));
+	tsc_ticks_per_s = ticks * (1000 / calibms);
+    ERROR_PRINTF("Clock: Est speed (Mhz): %u\r\n", tsc_ticks_per_s / 1000000);
 
 	// Ok, now we disable the PIT timer by putting it into one-shot mode and not firing it
 	outb(PIT_CMD,  0b00110000); // 0x43 = Command regisger
 
-	uint64_t clock_ticks = (tsc_ticks_per_s / (1000 / CLOCK_MS)) / 16;
-	ERROR_PRINTF("Clock: Will interrupt every %d using %llu\r\n", CLOCK_MS, clock_ticks);
+	//uint64_t clock_ticks = (tsc_ticks_per_s / (1000 / CLOCK_MS)) / 16;
+//	_tsc_clock_ticks = tsc_ticks_per_s / (1000 / CLOCK_MS);
+	_tsc_clock_ticks = 1000000;
+	
+	ERROR_PRINTF("Clock: Will interrupt every %d using %u\r\n", CLOCK_MS, _tsc_clock_ticks);
+	_arm_tsc_deadline();
+	tsc_inited = 1;
 
-	local_apic_write(APIC_TIMER_INITIAL, clock_ticks);
-	local_apic_write(APIC_LVT_TIMER, 0x20 | APIC_TIMER_PERIODIC );
-	local_apic_write(APIC_TIMER_DIVIDE, 0x3); // div 16
+
 }
 
 void pic_setup(int master_offset, int slave_offset)

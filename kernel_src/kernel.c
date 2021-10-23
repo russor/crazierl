@@ -641,6 +641,33 @@ struct interrupt_frame
 };
 
 
+void process_system_timer()
+{
+
+	ERROR_PRINTF("TICK\r\n");
+	++TIMER_COUNT;
+	fixed_point_time += FIXED_POINT_TIME_NANOSECOND(0, CLOCK_MS * 1000000);
+
+	// TODO: Should we wait til we've done our other work?
+	reschedule_system_clock();
+
+	// TODO: If we want to schedule in 100ms slices, we can wait for 10 of these interrupts
+	// or have a countdown timer
+//			fixed_point_time += FIXED_POINT_TIME_NANOSECOND(0, 54925438); // PIT timer is 54.92... ms
+	if (cpus_initing) {
+		return;
+	}
+
+	size_t woken = 0;
+	// TODO: only wake idle cpus, or for timeouts
+	for (size_t i = 0; i < numcpu; ++i) {
+		if (i == current_cpu) { continue; }
+		if (cpus[i].flags & (CPU_STARTED)) {
+			wake_cpu(i);
+		}
+	}
+	switch_thread(THREAD_RUNNABLE, 0, 0);
+}
 
 int UNCLAIMED_IRQ = 0;
 void handle_irq(unsigned int vector)
@@ -655,24 +682,7 @@ void handle_irq(unsigned int vector)
 
 	switch (vector) {
 		case TIMER_VECTOR: {
-			++TIMER_COUNT;
-			fixed_point_time += FIXED_POINT_TIME_NANOSECOND(0, CLOCK_MS * 1000000);
-
-			// TODO: If we want to schedule in 100ms slices, we can wait for 10 of these interrupts
-			// or have a countdown timer
-//			fixed_point_time += FIXED_POINT_TIME_NANOSECOND(0, 54925438); // PIT timer is 54.92... ms
-			if (cpus_initing) {
-				break;
-			}
-			size_t woken = 0;
-			// TODO: only wake idle cpus, or for timeouts
-			for (size_t i = 0; i < numcpu; ++i) {
-				if (i == current_cpu) { continue; }
-				if (cpus[i].flags & (CPU_STARTED)) {
-					wake_cpu(i);
-				}
-			}
-			switch_thread(THREAD_RUNNABLE, 0, 0);
+			process_system_timer();
 			break;
 		}
 		case SWITCH_VECTOR: {
