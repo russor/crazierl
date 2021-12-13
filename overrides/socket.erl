@@ -1,8 +1,13 @@
--hook([open/4, setopt/3, getopt/2, bind/2, listen/2, accept/2, recv/4, send/4, close/1, sockname/1, peername/1, info/1, cancel/2]).
+-hook([open/4, setopt/3, getopt/2, bind/2, listen/2, accept/2,
+       recv/4, send/4, sendto/5, recvfrom/4,
+       close/1, sockname/1, peername/1, info/1, cancel/2]).
 -include_lib("kernel/src/socket.erl").
 
 hook_open(inet, stream, tcp, Opts) ->
 	Sock = etcpip_socket:open(tcp, Opts),
+	{ok, {etcpip, Sock}};
+hook_open(inet, dgram, udp, Opts) ->
+	Sock = etcpip_socket:open(udp, Opts),
 	{ok, {etcpip, Sock}};
 hook_open(Domain, Type, Protocol, Opts) -> real_open(Domain, Type, Protocol, Opts).
 
@@ -28,8 +33,14 @@ hook_accept(Sock, Timeout) -> real_accept(Sock, Timeout).
 hook_recv({etcpip, Sock}, Length, Options, Timeout) -> etcpip_socket:recv(Sock, Length, Options, Timeout);
 hook_recv(Sock, Length, Options, Timeout) -> real_recv(Sock, Length, Options, Timeout).
 
+hook_recvfrom({etcpip, Sock}, Length, Options, Timeout) -> etcpip_socket:recvfrom(Sock, Length, Options, Timeout);
+hook_recvfrom(Sock, Length, Options, Timeout) -> real_recvfrom(Sock, Length, Options, Timeout).
+
 hook_send({etcpip, Sock}, Data, Flags, Timeout) -> etcpip_socket:send(Sock, Data, Flags, Timeout);
 hook_send(Sock, Data, Flags, Timeout) -> real_send(Sock, Data, Flags, Timeout).
+
+hook_sendto({etcpip, Sock}, Data, Dest, Flags, Timeout) -> etcpip_socket:sendto(Sock, Data, Dest, Flags, Timeout);
+hook_sendto(Sock, Data, Dest, Flags, Timeout) -> real_sendto(Sock, Data, Dest, Flags, Timeout).
 
 hook_close({etcpip, Sock}) -> etcpip_socket:close(Sock);
 hook_close(Sock) -> real_close(Sock).

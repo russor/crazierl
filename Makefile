@@ -77,7 +77,7 @@ remote-shell-hw: .erlang.cookie obj/crazierl_epmd.beam $(OTPDIR)/bin/erl obj/gen
 	$(OTPDIR)/bin/erl -hidden -no_epmd -proto_dist gen_tcp -epmd_module crazierl_epmd -remsh $(HWNODE) -name shell -pz $(shell pwd)/$(OBJDIR) -setcookie $(shell cat .erlang.cookie)
 
 push-code: $(TCPIP_OBJS) $(INITRD_ERLANG_OBJS) $(OTPDIR)/bin/escript
-	ERL_FLAGS="-hidden -sname pusher -no_epmd -proto_dist gen_tcp -epmd_module crazierl_epmd -pa $(shell pwd)/$(OBJDIR) -setcookie $(shell cat .erlang.cookie)" $(OTPDIR)/bin/escript push_code.escript 'crazierl@localhost' $(TCPIP_OBJS) $(INITRD_ERLANG_OBJS)
+	@ERL_FLAGS="-hidden -sname pusher -no_epmd -proto_dist gen_tcp -epmd_module crazierl_epmd -pa $(shell pwd)/$(OBJDIR) -setcookie $(shell cat .erlang.cookie)" $(OTPDIR)/bin/escript push_code.escript 'crazierl@localhost' $(TCPIP_OBJS) $(INITRD_ERLANG_OBJS)
 
 timer-offset: $(OTPDIR)/bin/escript
 	@ERL_FLAGS="-hidden -sname timer -no_epmd -proto_dist gen_tcp -epmd_module crazierl_epmd -pa $(shell pwd)/$(OBJDIR) -setcookie $(shell cat .erlang.cookie)" $(OTPDIR)/bin/escript timer_offset.escript 'crazierl@localhost'
@@ -86,7 +86,7 @@ timer-offset-hw: $(OTPDIR)/bin/escript
 	@ERL_FLAGS="-hidden -name timer -no_epmd -proto_dist gen_tcp -epmd_module crazierl_epmd -pa $(shell pwd)/$(OBJDIR) -setcookie $(shell cat .erlang.cookie)" $(OTPDIR)/bin/escript timer_offset.escript $(HWNODE)
 
 push-code-hw: $(TCPIP_OBJS) $(INITRD_ERLANG_OBJS) $(OTPDIR)/bin/escript
-	ERL_FLAGS="-hidden -name pusher -no_epmd -proto_dist gen_tcp -epmd_module crazierl_epmd -pa $(shell pwd)/$(OBJDIR) -setcookie $(shell cat .erlang.cookie)" $(OTPDIR)/bin/escript push_code.escript $(HWNODE) $(TCPIP_OBJS) $(INITRD_ERLANG_OBJS)
+	@ERL_FLAGS="-hidden -name pusher -no_epmd -proto_dist gen_tcp -epmd_module crazierl_epmd -pa $(shell pwd)/$(OBJDIR) -setcookie $(shell cat .erlang.cookie)" $(OTPDIR)/bin/escript push_code.escript $(HWNODE) $(TCPIP_OBJS) $(INITRD_ERLANG_OBJS)
 
 debugger:
 	gdb -ex "set confirm off" -ex "add-symbol-file obj/mykernel.elf" -ex "add-symbol-file $$(find $(OTPDIR) -name beam.smp)" -ex "target remote localhost:1234"
