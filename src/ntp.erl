@@ -6,7 +6,7 @@
 
 
 go() ->
-	{OriginTS, ResponseTS, Response, SendOrigin} = fetch(),
+	{OriginNS, ResponseNS, Response, SendOrigin} = fetch(),
 	<<LeapIndicator:2, 4:3, 4:3, Stratum:8, Poll:8, Precision:8,
 	  RootDelay:32, Dispersion:32, ReferenceId:4/binary,
 	  ReferenceTS:8/binary, SendOrigin:8/binary, ReceiveTS:8/binary, TransmitTS:8/binary
@@ -15,13 +15,13 @@ go() ->
 	ReceiveNS = convert_ntp_to_nanoseconds(ReceiveTS),
 	TransmitNS = convert_ntp_to_nanoseconds(TransmitTS),
 	
-	Delay = ResponseTS - OriginTS - (TransmitNS - ReceiveNS),
-	Offset = (TransmitNS + ReceiveNS) div 2 - (ResponseTS + OriginTS) div 2,
+	Delay = ResponseNS - OriginNS - (TransmitNS - ReceiveNS),
+	Offset = (TransmitNS + ReceiveNS) div 2 - (ResponseNS + OriginNS) div 2,
 	
 	#{delay => Delay,
 	  offset => Offset,
-	  originTs => OriginTS,
-	  responseTs => ResponseTS,
+	  originNs => OriginNS,
+	  responseNs => ResponseNS,
 	  leap => LeapIndicator,
 	  stratum => Stratum,
 	  precision => Precision,

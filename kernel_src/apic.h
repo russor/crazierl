@@ -26,4 +26,13 @@ void ioapic_set_gsi_vector(unsigned int irq, uint8_t flags, uint8_t vector, uint
 void pic_setup(int master_offset, int slave_offset);
 void clock_setup();
 
+#define FIXED_POINT_TIME_NANOSECOND(seconds, nanoseconds) (((uint64_t) seconds << 24) + (((uint64_t) nanoseconds << 24) / 1000000000))
+#define FIXED_POINT_SECONDS(fpt)(fpt >> 24)
+#define FIXED_POINT_MILLISECONDS(fpt) (((fpt & ((1 << 24) -1)) * 1000) >> 24)
+#define FIXED_POINT_MICROSECONDS(fpt) (((fpt & ((1 << 24) -1)) * 1000000) >> 24)
+#define FIXED_POINT_NANOSECONDS(fpt)  (((fpt & ((1 << 24) -1)) * 1000000000) >> 24)
+#define TSC_TICK_SCALE 32
+
+extern uint64_t SCALED_S_PER_TSC_TICK;
+
 //#endif

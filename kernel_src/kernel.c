@@ -201,12 +201,14 @@ struct IDTRecord IDTR;
 
 volatile unsigned int TIMER_COUNT = 0;
 
-uint64_t fixed_point_time;
-#define FIXED_POINT_TIME_NANOSECOND(seconds, nanoseconds) (((uint64_t) seconds << 24) + (((uint64_t) nanoseconds << 24) / 1000000000))
-#define FIXED_POINT_SECONDS(fpt)(fpt >> 24)
-#define FIXED_POINT_MILLISECONDS(fpt) (((fpt & ((1 << 24) -1)) * 1000) >> 24)
-#define FIXED_POINT_MICROSECONDS(fpt) (((fpt & ((1 << 24) -1)) * 1000000) >> 24)
-#define FIXED_POINT_NANOSECONDS(fpt)  (((fpt & ((1 << 24) -1)) * 1000000000) >> 24)
+DECLARE_LOCK(tsc_time);
+volatile uint64_t global_tsc_time;
+volatile uint64_t global_tsc;
+volatile int global_tsc_generation;
+__thread uint64_t tsc_time;
+__thread uint64_t tsc;
+__thread uint64_t last_time;
+__thread int tsc_generation;
 
 uintptr_t user_stack;
 
@@ -519,7 +521,9 @@ void get_time()
 			timeA[3] = 0;
 		}
 	}
-	fixed_point_time = FIXED_POINT_TIME_NANOSECOND(unix_time(timeA), 0);
+	global_tsc = __rdtsc();
+	global_tsc_time = FIXED_POINT_TIME_NANOSECOND(unix_time(timeA), 0);
+	global_tsc_generation = 1;
 }
 
 DECLARE_LOCK(thread_state);
@@ -545,6 +549,40 @@ void wake_cpu_for_thread(size_t thread) {
 	}
 }
 
+uint64_t fixed_point_time() {
+	if (global_tsc_generation != tsc_generation) {
+		LOCK(tsc_time, current_thread);
+		tsc_time = global_tsc_time;
+		tsc = global_tsc;
+		tsc_generation = global_tsc_generation;
+		UNLOCK(tsc_time, current_thread);
+	}
+	uint64_t tsc_count = __rdtsc();
+	uint64_t tsc_increment = (tsc_count - tsc) * SCALED_S_PER_TSC_TICK;
+	uint64_t fpt = (tsc_increment >> TSC_TICK_SCALE) + tsc_time;
+	if (tsc_increment & (1LL << 63) && (global_tsc_generation == tsc_generation)) {
+		LOCK(tsc_time, current_thread);
+		if (global_tsc_generation == tsc_generation) {
+			tsc_time = global_tsc_time = fpt;
+			tsc = global_tsc = tsc_count;
+			tsc_generation = ++global_tsc_generation;
+		}
+		UNLOCK(tsc_time, current_thread);
+	}
+	if (fpt > last_time) {
+		last_time = fpt;
+		return fpt;
+	} else {
+		ERROR_PRINTF("tsc_count %llu\r\ntsc_increment %llu\r\nfpt %llu\r\nlast_time%llu\r\n\r\n",
+				tsc_count, tsc_increment, fpt, last_time);
+		ERROR_PRINTF("tsc %llu\r\nglobal_tsc%llu\r\ntsc_time%llu\r\nglobal_tsc_time\r\n\r\n",
+				tsc, global_tsc, tsc_time, global_tsc_time);
+		ERROR_PRINTF("tsc generation %u\r\nglobal_tsc_generation%u\r\n\r\n",
+				tsc_generation, global_tsc_generation);
+		halt("would go back to the past\r\n", 0);
+	}
+}
+
 int switch_thread(unsigned int new_state, uint64_t timeout, int locked) {
 	if (!locked) {
 		LOCK(thread_state, current_thread);
@@ -555,7 +593,8 @@ int switch_thread(unsigned int new_state, uint64_t timeout, int locked) {
 	size_t target = old_thread;
 	int timed_out = 0;
 	if (i == MAX_THREADS) { i = 0; }
-	if (timeout && timeout <= fixed_point_time) {
+	uint64_t current_time = fixed_point_time();
+	if (timeout && timeout <= current_time) {
 		threads[current_thread].state = THREAD_RUNNING;
 		UNLOCK(thread_state, current_thread);
 		return 1; // don't switch if it's already past the time
@@ -566,14 +605,14 @@ int switch_thread(unsigned int new_state, uint64_t timeout, int locked) {
 			if (threads[i].state == THREAD_RUNNABLE) {
 				target = i;
 				break;
-			} else if (threads[i].timeout && threads[i].timeout <= fixed_point_time) {
+			} else if (threads[i].timeout && threads[i].timeout <= current_time) {
 				target = i;
 				timed_out = 1;
 				break;
 			} else if (threads[i].state == THREAD_IDLE) {
 				idle_thread = i;
 			}
-		} else if (threads[i].timeout && threads[i].timeout <= fixed_point_time) {
+		} else if (threads[i].timeout && threads[i].timeout <= current_time) {
 			wake_cpu_for_thread(i);
 		}
 		++i;
@@ -650,17 +689,15 @@ void handle_irq(unsigned int vector)
 	uint64_t seed[3];
 	seed[0] = vector;
 	seed[1] = __rdtsc();
-	seed[2] = fixed_point_time;
+	seed[2] = fixed_point_time();
 	rand_update(&seed, sizeof(seed));
 
 	switch (vector) {
 		case TIMER_VECTOR: {
 			++TIMER_COUNT;
-			fixed_point_time += FIXED_POINT_TIME_NANOSECOND(0, CLOCK_MS * 1000000);
 
 			// TODO: If we want to schedule in 100ms slices, we can wait for 10 of these interrupts
 			// or have a countdown timer
-//			fixed_point_time += FIXED_POINT_TIME_NANOSECOND(0, 54925438); // PIT timer is 54.92... ms
 			if (cpus_initing) {
 				break;
 			}
@@ -879,7 +916,7 @@ int kern_umtx_op(struct _umtx_op_args *a) {
 					struct _umtx_time *utime = (struct _umtx_time *)a->uaddr2;
 					timeout = FIXED_POINT_TIME_NANOSECOND(utime->_timeout.tv_sec, utime->_timeout.tv_nsec);
 					if (!(utime->_flags & UMTX_ABSTIME)) {
-						timeout += fixed_point_time;
+						timeout += fixed_point_time();
 					}
 				} else if ((ssize_t) a->uaddr1 == sizeof(struct timespec)) {
 					halt("umtx wait_uint with timespec timeout\r\n", 0);
@@ -952,7 +989,7 @@ int kern_ppoll(struct ppoll_args *a) {
 	//ERROR_PRINTF("ppoll nfds=%d!\r\n", a->nfds);
 	uint64_t timeout = 0;
 	if (a->ts != NULL) {
-		timeout = fixed_point_time + FIXED_POINT_TIME_NANOSECOND(a->ts->tv_sec, a->ts->tv_nsec);
+		timeout = fixed_point_time() + FIXED_POINT_TIME_NANOSECOND(a->ts->tv_sec, a->ts->tv_nsec);
 	}
 	int printed = 0;
 	int changedfds = 0;
@@ -1164,7 +1201,7 @@ int kern_kevent(struct kevent_args *a) {
 	}
 	uint64_t timeout = 0;
 	if (a->timeout != NULL) {
-		timeout = fixed_point_time + FIXED_POINT_TIME_NANOSECOND(a->timeout->tv_sec, a->timeout->tv_nsec);
+		timeout = fixed_point_time() + FIXED_POINT_TIME_NANOSECOND(a->timeout->tv_sec, a->timeout->tv_nsec);
 		//ERROR_PRINTF("thread %d kqueue %d, %d changes, waiting for %d events, timeout %d.%06d\r\n", current_thread, kq, a->nchanges, a->nevents, a->timeout->tv_sec, a->timeout->tv_nsec);
 	} else {
 		//ERROR_PRINTF("thread %d kqueue %d, %d changes, waiting for %d events, timeout 0\r\n", current_thread, kq, a->nchanges, a->nevents);
@@ -1292,15 +1329,13 @@ int kern_kevent(struct kevent_args *a) {
 
 // separate function, because uint64_t breaks stack setup for thr_new otherwise
 void kern_clock_gettimeofday (struct timeval *tp) {
-	// XXX should be atomic copy
-	uint64_t time = fixed_point_time;
+	uint64_t time = fixed_point_time();
 	tp->tv_sec = FIXED_POINT_SECONDS(time);
 	tp->tv_usec = FIXED_POINT_MICROSECONDS(time);
 }
 // separate function, because uint64_t breaks stack setup for thr_new otherwise
 void kern_clock_gettime (struct timespec *tp) {
-	// XXX should be atomic copy
-	uint64_t time = fixed_point_time;
+	uint64_t time = fixed_point_time();
 	tp->tv_sec = FIXED_POINT_SECONDS(time);
 	tp->tv_nsec = FIXED_POINT_NANOSECONDS(time);
 }
@@ -1980,6 +2015,12 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 		}
 		case SYS_clock_gettime: {
 			struct clock_gettime_args *a = argp;
+			if (a->clock_id != CLOCK_REALTIME && a->clock_id != CLOCK_UPTIME &&
+			    a->clock_id != CLOCK_MONOTONIC && a->clock_id != CLOCK_SECOND
+		           ) {
+				ERROR_PRINTF("clock gettime clock_id %d\r\n", a->clock_id);
+				halt("need to handle other clock mode?", 0);
+			}
 			kern_clock_gettime(a->tp);
 			SYSCALL_SUCCESS(0);
 		}
@@ -2990,6 +3031,25 @@ void start_ap() {
 	halt("code should not get here", 0);
 }
 
+void check_cpuid()
+{
+	int cont = 1;
+	unsigned int a, b, c, d;
+	__get_cpuid(1, &a, &b, &c, &d);
+	if (! (d & bit_SSE)) {
+		ERROR_PRINTF("CPU support for SSE is required\r\n");
+		cont = 0;
+	}
+	if (__get_cpuid(0x80000007, &a, &b, &c, &d) == 0) {
+		ERROR_PRINTF("CPU should support cpuid leaf 0x80000007\r\n");
+	} else if (!(d & 0x100)) {
+		ERROR_PRINTF("CPU TSC should be invariant %X\r\n", d);
+	}
+
+	if (!cont) {
+		halt("cpu requirements unmet, halting\r\n", 1);
+	}
+}
 
 // This is our kernel's main function
 void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
@@ -3001,6 +3061,7 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
  
 	// Display some messages
 	ERROR_PRINTF("Hello, World!\r\n");
+	check_cpuid();
 	enable_sse();
 	interrupt_setup();
 	clock_setup();
