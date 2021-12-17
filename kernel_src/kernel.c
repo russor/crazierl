@@ -203,9 +203,11 @@ volatile unsigned int TIMER_COUNT = 0;
 
 DECLARE_LOCK(tsc_time);
 volatile uint64_t global_tsc_time;
+volatile uint64_t global_time_offset;
 volatile uint64_t global_tsc;
 volatile int global_tsc_generation;
 __thread uint64_t tsc_time;
+__thread uint64_t time_offset;
 __thread uint64_t tsc;
 __thread uint64_t last_time;
 __thread int tsc_generation;
@@ -521,8 +523,7 @@ void get_time()
 			timeA[3] = 0;
 		}
 	}
-	global_tsc = __rdtsc();
-	global_tsc_time = FIXED_POINT_TIME_NANOSECOND(unix_time(timeA), 0);
+	global_time_offset = FIXED_POINT_TIME_NANOSECOND(unix_time(timeA), 0);
 	global_tsc_generation = 1;
 }
 
@@ -553,6 +554,7 @@ uint64_t fixed_point_time() {
 	if (global_tsc_generation != tsc_generation) {
 		LOCK(tsc_time, current_thread);
 		tsc_time = global_tsc_time;
+		time_offset = global_time_offset;
 		tsc = global_tsc;
 		tsc_generation = global_tsc_generation;
 		UNLOCK(tsc_time, current_thread);
@@ -560,12 +562,15 @@ uint64_t fixed_point_time() {
 	uint64_t tsc_count = __rdtsc();
 	uint64_t tsc_increment = (tsc_count - tsc) * SCALED_S_PER_TSC_TICK;
 	uint64_t fpt = (tsc_increment >> TSC_TICK_SCALE) + tsc_time;
-	if (tsc_increment & (1LL << 63) && (global_tsc_generation == tsc_generation)) {
+	if (tsc_increment & (1LL << 63)) {
 		LOCK(tsc_time, current_thread);
 		if (global_tsc_generation == tsc_generation) {
 			tsc_time = global_tsc_time = fpt;
 			tsc = global_tsc = tsc_count;
 			tsc_generation = ++global_tsc_generation;
+		} else {
+			UNLOCK(tsc_time, current_thread);
+			return fixed_point_time();
 		}
 		UNLOCK(tsc_time, current_thread);
 	}
@@ -1334,10 +1339,15 @@ void kern_clock_gettimeofday (struct timeval *tp) {
 	tp->tv_usec = FIXED_POINT_MICROSECONDS(time);
 }
 // separate function, because uint64_t breaks stack setup for thr_new otherwise
-void kern_clock_gettime (struct timespec *tp) {
+void kern_clock_gettime (clockid_t clock_id, struct timespec *tp) {
 	uint64_t time = fixed_point_time();
+	if (clock_id == CLOCK_REALTIME || clock_id == CLOCK_SECOND) {
+		time += time_offset;
+	}
 	tp->tv_sec = FIXED_POINT_SECONDS(time);
-	tp->tv_nsec = FIXED_POINT_NANOSECONDS(time);
+	if (clock_id != CLOCK_SECOND) {
+		tp->tv_nsec = FIXED_POINT_NANOSECONDS(time);
+	}
 }
 
 #define CARRY 1
@@ -2015,13 +2025,17 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 		}
 		case SYS_clock_gettime: {
 			struct clock_gettime_args *a = argp;
-			if (a->clock_id != CLOCK_REALTIME && a->clock_id != CLOCK_UPTIME &&
-			    a->clock_id != CLOCK_MONOTONIC && a->clock_id != CLOCK_SECOND
-		           ) {
-				ERROR_PRINTF("clock gettime clock_id %d\r\n", a->clock_id);
-				halt("need to handle other clock mode?", 0);
+			switch(a->clock_id) {
+				case CLOCK_MONOTONIC: /*fall through*/
+				case CLOCK_UPTIME:
+				case CLOCK_REALTIME:
+				case CLOCK_SECOND:
+					kern_clock_gettime(a->clock_id, a->tp);
+					break;
+				default:
+					ERROR_PRINTF("clock gettime clock_id %d\r\n", a->clock_id);
+					halt("need to handle other clock mode?", 0);
 			}
-			kern_clock_gettime(a->tp);
 			SYSCALL_SUCCESS(0);
 		}
 		case SYS_issetugid: {
@@ -3054,6 +3068,8 @@ void check_cpuid()
 // This is our kernel's main function
 void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 {
+	// uptime 0
+	global_tsc = __rdtsc();
 	// We're here! Let's initiate the terminal and display a message to show we got here.
 	// Initiate terminal
 	term_init();
