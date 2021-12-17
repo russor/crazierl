@@ -1335,6 +1335,7 @@ int kern_kevent(struct kevent_args *a) {
 // separate function, because uint64_t breaks stack setup for thr_new otherwise
 void kern_clock_gettimeofday (struct timeval *tp) {
 	uint64_t time = fixed_point_time();
+	time += time_offset;
 	tp->tv_sec = FIXED_POINT_SECONDS(time);
 	tp->tv_usec = FIXED_POINT_MICROSECONDS(time);
 }
