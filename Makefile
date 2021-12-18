@@ -14,6 +14,9 @@ ERLANG_OVERRIDE_OBJS = $(ERLANG_OVERRIDES:overrides/%.erl=$(OBJDIR)/%.beam)
 INITRD_ERLANG_OBJS = $(filter-out $(OBJDIR)/hook_module.beam,$(ERLANG_OBJS)) $(ERLANG_OVERRIDE_OBJS)
 KERNEL_SRCS = kernel.c files.c kern_mmap.c acpi.c strtol.c rand.c apic.c
 KERNEL_OBJS = $(KERNEL_SRCS:%.c=$(OBJDIR)/%.o)
+NIF_SRCS = $(wildcard *_nif.c)
+NIF_OBJS = $(NIF_SRCS:%.c=$(OBJDIR)/%.so)
+
 
 REAL_FBSD_KERNEL_SRCS = lib/libc/quad/qdivrem.c lib/libc/quad/udivdi3.c \
                    lib/libc/quad/umoddi3.c lib/libc/stdlib/llabs.c \
@@ -114,7 +117,7 @@ $(OBJDIR)/mykernel.elf: $(ALL_KERNEL_OBJS) linker.ld
 obj/start.o: start.s | $(DEPDIR)
 	clang -m32 -g -gdwarf-2 -c $^ -o $@
 
-INITRD_FILES := .erlang.cookie cfg/inetrc obj/etcpip.app /usr/share/misc/termcap.db obj/crazierl_nif.so obj/checksum.so $(TCPIP_OBJS) $(INITRD_ERLANG_OBJS)
+INITRD_FILES := .erlang.cookie cfg/inetrc obj/etcpip.app /usr/share/misc/termcap.db $(NIF_OBJS) obj/checksum.so $(TCPIP_OBJS) $(INITRD_ERLANG_OBJS)
 
 .erlang.cookie: gen_cookie.escript $(OTPDIR)/bin/escript
 	$(OTPDIR)/bin/escript gen_cookie.escript > .erlang.cookie.tmp
@@ -127,11 +130,6 @@ obj/initrd: hardcode_files.pl extract_start.escript $(OTPDIR)/bin/escript $(INIT
 		$(INITRD_FILES) > obj/initrd.tmp
 	mv obj/initrd.tmp obj/initrd
 
-obj/crazierl_nif.so: crazierl_nif.c $(OTPDIR)/bin/erl
-	$(NIF_COMPILER) $< -o $@
-
-obj/checksum.so: ../erlang-tcpip/c_src/checksum.c
-	$(NIF_COMPILER) $< -o $@
 
 obj/etcpip.app: etcpip.app
 	cp $< $@
@@ -157,7 +155,14 @@ $(BEARSSL_OBJS): $(OBJDIR)/%.o: $(DEPDIR)/%.c.d | $(DEPDIR)
 	$(KERNEL_COMPILER) -I /usr/src/contrib/bearssl/src/ -I /usr/src/contrib/bearssl/inc/ $(DEPFLAGS) -MF $(DEPDIR)/$*.c.d.T $(subst __,/,/usr/src/contrib/bearssl/src/$*.c) -o $@
 	mv -f $(DEPDIR)/$*.c.d.T $(DEPDIR)/$*.c.d && touch $@
 
+$(NIF_OBJS): $(OBJDIR)/%.so: %.c $(OTPDIR)/bin/erl $(DEPDIR)/%.c.d | $(DEPDIR)
+	$(NIF_COMPILER) $(DEPFLAGS) -MF $(DEPDIR)/$*.c.d.T $< -o $@
+	mv -f $(DEPDIR)/$*.c.d.T $(DEPDIR)/$*.c.d && touch $@
+
+obj/checksum.so: ../erlang-tcpip/c_src/checksum.c
+	$(NIF_COMPILER) $< -o $@
+
 $(DEPDIR): ; @mkdir -p $@
-DEPFILES := $(ERLANG_OBJS:$(OBJDIR)/%.beam=$(DEPDIR)/%.d) $(ERLANG_OVERRIDE_OBJS:$(OBJDIR)/%.beam=$(DEPDIR)/%.d) $(TCPIP_OBJS:$(OBJDIR)/%.beam=$(DEPDIR)/%.d) $(KERNEL_SRCS:%.c=$(DEPDIR)/%.c.d) $(FBSD_KERNEL_SRCS:%.c=$(DEPDIR)/%.c.d) $(BEARSSL_SRCS:%.c=$(DEPDIR)/%.c.d) $(NIF_SRCS:%.c=$(DEPDIR)/nif.%.d)
+DEPFILES := $(ERLANG_OBJS:$(OBJDIR)/%.beam=$(DEPDIR)/%.d) $(ERLANG_OVERRIDE_OBJS:$(OBJDIR)/%.beam=$(DEPDIR)/%.d) $(TCPIP_OBJS:$(OBJDIR)/%.beam=$(DEPDIR)/%.d) $(KERNEL_SRCS:%.c=$(DEPDIR)/%.c.d) $(FBSD_KERNEL_SRCS:%.c=$(DEPDIR)/%.c.d) $(BEARSSL_SRCS:%.c=$(DEPDIR)/%.c.d) $(NIF_SRCS:%.c=$(DEPDIR)/%.c.d)
 $(DEPFILES):
 include $(wildcard $(DEPFILES))
