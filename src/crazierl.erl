@@ -1,5 +1,5 @@
 -module(crazierl).
--export([start/0, inb/1, inl/1, outb/2, outl/2, map/2, map_addr/1, bcopy_to/3, bcopy_from/3]).
+-export([start/0, inb/1, inl/1, outb/2, outl/2, map/2, map_addr/1, bcopy_to/3, bcopy_from/3, time_offset/2, ntp_adjtime_freq/1]).
 -export([open_interrupt/1]).
 
 -on_load(init/0).
@@ -16,6 +16,9 @@ map(_Start, _Length) -> exit(nif_library_not_loaded).
 map_addr(_MapResource) -> exit(nif_library_not_loaded).
 bcopy_to(_MapResource, _Offset, _Binary) -> exit(nif_library_not_loaded).
 bcopy_from(_MapResource, _Offset, _Length) -> exit(nif_library_not_loaded).
+
+time_offset(_Seconds, _MicroSeconds) -> exit(nif_library_not_loaded).
+ntp_adjtime_freq(_ScaledFreq) -> exit(nif_library_not_loaded).
 
 % setup console
 start() ->

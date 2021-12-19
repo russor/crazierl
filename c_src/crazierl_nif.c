@@ -1,4 +1,8 @@
 #include <strings.h>
+#include <sys/time.h>
+#include <sys/timex.h>
+#include <errno.h>
+
 #include "erl_nif.h"
 #include "kern_mmap.h"
 
@@ -119,6 +123,59 @@ static ERL_NIF_TERM bcopy_from_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM 
 	return binary;
 }
 
+static ERL_NIF_TERM time_offset_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
+{
+	struct timeval tv, tv2;
+	if (sizeof(tv.tv_sec) == sizeof(int64_t)) {
+		if (!enif_get_int64(env, argv[0], &tv.tv_sec)) { return enif_make_badarg(env); }
+	} else if (sizeof(tv.tv_sec) == sizeof(long)) {
+		if (!enif_get_long(env, argv[0], &tv.tv_sec)) { return enif_make_badarg(env); }
+	} else if (sizeof(tv.tv_sec) == sizeof(int)) {
+		if (!enif_get_int(env, argv[0], &tv.tv_sec)) { return enif_make_badarg(env); }
+	} else {
+		enif_make_badarg(env);
+	}
+	if (sizeof(tv.tv_usec) == sizeof(int64_t)) {
+		if (!enif_get_int64(env, argv[1], &tv.tv_usec)) { return enif_make_badarg(env); }
+	} else if (sizeof(tv.tv_usec) == sizeof(long)) {
+		if (!enif_get_long(env, argv[1], &tv.tv_usec)) { return enif_make_badarg(env); }
+	} else if (sizeof(tv.tv_usec) == sizeof(int)) {
+		if (!enif_get_int(env, argv[1], &tv.tv_usec)) { return enif_make_badarg(env); }
+	} else {
+		enif_make_badarg(env);
+	}
+	if (gettimeofday(&tv2, NULL) != 0) {
+		return enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_int(env, errno));
+	}
+	tv2.tv_sec += tv.tv_sec;
+	tv2.tv_usec += tv.tv_usec;
+	while (tv2.tv_usec >= 1000000) {
+		++tv2.tv_sec;
+		tv2.tv_usec -= 1000000;
+	}
+	while (tv2.tv_usec < 0) {
+		--tv2.tv_sec;
+		tv2.tv_usec += 1000000;
+	}
+	if (settimeofday(&tv2, NULL) != 0) {
+		return enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_int(env, errno));
+	}
+	return enif_make_atom(env, "ok");
+}
+
+static ERL_NIF_TERM ntp_adjtime_freq_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
+{
+	struct timex tx = {0};
+	int result;
+	if (!enif_get_long(env, argv[0], &tx.freq)) { return enif_make_badarg(env); }
+	tx.modes = MOD_FREQUENCY;
+	result = ntp_adjtime(&tx);
+	if (result != TIME_OK) {
+		return enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_int(env, errno));
+	}
+	return enif_make_atom(env, "ok");
+}
+
 static ErlNifFunc nif_funcs[] = {
     {"inb", 1, inb_nif},
     {"inl", 1, inl_nif},
@@ -127,7 +184,9 @@ static ErlNifFunc nif_funcs[] = {
     {"map", 2, map_nif},
     {"map_addr", 1, map_addr_nif},
     {"bcopy_to", 3, bcopy_to_nif},
-    {"bcopy_from", 3, bcopy_from_nif}
+    {"bcopy_from", 3, bcopy_from_nif},
+    {"time_offset", 2, time_offset_nif},
+    {"ntp_adjtime_freq", 1, ntp_adjtime_freq_nif}
 };
 
 int load (ErlNifEnv* env, void** priv_data, ERL_NIF_TERM load_info)

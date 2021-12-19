@@ -62,6 +62,7 @@ typedef uint32_t u_int32_t;
 #include <vm/vm_param.h>
 #include <sys/syscall.h>
 #include <time.h>
+#include <sys/timex.h>
 #include <stdlib.h>
 #include <sys/stat.h>
 #include <sys/ioctl.h>
@@ -211,6 +212,7 @@ __thread uint64_t time_offset;
 __thread uint64_t tsc;
 __thread uint64_t last_time;
 __thread int tsc_generation;
+__thread uint64_t scaled_time_per_tick;
 
 uintptr_t user_stack;
 
@@ -550,29 +552,46 @@ void wake_cpu_for_thread(size_t thread) {
 	}
 }
 
-uint64_t fixed_point_time() {
-	if (global_tsc_generation != tsc_generation) {
-		LOCK(tsc_time, current_thread);
-		tsc_time = global_tsc_time;
-		time_offset = global_time_offset;
-		tsc = global_tsc;
-		tsc_generation = global_tsc_generation;
-		UNLOCK(tsc_time, current_thread);
-	}
-	uint64_t tsc_count = __rdtsc();
-	uint64_t tsc_increment = (tsc_count - tsc) * SCALED_S_PER_TSC_TICK;
-	uint64_t fpt = (tsc_increment >> TSC_TICK_SCALE) + tsc_time;
-	if (tsc_increment & (1LL << 63)) {
-		LOCK(tsc_time, current_thread);
-		if (global_tsc_generation == tsc_generation) {
-			tsc_time = global_tsc_time = fpt;
-			tsc = global_tsc = tsc_count;
-			tsc_generation = ++global_tsc_generation;
-		} else {
+// takes scaledppm to adjust time frequency; avoids duplicating time update function
+uint64_t fixed_point_time(long scaledppm) {
+	uint64_t fpt, tsc_count, tsc_increment;
+	while (1) {
+		if (global_tsc_generation != tsc_generation) {
+			LOCK(tsc_time, current_thread);
+			tsc_time = global_tsc_time;
+			time_offset = global_time_offset;
+			tsc = global_tsc;
+			tsc_generation = global_tsc_generation;
+			scaled_time_per_tick = SCALED_S_PER_TSC_TICK;
 			UNLOCK(tsc_time, current_thread);
-			return fixed_point_time();
 		}
-		UNLOCK(tsc_time, current_thread);
+		tsc_count = __rdtsc();
+		tsc_increment = (tsc_count - tsc) * scaled_time_per_tick;
+		fpt = (tsc_increment >> TSC_TICK_SCALE) + tsc_time;
+		if (tsc_increment & (1LL << 63) || unlikely(scaledppm)) {
+			LOCK(tsc_time, current_thread);
+			if (global_tsc_generation == tsc_generation) {
+				if (scaledppm) {
+					int64_t scale_adj = scaledppm;
+					scale_adj *= scaled_time_per_tick;
+					scale_adj /= 1000000;
+					scale_adj >>= 16;
+					scaled_time_per_tick += scale_adj;
+					ERROR_PRINTF("time per tick %llu -> %llu\r\n", SCALED_S_PER_TSC_TICK, scaled_time_per_tick);
+					SCALED_S_PER_TSC_TICK = scaled_time_per_tick;
+				}
+
+				tsc_time = global_tsc_time = fpt;
+				tsc = global_tsc = tsc_count;
+				tsc_generation = ++global_tsc_generation;
+				UNLOCK(tsc_time, current_thread);
+				break;
+			} else {
+				UNLOCK(tsc_time, current_thread);
+			}
+		} else {
+			break;
+		}
 	}
 	if (fpt > last_time) {
 		last_time = fpt;
@@ -598,7 +617,7 @@ int switch_thread(unsigned int new_state, uint64_t timeout, int locked) {
 	size_t target = old_thread;
 	int timed_out = 0;
 	if (i == MAX_THREADS) { i = 0; }
-	uint64_t current_time = fixed_point_time();
+	uint64_t current_time = fixed_point_time(0);
 	if (timeout && timeout <= current_time) {
 		threads[current_thread].state = THREAD_RUNNING;
 		UNLOCK(thread_state, current_thread);
@@ -694,7 +713,7 @@ void handle_irq(unsigned int vector)
 	uint64_t seed[3];
 	seed[0] = vector;
 	seed[1] = __rdtsc();
-	seed[2] = fixed_point_time();
+	seed[2] = fixed_point_time(0);
 	rand_update(&seed, sizeof(seed));
 
 	switch (vector) {
@@ -921,7 +940,7 @@ int kern_umtx_op(struct _umtx_op_args *a) {
 					struct _umtx_time *utime = (struct _umtx_time *)a->uaddr2;
 					timeout = FIXED_POINT_TIME_NANOSECOND(utime->_timeout.tv_sec, utime->_timeout.tv_nsec);
 					if (!(utime->_flags & UMTX_ABSTIME)) {
-						timeout += fixed_point_time();
+						timeout += fixed_point_time(0);
 					}
 				} else if ((ssize_t) a->uaddr1 == sizeof(struct timespec)) {
 					halt("umtx wait_uint with timespec timeout\r\n", 0);
@@ -994,7 +1013,7 @@ int kern_ppoll(struct ppoll_args *a) {
 	//ERROR_PRINTF("ppoll nfds=%d!\r\n", a->nfds);
 	uint64_t timeout = 0;
 	if (a->ts != NULL) {
-		timeout = fixed_point_time() + FIXED_POINT_TIME_NANOSECOND(a->ts->tv_sec, a->ts->tv_nsec);
+		timeout = fixed_point_time(0) + FIXED_POINT_TIME_NANOSECOND(a->ts->tv_sec, a->ts->tv_nsec);
 	}
 	int printed = 0;
 	int changedfds = 0;
@@ -1206,7 +1225,7 @@ int kern_kevent(struct kevent_args *a) {
 	}
 	uint64_t timeout = 0;
 	if (a->timeout != NULL) {
-		timeout = fixed_point_time() + FIXED_POINT_TIME_NANOSECOND(a->timeout->tv_sec, a->timeout->tv_nsec);
+		timeout = fixed_point_time(0) + FIXED_POINT_TIME_NANOSECOND(a->timeout->tv_sec, a->timeout->tv_nsec);
 		//ERROR_PRINTF("thread %d kqueue %d, %d changes, waiting for %d events, timeout %d.%06d\r\n", current_thread, kq, a->nchanges, a->nevents, a->timeout->tv_sec, a->timeout->tv_nsec);
 	} else {
 		//ERROR_PRINTF("thread %d kqueue %d, %d changes, waiting for %d events, timeout 0\r\n", current_thread, kq, a->nchanges, a->nevents);
@@ -1334,14 +1353,29 @@ int kern_kevent(struct kevent_args *a) {
 
 // separate function, because uint64_t breaks stack setup for thr_new otherwise
 void kern_clock_gettimeofday (struct timeval *tp) {
-	uint64_t time = fixed_point_time();
+	uint64_t time = fixed_point_time(0);
 	time += time_offset;
 	tp->tv_sec = FIXED_POINT_SECONDS(time);
 	tp->tv_usec = FIXED_POINT_MICROSECONDS(time);
 }
+
+// separate function, because uint64_t breaks stack setup for thr_new otherwise
+void kern_clock_settimeofday (struct timeval *tp) {
+	while (1) {
+		uint64_t time = fixed_point_time(0);
+		LOCK(tsc_time, current_thread);
+		if (global_tsc_generation == tsc_generation) {
+			global_time_offset = FIXED_POINT_TIME_NANOSECOND(tp->tv_sec, 1000 * tp->tv_usec) - time;
+			++global_tsc_generation;
+			UNLOCK(tsc_time, current_thread);
+			break;
+		}
+		UNLOCK(tsc_time, current_thread);
+	}
+}
 // separate function, because uint64_t breaks stack setup for thr_new otherwise
 void kern_clock_gettime (clockid_t clock_id, struct timespec *tp) {
-	uint64_t time = fixed_point_time();
+	uint64_t time = fixed_point_time(0);
 	if (clock_id == CLOCK_REALTIME || clock_id == CLOCK_SECOND) {
 		time += time_offset;
 	}
@@ -1895,6 +1929,18 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 		case SYS_getsockopt: {
 			SYSCALL_FAILURE(EBADF);
 		}
+		case SYS_settimeofday: {
+			struct gettimeofday_args *a = argp;
+			if (a->tzp != NULL) {
+				if (a->tzp->tz_minuteswest != 0 || a->tzp->tz_dsttime != 0) {
+					halt("timezones not supported\r\n", 0);
+				}
+			}
+			if (a->tp != NULL) {
+				kern_clock_settimeofday(a->tp);
+			}
+			SYSCALL_SUCCESS(0);
+		}
 		case SYS_sysarch: {
 			struct sysarch_args *a = argp;
 			switch (a->op) {
@@ -1911,6 +1957,19 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				}
 			}
 			break;
+		}
+		case SYS_ntp_adjtime: {
+			struct ntp_adjtime_args *a = argp;
+			unsigned int modes = a->tp->modes;
+			if (modes & MOD_FREQUENCY) {
+				modes &= ~MOD_FREQUENCY;
+				fixed_point_time(a->tp->freq);
+			}
+			if (modes) {
+				ERROR_PRINTF("unhandled modes in ntp_adjtime %X\r\n", modes);
+				halt("halting\r\n", 0);
+			}
+			SYSCALL_SUCCESS(TIME_OK);
 		}
 		case SYS_getrlimit: {
 			struct __getrlimit_args *a = argp;

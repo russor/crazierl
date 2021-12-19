@@ -19,7 +19,8 @@ NIF_OBJS = $(NIF_SRCS:%.c=$(OBJDIR)/%.so)
 
 
 REAL_FBSD_KERNEL_SRCS = lib/libc/quad/qdivrem.c lib/libc/quad/udivdi3.c \
-                   lib/libc/quad/umoddi3.c lib/libc/stdlib/llabs.c \
+                   lib/libc/quad/umoddi3.c lib/libc/quad/divdi3.c \
+                   lib/libc/stdlib/llabs.c \
                    lib/libc/string/bcmp.c lib/libc/string/bzero.c \
                    lib/libc/string/ffsl.c lib/libc/string/memcpy.c \
                    lib/libc/string/memmove.c lib/libc/string/memset.c \
