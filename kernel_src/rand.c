@@ -10,20 +10,20 @@ br_hmac_drbg_context drbgs[MAX_CPUS];
 __thread int seedings = 256;
 
 void rand_init() {
-    LOCK(rand, current_thread);
+    LOCK(&rand);
     br_hmac_drbg_init(&drbg, &br_sha256_vtable, NULL, 0);
     for (int i = 0; i < numcpu; ++i) {
         br_hmac_drbg_init(&drbgs[i], &br_sha256_vtable, NULL, 0);
     }
-    UNLOCK(rand, current_thread);
+    UNLOCK(&rand);
 }
 
 void rand_bytes(void * out, size_t len) {
     if (seedings) {
         char buf[br_sha256_SIZE];
-        LOCK(rand, current_thread);
+        LOCK(&rand);
         br_hmac_drbg_generate(&drbg, buf, sizeof(buf));
-        UNLOCK(rand, current_thread);
+        UNLOCK(&rand);
         br_hmac_drbg_update(&drbgs[current_cpu], buf, sizeof(buf));
     }
     br_hmac_drbg_generate(&drbg, out, len);
@@ -35,10 +35,10 @@ void rand_update(const void * seed, size_t len) {
         --seedings;
         char buf[br_sha256_SIZE];
         br_hmac_drbg_generate(&drbgs[current_cpu], buf, sizeof(buf));
-        LOCK(rand, current_thread);
+        LOCK(&rand);
         br_hmac_drbg_update(&drbg, buf, sizeof(buf));
         br_hmac_drbg_generate(&drbg, buf, sizeof(buf));
-        UNLOCK(rand, current_thread);
+        UNLOCK(&rand);
         br_hmac_drbg_update(&drbgs[current_cpu], buf, sizeof(buf));
     }
 }

@@ -48,6 +48,9 @@ SECTIONS
 	{
 		. = ALIGN(4K);
 		PROVIDE (__tdata_end = .);
+		PROVIDE (__locks_start = .);
+		*(locks)
+		PROVIDE (__locks_end = .);
 		*(COMMON)
 		*(.bss)
 		PROVIDE (__edata = .);

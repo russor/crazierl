@@ -137,7 +137,7 @@ void kern_munmap (uint16_t mode, uintptr_t addr, size_t size)
 		size = (size & ~(PAGE_SIZE -1)) + PAGE_SIZE;
 	}
 	DEBUG_PRINTF("unmapping %08x bytes at %08x (mode %x)\r\n", size, addr, mode);
-	LOCK(mmap_lock, current_thread);
+	LOCK(&mmap_lock);
 	for (; size; addr += PAGE_SIZE, size -= PAGE_SIZE) {
 		int access_changed = 0;
 		uint32_t * table_entry = pagetable_entry(*(pagetable_direntry(addr)), addr);
@@ -181,7 +181,7 @@ void kern_munmap (uint16_t mode, uintptr_t addr, size_t size)
 			}
 		}
 	}
-	UNLOCK(mmap_lock, current_thread);
+	UNLOCK(&mmap_lock);
 }
 
 void kern_mmap_init (unsigned int length, unsigned int addr)
@@ -282,7 +282,7 @@ int kern_mmap (uintptr_t *ret, void * addr, size_t len, int prot, int flags)
 		mappingflags |= PAGE_FORCE;
 	}
 
-	LOCK(mmap_lock, current_thread);
+	LOCK(&mmap_lock);
 	if (len & (PAGE_SIZE -1)) {
 		len = (len & ~(PAGE_SIZE - 1)) + PAGE_SIZE;
 	}
@@ -332,7 +332,7 @@ int kern_mmap (uintptr_t *ret, void * addr, size_t len, int prot, int flags)
 			*ret = ENOMEM;
 			ERROR_PRINTF("unable to allocate\r\n");
 			ERROR_PRINTF("kern_mmap (%08x (%08x), %08x, %08x, %x, %x)\r\n", *ret, ret, addr, len, prot, flags);
-			UNLOCK(mmap_lock, current_thread);
+			UNLOCK(&mmap_lock);
 			return 0;
 		}
 	} else {
@@ -340,7 +340,7 @@ int kern_mmap (uintptr_t *ret, void * addr, size_t len, int prot, int flags)
 	}
 	add_page_mappings(mappingflags, *ret, len);
 	DEBUG_PRINTF("kern_mmap (%08x (%08x), %08x, %08x, %x, %x)\r\n", *ret, ret, addr, len, prot, flags);
-	UNLOCK(mmap_lock, current_thread);
+	UNLOCK(&mmap_lock);
 	return 1;
 }
 

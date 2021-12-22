@@ -28,7 +28,7 @@ struct pipe_buffer {
 struct BogusFD {
 	int type;
 	unsigned long flags;
-	DECLARE_LOCK(lock);
+	struct lock lock;
 	union {
 		struct hardcoded_file * file;
 		struct pipe_buffer * pb;
@@ -46,7 +46,7 @@ struct BogusFD {
 };
 
 struct bnote { // like a FreeBSD knote, but Bogus
-	DECLARE_LOCK(lock);
+	struct lock lock;
 	size_t link; // list of knotes for a kqueue
 	size_t selnext; // list of knotes for a watched object
 	short filter;
