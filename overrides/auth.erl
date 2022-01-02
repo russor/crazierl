@@ -11,7 +11,5 @@ hook_read_cookie() ->
 				rand:uniform(1 + $Z - $A) - 1 + $A end,
 				lists:seq(1,20))])),
 			{ok, Cookie};
-		Other ->
-			io:format("got ~p~n", [Other]), 
-			Other
+		Other -> Other
 	end.
