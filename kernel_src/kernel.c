@@ -551,7 +551,7 @@ void get_time()
 	global_tsc_generation = 1;
 }
 
-DECLARE_LOCK(thread_state);
+DECLARE_LOCK(thread_st);
 
 
 void wake_cpu_for_thread(size_t thread) {
@@ -625,7 +625,7 @@ uint64_t fixed_point_time(long scaledppm) {
 
 int switch_thread(unsigned int new_state, uint64_t timeout, int locked) {
 	if (!locked) {
-		LOCK(&thread_state);
+		LOCK(&thread_st);
 	}
 	//DEBUG_PRINTF("current thread %d (%p), current cpu %d\r\n", current_thread, &current_thread, current_cpu);
 	size_t old_thread = current_thread;
@@ -636,7 +636,7 @@ int switch_thread(unsigned int new_state, uint64_t timeout, int locked) {
 	uint64_t current_time = fixed_point_time(0);
 	if (timeout && timeout <= current_time) {
 		threads[current_thread].state = THREAD_RUNNING;
-		UNLOCK(&thread_state);
+		UNLOCK(&thread_st);
 		return 1; // don't switch if it's already past the time
 	}
 	size_t idle_thread = old_thread;
@@ -661,7 +661,7 @@ int switch_thread(unsigned int new_state, uint64_t timeout, int locked) {
 	if (target == old_thread) {
 		if (new_state == THREAD_RUNNABLE) {
 			cpus[current_cpu].flags |= CPU_IDLE;
-			UNLOCK(&thread_state);
+			UNLOCK(&thread_st);
 			return 0;
 		} else {
 			target = idle_thread;
@@ -673,7 +673,7 @@ int switch_thread(unsigned int new_state, uint64_t timeout, int locked) {
 		threads[target].kern_stack_cur, threads[target].kern_stack_top);
 	DEBUG_PRINTF("old stack %p of %p\r\n",
 		threads[old_thread].kern_stack_cur, threads[old_thread].kern_stack_top);
-	RELOCK(&thread_state, target);
+	RELOCK(&thread_st, target);
 	current_thread = target;
 
 	if (threads[old_thread].state != THREAD_IDLE) {
@@ -705,7 +705,7 @@ int switch_thread(unsigned int new_state, uint64_t timeout, int locked) {
 	threads[current_thread].timeout = 0;
 	threads[current_thread].wait_target = 0;
 	cpus[current_cpu].current_thread = current_thread;
-	UNLOCK(&thread_state);
+	UNLOCK(&thread_st);
 	asm volatile ( "fxrstor (%0)" :: "a"(&savearea[current_thread]) :);
 	return we_timed_out;
 }
@@ -827,7 +827,7 @@ ssize_t write(int fd, const void * buf, size_t nbyte) {
 	}
 	check_bnotes_fd(&FDS[fd]);
 	UNLOCK(&FDS[fd].lock);
-	LOCK(&thread_state);
+	LOCK(&thread_st);
 	if (wait_target != NULL && wait_target->flags & BOGFD_BLOCKED_READ) {
 		//TODO avoid thundering herd, maybe
 		for (int thread = 0; thread < MAX_THREADS; ++thread) {
@@ -848,7 +848,7 @@ ssize_t write(int fd, const void * buf, size_t nbyte) {
 			}
 		}
 	}
-	UNLOCK(&thread_state);
+	UNLOCK(&thread_st);
 	return written;
 }
 
@@ -911,7 +911,7 @@ size_t kern_read(int fd, void * buf, size_t nbyte, int force_async) {
 			return -EAGAIN;
 		} else {
 			FDS[fd].flags |= BOGFD_BLOCKED_READ;
-			LOCK(&thread_state);
+			LOCK(&thread_st);
 			threads[current_thread].wait_target = (uintptr_t) &FDS[fd];
 			UNLOCK(&FDS[fd].lock);
 			switch_thread(THREAD_IO_READ, 0, 1);
@@ -921,7 +921,7 @@ size_t kern_read(int fd, void * buf, size_t nbyte, int force_async) {
 
 void umtx_wake(void * obj, u_long count) {
 	uintptr_t phys = kern_mmap_physical((uintptr_t) obj);
-	LOCK(&thread_state);
+	LOCK(&thread_st);
 	for (int thread = 0; count > 0 && thread < MAX_THREADS; ++thread) {
 		if (threads[thread].state == THREAD_UMTX_WAIT && threads[thread].wait_target == phys) {
 			threads[thread].state = THREAD_RUNNABLE;
@@ -929,7 +929,7 @@ void umtx_wake(void * obj, u_long count) {
 			--count;
 		}
 	}
-	UNLOCK(&thread_state);
+	UNLOCK(&thread_st);
 }
 
 // separate function, because uint64_t breaks stack setup for thr_new otherwise
@@ -948,7 +948,7 @@ int kern_umtx_op(struct _umtx_op_args *a) {
 		case UMTX_OP_WAIT:
 		case UMTX_OP_WAIT_UINT:
 		case UMTX_OP_WAIT_UINT_PRIVATE: {
-			LOCK(&thread_state);
+			LOCK(&thread_st);
 			if ((a->op == UMTX_OP_WAIT && *(u_long *)a->obj == a->val) ||
 			    (a->op != UMTX_OP_WAIT && *(u_int *)a->obj == a->val)) {
 				uint64_t timeout = 0;
@@ -966,7 +966,7 @@ int kern_umtx_op(struct _umtx_op_args *a) {
 					return -ETIMEDOUT;
 				}
 			} else {
-				UNLOCK(&thread_state);
+				UNLOCK(&thread_st);
 			}
 			return 0;
 		}
@@ -975,17 +975,17 @@ int kern_umtx_op(struct _umtx_op_args *a) {
 			if (a->uaddr1 != NULL || a->uaddr2 != NULL) {
 				halt("umtx mutex_wait with timeout\r\n", 0);
 			}
-			LOCK(&thread_state);
+			LOCK(&thread_st);
 			while (1) {
 				uint32_t old = mutex->m_owner;
 				if ((old & ~UMUTEX_CONTESTED) == UMUTEX_UNOWNED) {
-					UNLOCK(&thread_state);
+					UNLOCK(&thread_st);
 					break;
 				}
 				if (__sync_bool_compare_and_swap(&mutex->m_owner, old, old | UMUTEX_CONTESTED)) {
 					threads[current_thread].wait_target = (uintptr_t) a->obj;
 					switch_thread(THREAD_UMTX_MUTEX_WAIT, 0, 1);
-					LOCK(&thread_state);
+					LOCK(&thread_st);
 				}
 			}
 			return 0;
@@ -996,7 +996,7 @@ int kern_umtx_op(struct _umtx_op_args *a) {
 			if ((mutex->m_owner & ~UMUTEX_CONTESTED) != UMUTEX_UNOWNED) {
 				found = 1;
 			}
-			LOCK(&thread_state);
+			LOCK(&thread_st);
 			for (int thread = 0; thread < MAX_THREADS; ++thread) {
 				if (threads[thread].state == THREAD_UMTX_MUTEX_WAIT &&
 					threads[thread].wait_target == (uintptr_t) a->obj) {
@@ -1015,7 +1015,7 @@ int kern_umtx_op(struct _umtx_op_args *a) {
 					}
 				}
 			}
-			UNLOCK(&thread_state);
+			UNLOCK(&thread_st);
 			return 0;
 		}
 	}
@@ -1041,7 +1041,7 @@ int kern_ppoll(struct ppoll_args *a) {
 				ERROR_PRINTF("  FD %d: events %08x -> %08x\r\n", a->fds[i].fd, a->fds[i].events, a->fds[i].revents);
 			}
 		}*/
-		LOCK(&thread_state);
+		LOCK(&thread_st);
 		for (int i = 0; i < a->nfds; ++i) {
 			if (a->fds[i].fd < 0 || a->fds[i].fd >= BOGFD_MAX) { continue; } // no EBADF?
 			struct BogusFD *fd = &FDS[a->fds[i].fd];
@@ -1063,7 +1063,7 @@ int kern_ppoll(struct ppoll_args *a) {
 			}
 		}
 		if (changedfds) {
-			UNLOCK(&thread_state);
+			UNLOCK(&thread_st);
 			return changedfds;
 		}
 		if (switch_thread(THREAD_POLL, timeout, 1)) {
@@ -1176,7 +1176,7 @@ int check_bnote(size_t i, struct BogusFD * fd) {
 }
 void wake_kq(int kq) {
 	if (kq != BOGFD_MAX) {
-		LOCK(&thread_state);
+		LOCK(&thread_st);
 		if (FDS[kq].flags & BOGFD_BLOCKED_READ) {
 			for (int thread = 0; thread < MAX_THREADS; ++thread) {
 				if (threads[thread].state == THREAD_IO_READ && (struct BogusFD *) threads[thread].wait_target == &FDS[kq]) {
@@ -1186,7 +1186,7 @@ void wake_kq(int kq) {
 			}
 			FDS[kq].flags &= ~BOGFD_BLOCKED_READ;
 		}
-		UNLOCK(&thread_state);
+		UNLOCK(&thread_st);
 	}
 }
 
@@ -1350,7 +1350,7 @@ int kern_kevent(struct kevent_args *a) {
 			break;
 		}
 		//ERROR_PRINTF("thread %d kq %d sleeping until %lld (currently %lld, checked %d notes\r\n", current_thread, kq, timeout, fixed_point_time, checked);
-		LOCK(&thread_state);
+		LOCK(&thread_st);
 		FDS[kq].flags |= BOGFD_BLOCKED_READ;
 		UNLOCK(&FDS[kq].lock);
 		threads[current_thread].wait_target = (uintptr_t) &FDS[kq];
@@ -2381,7 +2381,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 		case SYS_thr_new: {
 			struct thr_new_args *a = argp;
 			uintptr_t stack_page;
-			LOCK(&thread_state);
+			LOCK(&thread_st);
 
 			while (threads[next_thread].state != THREAD_EMPTY && next_thread < MAX_THREADS) {
 				++next_thread;
@@ -2402,7 +2402,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			++next_thread;
 			threads[new_thread].state = THREAD_INITING;
 			threads[new_thread].cpus = threads[current_thread].cpus;
-			UNLOCK(&thread_state);
+			UNLOCK(&thread_st);
 			threads[new_thread].kern_stack_top = stack_page + PAGE_SIZE;
 			threads[new_thread].tls_base = (uintptr_t)a->param->tls_base;
 			bzero(&savearea[new_thread], sizeof(savearea[new_thread]));
@@ -2426,7 +2426,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				*(a->state) = 1;
 			}
 			umtx_wake(a->state, MAX_THREADS);
-			LOCK(&thread_state);
+			LOCK(&thread_st);
 
 			// TODO, check if there's any other non-empty thread
 			if (current_thread < next_thread) {
@@ -2485,7 +2485,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 
 int thr_new_new_thread()
 {
-	UNLOCK(&thread_state);
+	UNLOCK(&thread_st);
 	DEBUG_PRINTF("thr_new return on new thread (%d), cpu %d\r\n", current_thread, current_cpu);
 	asm volatile ( "finit" :: ); // clear fpu/sse state
 	return 0;
@@ -2772,7 +2772,7 @@ void start_cpus();
 
 void idle() {
 	asm volatile ( "finit" :: ); // clear fpu/sse state
-	UNLOCK(&thread_state);
+	UNLOCK(&thread_st);
 	start_cpus();
 	while (1) {
 		asm volatile( "sti; hlt; cli" :: );
@@ -3045,7 +3045,7 @@ int start_cpu(size_t cpu, uint8_t page) {
 }
 
 void start_cpus() {
-	LOCK(&thread_state);
+	LOCK(&thread_st);
 	if (numcpu > 1 && LOW_PAGE == 0) {
 		ERROR_PRINTF("Couldn't find a low page to host the application processor trampoline, no SMP for you\r\n");
 		return;
@@ -3069,7 +3069,7 @@ void start_cpus() {
 	if (i == numcpu) {
 		cpus_initing = 0;
 	}
-	UNLOCK(&thread_state);
+	UNLOCK(&thread_st);
 }
 
 void start_ap() {
@@ -3113,7 +3113,7 @@ void start_ap() {
 	for (int i = 0; i < MAX_THREADS; ++i) {
 		if (CPU_ISSET(current_cpu, &threads[i].cpus) && threads[i].state == THREAD_IDLE) {
 			current_thread = i;
-			LOCK(&thread_state);
+			LOCK(&thread_st);
 			switch_ap_thread(threads[i].kern_stack_cur);
 		}
 	}
@@ -3234,8 +3234,10 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 
 void summary()
 {
+	ERROR_PRINTF("%12s %16s %16s %16s %16s\r\n",
+		"lock summary", "count", "cycles", "contention", "cycles");
 	for (struct lock *l = (struct lock*) &__locks_start; l != &__locks_end; ++l) {
-		ERROR_PRINTF("lock %s\r\n", l->name);
+		ERROR_PRINTF("%12s %16llu %16llu %16llu %16llu\r\n", l->name, l->lock_count, l->lock_time, l->contend_count, l->contend_time);
 	}
 
 	uint64_t fpt = fixed_point_time(0);
@@ -3254,12 +3256,24 @@ void RELOCK(struct lock * lock, size_t target)
 }
 void LOCK(struct lock * lock)
 {
-	while (!__sync_bool_compare_and_swap(& lock->locked, 0, current_thread + 1));
+	int first = 1;
+	uint64_t start = __rdtsc();
+	while (!__sync_bool_compare_and_swap(& lock->locked, 0, current_thread + 1)) { first = 0; }
 	__sync_synchronize();
+	if (first) {
+		lock->start = start;
+	} else {
+		lock->start = __rdtsc();
+		lock->contend_time += lock->start - start;
+		++(lock->contend_count);
+	}
+	++(lock->lock_count);
 }
 
 void UNLOCK(struct lock * lock)
 {
+	uint64_t end = __rdtsc();
+	lock->lock_time += end - lock->start;
 	__sync_synchronize();
 	if (current_thread + 1 != lock->locked) {
 		ERROR_PRINTF("lock %s(%p) unlocked by wrong thread %d != %d\r\n", lock->name, &(lock->locked), current_thread, lock->locked - 1);

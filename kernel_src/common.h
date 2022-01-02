@@ -16,8 +16,8 @@ struct lock {
 	uint64_t lock_time;
 	uint64_t lock_count;
 	uint64_t contend_time;
-	uint64_t content_count;
-	uint64_t lock_start;
+	uint64_t contend_count;
+	uint64_t start;
 };
 
 #define DECLARE_LOCK(X) struct lock X __attribute((__section__("locks"))) = { .name = #X}
