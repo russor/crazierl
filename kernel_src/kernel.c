@@ -305,12 +305,16 @@ void term_init()
 	outb(PORT_COM1 + 4, 0x0B);    // IRQs enabled, RTS/DSR set
 }
 
-int is_transmit_empty() {
+int com_buffer_has_room() {
    return inb(PORT_COM1 + 5) & 0x20;
 }
 
+int com_buffer_idle() {
+   return inb(PORT_COM1 + 5) & 0x40;
+}
+
 void write_serial(char a) {
-	while (is_transmit_empty() == 0);
+	while (com_buffer_has_room() == 0);
 	outb(PORT_COM1,a);
 }
 
@@ -2801,6 +2805,7 @@ void setup_cpus()
 	explicit_bzero((void *)kernel_tls, (numcpu * padded_tls_size + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1));
 	ERROR_PRINTF("kernel_tls at %p\r\n", kernel_tls);
 
+	strncpy(threads[0].name, "main", sizeof(threads[0].name));
 	threads[0].state = THREAD_RUNNING;
 	CPU_ZERO(&threads[0].cpus);
 	threads[0].kern_stack_top = (uintptr_t) &stack_top;
@@ -3240,9 +3245,17 @@ void summary()
 		ERROR_PRINTF("%12s %16llu %16llu %16llu %16llu\r\n", l->name, l->lock_count, l->lock_time, l->contend_count, l->contend_time);
 	}
 
+	ERROR_PRINTF("\r\n%20s %6s\r\n", "thread summary", "state");
+	for (size_t i = 0; i < MAX_THREADS; ++i) {
+		if (threads[i].state != THREAD_EMPTY) {
+			ERROR_PRINTF("%20s %6u\r\n", threads[i].name, threads[i].state);
+		}
+	}
 	uint64_t fpt = fixed_point_time(0);
 	uint64_t seconds = FIXED_POINT_SECONDS(fpt);
-	ERROR_PRINTF("crazierl ran for %llu seconds\r\n", seconds);
+	ERROR_PRINTF("\r\ncrazierl ran for %llu seconds\r\n", seconds);
+	while (com_buffer_idle() == 0) {
+	}
 }
 
 void RELOCK(struct lock * lock, size_t target)
