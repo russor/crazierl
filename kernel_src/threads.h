@@ -1,20 +1,29 @@
+// enum magic from https://kubyshkin.name/posts/c-language-enums-tips-and-tricks/
+#define THREAD_STATE_ENUM(VARIANT) \
+    VARIANT(EMPTY) \
+    VARIANT(RUNNABLE) \
+    VARIANT(INITING) \
+    VARIANT(RUNNING) \
+    VARIANT(UMTX_MUTEX_WAIT) \
+    VARIANT(UMTX_WAIT) \
+    VARIANT(IO_READ) \
+    VARIANT(IO_WRITE) \
+    VARIANT(WAIT_FOREVER) \
+    VARIANT(POLL) \
+    VARIANT(IDLE)
 
-#define THREAD_EMPTY 0
-#define THREAD_RUNNABLE 1
-#define THREAD_INITING 2
-#define THREAD_RUNNING 3
-#define THREAD_UMTX_MUTEX_WAIT 4
-#define THREAD_UMTX_WAIT 5
-#define THREAD_IO_READ 6
-#define THREAD_IO_WRITE 7
-#define THREAD_WAIT_FOREVER 8
-#define THREAD_POLL 9
-#define THREAD_IDLE 10
+#define THREAD_STATE_ENUM_VARIANT(NAME) NAME,
 
+typedef enum {
+    THREAD_STATE_ENUM(THREAD_STATE_ENUM_VARIANT)
+} thread_state;
+    
 struct crazierl_thread {
     uint64_t timeout;
+    uint64_t time;
+    uint64_t start;
     cpuset_t cpus;
-    unsigned int state;
+    thread_state state;
     uintptr_t kern_stack_top;
     uintptr_t kern_stack_cur;
     uintptr_t tls_base;
