@@ -8,6 +8,7 @@ DECLARE_LOCK(rand);
 br_hmac_drbg_context drbg;
 br_hmac_drbg_context drbgs[MAX_CPUS];
 __thread int seedings = 256;
+int global_seedings = 256;
 
 void rand_init() {
     LOCK(&rand);
@@ -38,6 +39,12 @@ void rand_update(const void * seed, size_t len) {
         LOCK(&rand);
         br_hmac_drbg_update(&drbg, buf, sizeof(buf));
         br_hmac_drbg_generate(&drbg, buf, sizeof(buf));
+        if (global_seedings) {
+            --global_seedings;
+        }
+        if (global_seedings == 0) {
+            seedings = 0;
+        }
         UNLOCK(&rand);
         br_hmac_drbg_update(&drbgs[current_cpu], buf, sizeof(buf));
     }
