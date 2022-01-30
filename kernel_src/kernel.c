@@ -2180,14 +2180,33 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				ERROR_PRINTF("cpuset size %d, expecting %d\r\n", a->cpusetsize, sizeof(cpuset_t)) ;
 				SYSCALL_FAILURE(ERANGE);
 			}
-			if (a->level == CPU_LEVEL_WHICH && a->which == CPU_WHICH_PID) {
+			if (a->level == CPU_LEVEL_WHICH && a->which == CPU_WHICH_PID && a->id == -1) {
 				CPU_ZERO(a->mask);
 				for (int i = 0; i < numcpu; ++i) {
 					CPU_SET(i, a->mask);
 				}
 				SYSCALL_SUCCESS(0);
+			} else if (a->level == CPU_LEVEL_WHICH && a->which == CPU_WHICH_TID && a->id == -1) {
+				CPU_COPY(&threads[current_thread].cpus, a->mask);
+				SYSCALL_SUCCESS(0);
 			}
 			ERROR_PRINTF("cpuset_getaffinity(%d, %d, %llx, %d, %08x)\r\n", a->level, a->which, a->id, a->cpusetsize, a->mask);
+			break;
+		}
+		case SYS_cpuset_setaffinity: {
+			struct cpuset_getaffinity_args *a = argp;
+			if (a->cpusetsize != sizeof(cpuset_t)) {
+				ERROR_PRINTF("cpuset size %d, expecting %d\r\n", a->cpusetsize, sizeof(cpuset_t)) ;
+				SYSCALL_FAILURE(ERANGE);
+			}
+			if (a->level == CPU_LEVEL_WHICH && a->which == CPU_WHICH_TID && a->id == -1) {
+				CPU_COPY(a->mask, &threads[current_thread].cpus);
+				if (!CPU_ISSET(current_cpu, &threads[current_thread].cpus)) {
+					switch_thread(RUNNABLE, 0, 0);
+				}
+				SYSCALL_SUCCESS(0);
+			}
+			ERROR_PRINTF("cpuset_setaffinity(%d, %d, %llx, %d, %08x)\r\n", a->level, a->which, a->id, a->cpusetsize, a->mask);
 			break;
 		}
 		case SYS_mmap: {
@@ -2429,6 +2448,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			new_frame->sp -= sizeof(a->param->arg); //skip a spot for the return address from the initial function
 			new_frame->flags &= ~CARRY;
 			threads[new_thread].state = RUNNABLE;
+			wake_cpu_for_thread(new_thread);
 			SYSCALL_SUCCESS(0);
 		}
 		case SYS_thr_exit: {
@@ -2925,7 +2945,11 @@ void setup_entrypoint()
 		//"LD_32_DEBUG=1",
 		NULL};
 	// set up arguments
+	char topology[100];
+	rtld_snprintf(topology, sizeof(topology), "L0-%dc0-%d", numcpu, numcpu);
 	char *argv[] = {"/beam",
+			"-sct", topology,
+			"-sbt", "ns",
 			"--", "-root", "",
 			"-progname", "erl", "--", "-home", "/",
 			"-pz", "/obj/",
