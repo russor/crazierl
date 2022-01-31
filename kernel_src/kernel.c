@@ -29,7 +29,7 @@ extern void start_entrypoint();
 extern uintptr_t setup_new_stack(uintptr_t new_stack_top, uintptr_t current_stack_top);
 extern uintptr_t setup_new_idle(uintptr_t new_stack_top);
 extern int switch_thread_impl(uintptr_t* oldstack, uintptr_t newstack);
-extern void switch_ap_thread(uintptr_t newstack);
+extern _Noreturn void switch_ap_thread(uintptr_t newstack);
 extern void __executable_start, __etext, __data_start, __edata, __tdata_start, __tdata_end, __locks_start, __locks_end;
 extern uintptr_t tss_esp0;
 
@@ -482,6 +482,9 @@ void halt(char * message, int mode) {
 	}
 
 	if (mode == 2) {
+		// reboot by forcing triple fault by causing interrupt after
+		// clearing interrupt table
+
 		IDTR.size = 0;
 		asm volatile ( "lidt %0" :: "m" (IDTR) );
 		wake_cpu(current_cpu);
@@ -3109,6 +3112,7 @@ void start_cpus() {
 	UNLOCK(&thread_st);
 }
 
+_Noreturn
 void start_ap() {
 	enable_sse();
 	kern_mmap_enable_paging();
@@ -3127,6 +3131,8 @@ void start_ap() {
 	// need to setup GS segment before we can print, because of locking
 	uint16_t gs_segment = (GDT_GSBASE_OFFSET + 2 * this_cpu) * sizeof(GDT[0]);
 	asm volatile ("mov %0, %%gs" :: "a"(gs_segment));
+	current_cpu = this_cpu;
+	current_thread = cpus[current_cpu].current_thread;
 
 	ERROR_PRINTF("my apic id %x\r\n", my_apic_id);
 
@@ -3145,17 +3151,10 @@ void start_ap() {
 	asm volatile ( "lidt %0" :: "m" (IDTR) );
 	uint16_t active_tss = ((GDT_TSS_OFFSET + this_cpu) * sizeof(GDT[0])) | 0x3;
 	asm volatile ("ltr %0" :: "a"(active_tss));
-	current_cpu = this_cpu;
 
-	for (int i = 0; i < MAX_THREADS; ++i) {
-		if (CPU_ISSET(current_cpu, &threads[i].cpus) && threads[i].state == IDLE) {
-			current_thread = i;
-			threads[current_thread].start = __rdtsc();
-			LOCK(&thread_st);
-			switch_ap_thread(threads[i].kern_stack_cur);
-		}
-	}
-	halt("code should not get here", 0);
+	threads[current_thread].start = __rdtsc();
+	LOCK(&thread_st);
+	switch_ap_thread(threads[current_thread].kern_stack_cur);
 }
 
 void check_cpuid()
@@ -3281,6 +3280,7 @@ const char *thread_state_name(thread_state state) {
 
 void summary()
 {
+	uint64_t now = __rdtsc();
 	ERROR_PRINTF("%12s %16s %16s %16s %16s\r\n",
 		"lock summary", "count", "cycles", "contention", "cycles");
 	for (struct lock *l = (struct lock*) &__locks_start; l != &__locks_end; ++l) {
@@ -3290,6 +3290,10 @@ void summary()
 	ERROR_PRINTF("\r\n%20s %15s %16s\r\n", "thread summary", "state", "cycles");
 	for (size_t i = 0; i < MAX_THREADS; ++i) {
 		if (threads[i].state != EMPTY) {
+			if (threads[i].start != 0) {
+				threads[i].time += now - threads[i].start;
+				threads[i].start = 0;
+			}
 			ERROR_PRINTF("%20s %15s %16llu\r\n", threads[i].name, thread_state_name(threads[i].state), threads[i].time);
 		}
 	}
@@ -3313,7 +3317,13 @@ void LOCK(struct lock * lock)
 {
 	int first = 1;
 	uint64_t start = __rdtsc();
-	while (!__sync_bool_compare_and_swap(& lock->locked, 0, current_thread + 1)) { first = 0; }
+	size_t lock_token = current_thread + 1;
+
+	if (lock->locked == lock_token) {
+		term_print("!recursive lock!\rn\n");
+		while (1) { }
+	}
+	while (!__sync_bool_compare_and_swap(& lock->locked, 0, lock_token)) { first = 0; }
 	__sync_synchronize();
 	if (first) {
 		lock->start = start;
@@ -3328,9 +3338,10 @@ void LOCK(struct lock * lock)
 void UNLOCK(struct lock * lock)
 {
 	uint64_t end = __rdtsc();
+	size_t lock_token = current_thread + 1;
 	lock->lock_time += end - lock->start;
 	__sync_synchronize();
-	if (current_thread + 1 != lock->locked) {
+	if (lock_token != lock->locked) {
 		ERROR_PRINTF("lock %s(%p) unlocked by wrong thread %d != %d\r\n", lock->name, &(lock->locked), current_thread, lock->locked - 1);
 		halt("halting\r\n", 0);
 	}
