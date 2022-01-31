@@ -860,7 +860,7 @@
 		ret
 
 	switch_ap_thread:
-		mov %eax, %esp
+		mov 0x4(%esp), %esp
 		jmp switch_thread_done
 
 	.code16 // APs start in real mode
