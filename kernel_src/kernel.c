@@ -3323,7 +3323,10 @@ void LOCK(struct lock * lock)
 		term_print("!recursive lock!\rn\n");
 		while (1) { }
 	}
-	while (!__sync_bool_compare_and_swap(& lock->locked, 0, lock_token)) { first = 0; }
+	while (!__sync_bool_compare_and_swap(& lock->locked, 0, lock_token)) {
+		first = 0;
+		_mm_pause();
+	}
 	__sync_synchronize();
 	if (first) {
 		lock->start = start;
