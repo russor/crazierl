@@ -642,7 +642,9 @@ int switch_thread(thread_state new_state, uint64_t timeout, int locked) {
 	if (i == MAX_THREADS) { i = 0; }
 	uint64_t current_time = fixed_point_time(0);
 	if (timeout && timeout <= current_time) {
-		threads[current_thread].state = RUNNING;
+		if (threads[current_thread].state != RUNNING) {
+			halt("unexpected thread state", 0);
+		}
 		UNLOCK(&thread_st);
 		return 1; // don't switch if it's already past the time
 	}
