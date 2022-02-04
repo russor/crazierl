@@ -575,6 +575,16 @@ void wake_cpu_for_thread(size_t thread) {
 	}
 }
 
+void mark_thread_runnable(size_t thread) {
+	if (threads[thread].timeout) {
+		threads[thread].timeout = 0;
+		TAILQ_REMOVE(&waitqueue, &threads[thread], waitq);
+	}
+	STAILQ_INSERT_TAIL(&runqueue, &threads[thread], runq);
+	threads[thread].state = RUNNABLE;
+	wake_cpu_for_thread(thread);
+}
+
 // takes scaledppm to adjust time frequency; avoids duplicating time update function
 uint64_t fixed_point_time(long scaledppm) {
 	uint64_t fpt, tsc_count, tsc_increment;
@@ -636,10 +646,8 @@ int switch_thread(thread_state new_state, uint64_t timeout, int locked) {
 	}
 	//DEBUG_PRINTF("current thread %d (%p), current cpu %d\r\n", current_thread, &current_thread, current_cpu);
 	size_t old_thread = current_thread;
-	size_t i = old_thread + 1;
 	size_t target = old_thread;
 	int timed_out = 0;
-	if (i == MAX_THREADS) { i = 0; }
 	uint64_t current_time = fixed_point_time(0);
 	if (timeout && timeout <= current_time) {
 		if (threads[current_thread].state != RUNNING) {
@@ -648,32 +656,32 @@ int switch_thread(thread_state new_state, uint64_t timeout, int locked) {
 		UNLOCK(&thread_st);
 		return 1; // don't switch if it's already past the time
 	}
-	size_t idle_thread = old_thread;
-	while (i != old_thread) {
-		if (CPU_ISSET(current_cpu, &threads[i].cpus)) {
-			if (threads[i].state == RUNNABLE) {
-				target = i;
-				break;
-			} else if (threads[i].timeout && threads[i].timeout <= current_time) {
+	struct crazierl_thread *tp;
+	TAILQ_FOREACH(tp, &waitqueue, waitq) {
+		if (tp->timeout <= current_time) {
+			size_t i = tp - threads;
+			if (CPU_ISSET(current_cpu, &tp->cpus)) {
+				TAILQ_REMOVE(&waitqueue, tp, waitq);
 				target = i;
 				timed_out = 1;
 				break;
-			} else if (threads[i].state == IDLE) {
-				idle_thread = i;
+			} else {
+				wake_cpu_for_thread(i);
 			}
-		} else if (threads[i].timeout && threads[i].timeout <= current_time) {
-			wake_cpu_for_thread(i);
 		}
-		++i;
-		if (i == MAX_THREADS) { i = 0; }
 	}
-	if (target == old_thread) {
-		if (new_state == RUNNABLE) {
+	if (target == old_thread) { // no timeouts
+		if (!STAILQ_EMPTY(&runqueue)) {
+			target = STAILQ_FIRST(&runqueue) - threads;
+			STAILQ_REMOVE_HEAD(&runqueue, runq);
+			cpus[current_cpu].flags &= ~CPU_IDLE; // no longer idle
+		} else if (new_state == RUNNABLE) {
 			cpus[current_cpu].flags |= CPU_IDLE;
 			UNLOCK(&thread_st);
 			return 0;
 		} else {
-			target = idle_thread;
+			cpus[current_cpu].flags |= CPU_IDLE;
+			target = current_cpu + 1; // idle thread is cpu_number + 1, guaranteed by construction
 		}
 	}
 
@@ -683,22 +691,26 @@ int switch_thread(thread_state new_state, uint64_t timeout, int locked) {
 	DEBUG_PRINTF("old stack %p of %p\r\n",
 		threads[old_thread].kern_stack_cur, threads[old_thread].kern_stack_top);
 	RELOCK(&thread_st, target);
-	current_thread = target;
 	uint64_t now = __rdtsc();
 	threads[old_thread].time += now - threads[old_thread].start;
 	threads[old_thread].start = 0;
-	if (threads[current_thread].start != 0) {
-		halt("thread start time should be 0\r\n", 0);
-	}
-	threads[current_thread].start = now;
 
 	if (threads[old_thread].state != IDLE) {
-		threads[old_thread].state = new_state;
+		if (new_state == RUNNABLE) {
+			mark_thread_runnable(old_thread);
+		} else {
+			threads[old_thread].state = new_state;
+		}
 	}
 	if (timeout) {
 		threads[old_thread].timeout = timeout;
+		TAILQ_INSERT_TAIL(&waitqueue, &threads[old_thread], waitq);
 	}
 	asm volatile ( "fxsave (%0)" :: "a"(&savearea[old_thread]) :);
+	if (threads[target].start != 0) {
+		halt("thread start time should be 0\r\n", 0);
+	}
+	threads[target].start = now;
 	TSS[current_cpu].esp0 = threads[target].kern_stack_top;
 	if (threads[target].state != IDLE) {
 		threads[target].state = RUNNING;
@@ -713,10 +725,9 @@ int switch_thread(thread_state new_state, uint64_t timeout, int locked) {
 		if (timed_out) {
 			*(int *)threads[target].kern_stack_cur = 1;
 		}
-		cpus[current_cpu].flags &= ~CPU_IDLE; // no longer idle
-	} else {
-		cpus[current_cpu].flags |= CPU_IDLE;
 	}
+
+	current_thread = target;
 	int we_timed_out = switch_thread_impl(&threads[old_thread].kern_stack_cur, threads[target].kern_stack_cur);
 	threads[current_thread].timeout = 0;
 	threads[current_thread].wait_target = 0;
@@ -848,19 +859,16 @@ ssize_t write(int fd, const void * buf, size_t nbyte) {
 		//TODO avoid thundering herd, maybe
 		for (int thread = 0; thread < MAX_THREADS; ++thread) {
 			if (threads[thread].state == IO_READ && (struct BogusFD *) threads[thread].wait_target == wait_target) {
-				threads[thread].state = RUNNABLE;
-				wake_cpu_for_thread(thread);
+				mark_thread_runnable(thread);
 			} else if (threads[thread].state == POLL) {
-				threads[thread].state = RUNNABLE;
-				wake_cpu_for_thread(thread);
+				mark_thread_runnable(thread);
 			}
 		}
 		FDS[fd].flags &= ~BOGFD_BLOCKED_READ;
 	} else {
 		for (int thread = 0; thread < MAX_THREADS; ++thread) {
 			if (threads[thread].state == POLL) {
-				threads[thread].state = RUNNABLE;
-				wake_cpu_for_thread(thread);
+				mark_thread_runnable(thread);
 			}
 		}
 	}
@@ -940,8 +948,7 @@ void umtx_wake(void * obj, u_long count) {
 	LOCK(&thread_st);
 	for (int thread = 0; count > 0 && thread < MAX_THREADS; ++thread) {
 		if (threads[thread].state == UMTX_WAIT && threads[thread].wait_target == phys) {
-			threads[thread].state = RUNNABLE;
-			wake_cpu_for_thread(thread);
+			mark_thread_runnable(thread);
 			--count;
 		}
 	}
@@ -1017,8 +1024,7 @@ int kern_umtx_op(struct _umtx_op_args *a) {
 				if (threads[thread].state == UMTX_MUTEX_WAIT &&
 					threads[thread].wait_target == (uintptr_t) a->obj) {
 					if (found == 0) {
-						threads[thread].state = RUNNABLE;
-						wake_cpu_for_thread(thread);
+						mark_thread_runnable(thread);
 						found = 1;
 					} else {
 						while (1) {
@@ -1196,8 +1202,7 @@ void wake_kq(int kq) {
 		if (FDS[kq].flags & BOGFD_BLOCKED_READ) {
 			for (int thread = 0; thread < MAX_THREADS; ++thread) {
 				if (threads[thread].state == IO_READ && (struct BogusFD *) threads[thread].wait_target == &FDS[kq]) {
-					threads[thread].state = RUNNABLE;
-					wake_cpu_for_thread(thread);
+					mark_thread_runnable(thread);
 				}
 			}
 			FDS[kq].flags &= ~BOGFD_BLOCKED_READ;
@@ -2452,8 +2457,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			*(void **)new_frame->sp = a->param->arg;
 			new_frame->sp -= sizeof(a->param->arg); //skip a spot for the return address from the initial function
 			new_frame->flags &= ~CARRY;
-			threads[new_thread].state = RUNNABLE;
-			wake_cpu_for_thread(new_thread);
+			mark_thread_runnable(new_thread);
 			SYSCALL_SUCCESS(0);
 		}
 		case SYS_thr_exit: {
@@ -3260,6 +3264,9 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 		DEBUG_PRINTF("loading %s at %08x\r\n", filename, file->start);
 		load_file(file->start, file->name, file->size);
 	}
+	STAILQ_INIT(&runqueue);
+	TAILQ_INIT(&waitqueue);
+
 	while (TIMER_COUNT == cpus_inited) {
 		asm volatile ("hlt" ::); // wait for at least one timer interrupt
 	}
