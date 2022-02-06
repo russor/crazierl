@@ -580,7 +580,7 @@ void mark_thread_runnable(size_t thread) {
 		threads[thread].timeout = 0;
 		TAILQ_REMOVE(&waitqueue, &threads[thread], waitq);
 	}
-	STAILQ_INSERT_TAIL(&runqueue, &threads[thread], runq);
+	TAILQ_INSERT_TAIL(&runqueue, &threads[thread], runq);
 	threads[thread].state = RUNNABLE;
 	wake_cpu_for_thread(thread);
 }
@@ -664,6 +664,7 @@ int switch_thread(thread_state new_state, uint64_t timeout, int locked) {
 				TAILQ_REMOVE(&waitqueue, tp, waitq);
 				target = i;
 				timed_out = 1;
+				cpus[current_cpu].flags &= ~CPU_IDLE; // no longer idle
 				break;
 			} else {
 				wake_cpu_for_thread(i);
@@ -671,16 +672,22 @@ int switch_thread(thread_state new_state, uint64_t timeout, int locked) {
 		}
 	}
 	if (target == old_thread) { // no timeouts
-		if (!STAILQ_EMPTY(&runqueue)) {
-			target = STAILQ_FIRST(&runqueue) - threads;
-			STAILQ_REMOVE_HEAD(&runqueue, runq);
-			cpus[current_cpu].flags &= ~CPU_IDLE; // no longer idle
-		} else if (new_state == RUNNABLE) {
-			cpus[current_cpu].flags |= CPU_IDLE;
+		TAILQ_FOREACH(tp, &runqueue, runq) {
+			if (CPU_ISSET(current_cpu, &tp->cpus)) {
+				TAILQ_REMOVE(&runqueue, tp, runq);
+				size_t i = tp - threads;
+				target = i;
+				cpus[current_cpu].flags &= ~CPU_IDLE; // no longer idle
+				break;
+			}
+		}
+	}
+	if (target == old_thread) { // nothing from the runqueue
+		cpus[current_cpu].flags |= CPU_IDLE;
+		if (new_state == RUNNABLE) {
 			UNLOCK(&thread_st);
 			return 0;
 		} else {
-			cpus[current_cpu].flags |= CPU_IDLE;
 			target = current_cpu + 1; // idle thread is cpu_number + 1, guaranteed by construction
 		}
 	}
@@ -3264,7 +3271,7 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 		DEBUG_PRINTF("loading %s at %08x\r\n", filename, file->start);
 		load_file(file->start, file->name, file->size);
 	}
-	STAILQ_INIT(&runqueue);
+	TAILQ_INIT(&runqueue);
 	TAILQ_INIT(&waitqueue);
 
 	while (TIMER_COUNT == cpus_inited) {

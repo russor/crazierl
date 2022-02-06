@@ -20,11 +20,11 @@ typedef enum {
     THREAD_STATE_ENUM(THREAD_STATE_ENUM_VARIANT)
 } thread_state;
 
-STAILQ_HEAD(stail_threadhead, crazierl_thread) runqueue;
+TAILQ_HEAD(stail_threadhead, crazierl_thread) runqueue;
 TAILQ_HEAD(tail_threadhead, crazierl_thread) waitqueue;
     
 struct crazierl_thread {
-    STAILQ_ENTRY(crazierl_thread) runq;
+    TAILQ_ENTRY(crazierl_thread) runq;
     TAILQ_ENTRY(crazierl_thread) waitq;
     uint64_t timeout;
     uint64_t time;
