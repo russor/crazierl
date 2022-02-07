@@ -314,7 +314,9 @@ int com_buffer_idle() {
 }
 
 void write_serial(char a) {
-	while (com_buffer_has_room() == 0);
+	while (com_buffer_has_room() == 0) {
+		_mm_pause();
+	}
 	outb(PORT_COM1,a);
 }
 
