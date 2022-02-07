@@ -569,6 +569,7 @@ void wake_cpu_for_thread(size_t thread) {
 	int cpu = CPU_FFS(&t_cpus) - 1;
 	while (cpu != -1) {
 		if (cpus[cpu].flags & CPU_IDLE) {
+			cpus[cpu].flags &= ~CPU_IDLE; // don't wake multiple times!
 			wake_cpu(cpu);
 			break;
 		}
