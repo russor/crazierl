@@ -22,7 +22,9 @@ typedef enum {
 
 TAILQ_HEAD(stail_threadhead, crazierl_thread) runqueue;
 TAILQ_HEAD(tail_threadhead, crazierl_thread) waitqueue;
-    
+
+#define THREAD_PINNED (1 << 0)
+
 struct crazierl_thread {
     TAILQ_ENTRY(crazierl_thread) runq;
     TAILQ_ENTRY(crazierl_thread) waitq;
@@ -35,6 +37,7 @@ struct crazierl_thread {
     uintptr_t kern_stack_cur;
     uintptr_t tls_base;
     uintptr_t wait_target;
+    uint32_t flags; // copied in thr_new
     char name [MAXCOMLEN + 1];
 };
 

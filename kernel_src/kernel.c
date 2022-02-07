@@ -2231,6 +2231,11 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			}
 			if (a->level == CPU_LEVEL_WHICH && a->which == CPU_WHICH_TID && a->id == -1) {
 				CPU_COPY(a->mask, &threads[current_thread].cpus);
+				if (CPU_COUNT(&threads[current_thread].cpus) == 1) {
+					threads[current_thread].flags |= THREAD_PINNED;
+				} else {
+					threads[current_thread].flags &= ~THREAD_PINNED;
+				}
 				if (!CPU_ISSET(current_cpu, &threads[current_thread].cpus)) {
 					switch_thread(RUNNABLE, 0, 0);
 				}
@@ -2461,8 +2466,9 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			explicit_bzero((void *)stack_page, PAGE_SIZE);
 			++next_thread;
 			threads[new_thread].state = INITING;
-			threads[new_thread].cpus = threads[current_thread].cpus;
 			UNLOCK(&thread_st);
+			CPU_COPY(&threads[current_thread].cpus, &threads[new_thread].cpus);
+			threads[new_thread].flags = threads[current_thread].flags;
 			threads[new_thread].kern_stack_top = stack_page + PAGE_SIZE;
 			threads[new_thread].tls_base = (uintptr_t)a->param->tls_base;
 			bzero(&savearea[new_thread], sizeof(savearea[new_thread]));
@@ -2896,7 +2902,8 @@ void setup_cpus()
 		uintptr_t new_stack_cur = setup_new_idle(threads[i + 1].kern_stack_top);
 		threads[i + 1].kern_stack_cur = new_stack_cur;
 		threads[i + 1].state = IDLE;
-		rtld_snprintf(threads[i + 1].name, sizeof(threads[i + 1].name), "cpu %d idle", i);
+		threads[i + 1].flags = THREAD_PINNED;
+		rtld_snprintf(threads[i + 1].name, sizeof(threads[i + 1].name), "cpu %02x idle", i);
 		size_t gsbase = GDT_GSBASE_OFFSET + (i * 2);
 
 		// setup GS BASE descriptor for kernel
