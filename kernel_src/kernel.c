@@ -581,9 +581,19 @@ void wake_cpu_for_thread(size_t thread) {
 void mark_thread_runnable(size_t thread) {
 	if (threads[thread].timeout) {
 		threads[thread].timeout = 0;
-		TAILQ_REMOVE(&waitqueue, &threads[thread], waitq);
+		if (threads[thread].flags & THREAD_PINNED) {
+			unsigned int cpu = CPU_FFS(&threads[thread].cpus) - 1;
+			TAILQ_REMOVE(&cpus[cpu].waitqueue, &threads[thread], waitq);
+		} else {
+			TAILQ_REMOVE(&waitqueue, &threads[thread], waitq);
+		}
 	}
-	TAILQ_INSERT_TAIL(&runqueue, &threads[thread], runq);
+	if (threads[thread].flags & THREAD_PINNED) {
+		unsigned int cpu = CPU_FFS(&threads[thread].cpus) - 1;
+		TAILQ_INSERT_TAIL(&cpus[cpu].runqueue, &threads[thread], runq);
+	} else {
+		TAILQ_INSERT_TAIL(&runqueue, &threads[thread], runq);
+	}
 	threads[thread].state = RUNNABLE;
 	wake_cpu_for_thread(thread);
 }
@@ -660,8 +670,16 @@ int switch_thread(thread_state new_state, uint64_t timeout, int locked) {
 		return 1; // don't switch if it's already past the time
 	}
 	struct crazierl_thread *tp;
-	TAILQ_FOREACH(tp, &waitqueue, waitq) {
-		if (tp->timeout <= current_time) {
+	tp = TAILQ_FIRST(&cpus[current_cpu].waitqueue);
+	if (tp != NULL && tp->timeout <= current_time) {
+		TAILQ_REMOVE(&cpus[current_cpu].waitqueue, tp, waitq);
+		size_t i = tp - threads;
+		target = i;
+		timed_out = 1;
+		cpus[current_cpu].flags &= ~CPU_IDLE; // no longer idle
+	} else { // no local timeout, check globals
+		tp = TAILQ_FIRST(&waitqueue);
+		while (tp != NULL && tp->timeout <= current_time) {
 			size_t i = tp - threads;
 			if (CPU_ISSET(current_cpu, &tp->cpus)) {
 				TAILQ_REMOVE(&waitqueue, tp, waitq);
@@ -671,18 +689,26 @@ int switch_thread(thread_state new_state, uint64_t timeout, int locked) {
 				break;
 			} else {
 				wake_cpu_for_thread(i);
+				tp = TAILQ_NEXT(tp, waitq);
 			}
 		}
 	}
-	if (target == old_thread) { // no timeouts
-		TAILQ_FOREACH(tp, &runqueue, runq) {
-			if (CPU_ISSET(current_cpu, &tp->cpus)) {
-				TAILQ_REMOVE(&runqueue, tp, runq);
-				size_t i = tp - threads;
-				target = i;
-				cpus[current_cpu].flags &= ~CPU_IDLE; // no longer idle
-				break;
-			}
+	if (target == old_thread) { // no timeouts, check first item in global runqueue
+		tp = TAILQ_FIRST(&runqueue);
+		if (tp != NULL && CPU_ISSET(current_cpu, &tp->cpus)) {
+			TAILQ_REMOVE(&runqueue, tp, runq);
+			size_t i = tp - threads;
+			target = i;
+			cpus[current_cpu].flags &= ~CPU_IDLE; // no longer idle
+		}
+	}
+	if (target == old_thread) { // nothing from global runqueue, check pinned queue
+		tp = TAILQ_FIRST(&cpus[current_cpu].runqueue);
+		if (tp != NULL) {
+			TAILQ_REMOVE(&cpus[current_cpu].runqueue, tp, runq);
+			size_t i = tp - threads;
+			target = i;
+			cpus[current_cpu].flags &= ~CPU_IDLE; // no longer idle
 		}
 	}
 	if (target == old_thread) { // nothing from the runqueue
@@ -2940,6 +2966,9 @@ void setup_cpus()
 
 		TSS[i].esp0 = (uintptr_t)&stack_top;
 		TSS[i].ss0 = 0x28;
+
+		TAILQ_INIT(&cpus[i].runqueue);
+		TAILQ_INIT(&cpus[i].waitqueue);
 	}
 	uint16_t active_tss = ((GDT_TSS_OFFSET + this_cpu) * sizeof(GDT[0])) | 0x3;
 	asm volatile ("ltr %0" :: "a"(active_tss));

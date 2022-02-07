@@ -20,8 +20,8 @@ typedef enum {
     THREAD_STATE_ENUM(THREAD_STATE_ENUM_VARIANT)
 } thread_state;
 
-TAILQ_HEAD(stail_threadhead, crazierl_thread) runqueue;
-TAILQ_HEAD(tail_threadhead, crazierl_thread) waitqueue;
+TAILQ_HEAD(, crazierl_thread) runqueue;
+TAILQ_HEAD(, crazierl_thread) waitqueue;
 
 #define THREAD_PINNED (1 << 0)
 

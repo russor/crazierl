@@ -1,3 +1,4 @@
+#include <sys/queue.h>
 
 extern unsigned int numcpu;
 
@@ -16,6 +17,8 @@ struct cpu {
     uint32_t apic_id;
     uint32_t volatile flags;
     uint32_t volatile current_thread;
+    TAILQ_HEAD(, crazierl_thread) runqueue;
+    TAILQ_HEAD(, crazierl_thread) waitqueue;
 };
 
 #define MAX_CPUS 256
