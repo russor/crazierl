@@ -19,6 +19,8 @@ struct cpu {
     uint32_t volatile current_thread;
     TAILQ_HEAD(, crazierl_thread) runqueue;
     TAILQ_HEAD(, crazierl_thread) waitqueue;
+    uint32_t clock_tick;
+    uint64_t timeout;
 };
 
 #define MAX_CPUS 256

@@ -10,6 +10,11 @@
 #define DEBUG_PRINTF(...)
 #define ERROR_PRINTF(...) term_printf(__VA_ARGS__); move_cursor()
 
+#define FIRST_IRQ_VECTOR 0x20
+#define TIMER_VECTOR FIRST_IRQ_VECTOR
+#define SWITCH_VECTOR (FIRST_IRQ_VECTOR + 1)
+#define HALT_VECTOR (FIRST_IRQ_VECTOR + 2)
+
 struct lock {
 	volatile uint32_t locked;
 	char	 name[12];
@@ -25,6 +30,7 @@ struct lock {
 void RELOCK(struct lock *, size_t target);
 void LOCK(struct lock *);
 void UNLOCK(struct lock *);
+void ASSERT_LOCK(struct lock *);
 
 void rand_init();
 void rand_bytes(void * out, size_t len);

@@ -1,5 +1,6 @@
 #include "apic.h"
 #include "common.h"
+#include "acpi.h"
 
 // Ideally things related to APIC (Advanced Programmable Interrupt Controller), but also
 // includes other things in the arena of general PIC and interrupts, so more thematic
@@ -48,6 +49,7 @@ uint8_t timer_gsirq;
 uint8_t timer_flags;
 unsigned int io_apic_count;
 uint64_t SCALED_S_PER_TSC_TICK;
+uint32_t clock_ticks;
 
 //extern struct io_apic io_apics[];
 
@@ -164,12 +166,37 @@ void pit_wait()
 	} while ( ((val & 0x20) == 0)) ;
 }
 
+
+void arm_timer(uint64_t wait)
+{
+	cpus[current_cpu].timeout = wait;
+	if (wait == 0) {
+		cpus[current_cpu].clock_tick = clock_ticks;
+		local_apic_write(APIC_TIMER_INITIAL, clock_ticks);
+	} else {
+		uint64_t ticks = wait * clock_ticks;
+		ticks /= FIXED_POINT_TIME_NANOSECOND(0, CLOCK_MS * 1000000);
+		if (ticks > 0xFFFFFFFF) {
+			ticks = 0xFFFFFFFF;
+		}
+		cpus[current_cpu].clock_tick = ticks & 0xFFFFFFFF;
+		local_apic_write(APIC_TIMER_INITIAL, ticks & 0xFFFFFFFF);
+	}
+}
+
+void ap_clock_setup()
+{
+	local_apic_write(APIC_TIMER_INITIAL, clock_ticks);
+	local_apic_write(APIC_LVT_TIMER, TIMER_VECTOR);
+	local_apic_write(APIC_TIMER_DIVIDE, 0x3); // div 16
+}
+
 // Initially based on https://wiki.osdev.org/APIC_timer
 void clock_setup()
 {
 	ERROR_PRINTF("Starting clock timer calibration\r\n");
 	// divider 16
-	local_apic_write(APIC_LVT_TIMER, 0x20);
+	local_apic_write(APIC_LVT_TIMER, TIMER_VECTOR);
 	local_apic_write(APIC_TIMER_DIVIDE, 0x3);
 
 	uint16_t calibms = 10;
@@ -201,11 +228,11 @@ void clock_setup()
 	// Ok, now we disable the PIT timer by putting it into one-shot mode and not firing it
 	outb(PIT_CMD,  0b00110000); // 0x43 = Command regisger
 
-	uint64_t clock_ticks = (ticks * CLOCK_MS) / calibms;
-	ERROR_PRINTF("Clock: Will interrupt every %d ms using %llu\r\n", CLOCK_MS, clock_ticks);
+	clock_ticks = (ticks * CLOCK_MS) / calibms;
+	ERROR_PRINTF("Clock: Will interrupt every %d ms using %u\r\n", CLOCK_MS, clock_ticks);
 
 	local_apic_write(APIC_TIMER_INITIAL, clock_ticks);
-	local_apic_write(APIC_LVT_TIMER, 0x20 | APIC_TIMER_PERIODIC );
+	local_apic_write(APIC_LVT_TIMER, TIMER_VECTOR);
 	local_apic_write(APIC_TIMER_DIVIDE, 0x3); // div 16
 }
 

@@ -579,6 +579,7 @@ void wake_cpu_for_thread(size_t thread) {
 }
 
 void mark_thread_runnable(size_t thread) {
+	ASSERT_LOCK(&thread_st);
 	if (threads[thread].timeout) {
 		threads[thread].timeout = 0;
 		if (threads[thread].flags & THREAD_PINNED) {
@@ -656,12 +657,16 @@ uint64_t fixed_point_time(long scaledppm) {
 int switch_thread(thread_state new_state, uint64_t timeout, int locked) {
 	if (!locked) {
 		LOCK(&thread_st);
+	} else {
+		ASSERT_LOCK(&thread_st);
 	}
+
 	//DEBUG_PRINTF("current thread %d (%p), current cpu %d\r\n", current_thread, &current_thread, current_cpu);
 	size_t old_thread = current_thread;
 	size_t target = old_thread;
 	int timed_out = 0;
 	uint64_t current_time = fixed_point_time(0);
+	uint64_t next_timeout = current_time + FIXED_POINT_TIME_NANOSECOND(300, 0);
 	if (timeout && timeout <= current_time) {
 		if (threads[current_thread].state != RUNNING) {
 			halt("unexpected thread state", 0);
@@ -676,6 +681,8 @@ int switch_thread(thread_state new_state, uint64_t timeout, int locked) {
 		size_t i = tp - threads;
 		target = i;
 		timed_out = 1;
+		threads[target].timeout = 0;
+		threads[target].wait_target = 0;
 		cpus[current_cpu].flags &= ~CPU_IDLE; // no longer idle
 	} else { // no local timeout, check globals
 		tp = TAILQ_FIRST(&waitqueue);
@@ -685,6 +692,8 @@ int switch_thread(thread_state new_state, uint64_t timeout, int locked) {
 				TAILQ_REMOVE(&waitqueue, tp, waitq);
 				target = i;
 				timed_out = 1;
+				threads[target].timeout = 0;
+				threads[target].wait_target = 0;
 				cpus[current_cpu].flags &= ~CPU_IDLE; // no longer idle
 				break;
 			} else {
@@ -694,6 +703,9 @@ int switch_thread(thread_state new_state, uint64_t timeout, int locked) {
 		}
 	}
 	if (target == old_thread) { // no timeouts, check first item in global runqueue
+		if (tp != NULL && tp->timeout < next_timeout) {
+			next_timeout = tp->timeout;
+		}
 		tp = TAILQ_FIRST(&runqueue);
 		if (tp != NULL && CPU_ISSET(current_cpu, &tp->cpus)) {
 			TAILQ_REMOVE(&runqueue, tp, runq);
@@ -703,6 +715,9 @@ int switch_thread(thread_state new_state, uint64_t timeout, int locked) {
 		}
 	}
 	if (target == old_thread) { // nothing from global runqueue, check pinned queue
+		if (tp != NULL && tp->timeout < next_timeout) {
+			next_timeout = tp->timeout;
+		}
 		tp = TAILQ_FIRST(&cpus[current_cpu].runqueue);
 		if (tp != NULL) {
 			TAILQ_REMOVE(&cpus[current_cpu].runqueue, tp, runq);
@@ -715,6 +730,7 @@ int switch_thread(thread_state new_state, uint64_t timeout, int locked) {
 		cpus[current_cpu].flags |= CPU_IDLE;
 		if (new_state == RUNNABLE) {
 			UNLOCK(&thread_st);
+			arm_timer(next_timeout - current_time);
 			return 0;
 		} else {
 			target = current_cpu + 1; // idle thread is cpu_number + 1, guaranteed by construction
@@ -726,7 +742,6 @@ int switch_thread(thread_state new_state, uint64_t timeout, int locked) {
 		threads[target].kern_stack_cur, threads[target].kern_stack_top);
 	DEBUG_PRINTF("old stack %p of %p\r\n",
 		threads[old_thread].kern_stack_cur, threads[old_thread].kern_stack_top);
-	RELOCK(&thread_st, target);
 	uint64_t now = __rdtsc();
 	threads[old_thread].time += now - threads[old_thread].start;
 	threads[old_thread].start = 0;
@@ -741,15 +756,31 @@ int switch_thread(thread_state new_state, uint64_t timeout, int locked) {
 	if (timeout) {
 		threads[old_thread].timeout = timeout;
 		int found = 0;
-		TAILQ_FOREACH(tp, &waitqueue, waitq) {
-			if (timeout < tp->timeout) {
-				found = 1;
-				TAILQ_INSERT_BEFORE(tp, &threads[old_thread], waitq);
-				break;
+		if (threads[old_thread].flags & THREAD_PINNED) {
+			TAILQ_FOREACH(tp, &cpus[current_cpu].waitqueue, waitq) {
+				if (timeout < tp->timeout) {
+					found = 1;
+					TAILQ_INSERT_BEFORE(tp, &threads[old_thread], waitq);
+					break;
+				}
+			}
+			if (!found) {
+				TAILQ_INSERT_TAIL(&cpus[current_cpu].waitqueue, &threads[old_thread], waitq);
+			}
+		} else {
+			TAILQ_FOREACH(tp, &waitqueue, waitq) {
+				if (timeout < tp->timeout) {
+					found = 1;
+					TAILQ_INSERT_BEFORE(tp, &threads[old_thread], waitq);
+					break;
+				}
+			}
+			if (!found) {
+				TAILQ_INSERT_TAIL(&waitqueue, &threads[old_thread], waitq);
 			}
 		}
-		if (!found) {
-			TAILQ_INSERT_TAIL(&waitqueue, &threads[old_thread], waitq);
+		if (timeout < next_timeout) {
+			next_timeout = timeout;
 		}
 	}
 	asm volatile ( "fxsave (%0)" :: "a"(&savearea[old_thread]) :);
@@ -773,10 +804,14 @@ int switch_thread(thread_state new_state, uint64_t timeout, int locked) {
 		}
 	}
 
+	RELOCK(&thread_st, target);
 	current_thread = target;
+	if (threads[current_thread].state == IDLE) {
+		arm_timer(next_timeout - current_time);
+	} else {
+		arm_timer(0);
+	}
 	int we_timed_out = switch_thread_impl(&threads[old_thread].kern_stack_cur, threads[target].kern_stack_cur);
-	threads[current_thread].timeout = 0;
-	threads[current_thread].wait_target = 0;
 	cpus[current_cpu].current_thread = current_thread;
 	UNLOCK(&thread_st);
 	asm volatile ( "fxrstor (%0)" :: "a"(&savearea[current_thread]) :);
@@ -807,21 +842,16 @@ void handle_irq(unsigned int vector)
 
 	switch (vector) {
 		case TIMER_VECTOR: {
-			++TIMER_COUNT;
-
 			// TODO: If we want to schedule in 100ms slices, we can wait for 10 of these interrupts
 			// or have a countdown timer
-			if (cpus_initing) {
+			if (unlikely(cpus_initing)) {
+				if (current_cpu == 0) {
+					++TIMER_COUNT;
+				}
+				arm_timer(0);
 				break;
 			}
-			size_t woken = 0;
-			// TODO: only wake idle cpus, or for timeouts
-			for (size_t i = 0; i < numcpu; ++i) {
-				if (i == current_cpu) { continue; }
-				if (cpus[i].flags & (CPU_STARTED)) {
-					wake_cpu(i);
-				}
-			}
+
 			switch_thread(RUNNABLE, 0, 0);
 			break;
 		}
@@ -2509,7 +2539,9 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			*(void **)new_frame->sp = a->param->arg;
 			new_frame->sp -= sizeof(a->param->arg); //skip a spot for the return address from the initial function
 			new_frame->flags &= ~CARRY;
+			LOCK(&thread_st);
 			mark_thread_runnable(new_thread);
+			UNLOCK(&thread_st);
 			SYSCALL_SUCCESS(0);
 		}
 		case SYS_thr_exit: {
@@ -2898,7 +2930,7 @@ void setup_cpus()
 	CPU_ZERO(&threads[0].cpus);
 	threads[0].kern_stack_top = (uintptr_t) &stack_top;
 	unsigned int my_apic_id = local_apic_read(0x20) >> 24;
-	ERROR_PRINTF("my apic id %x\r\n", my_apic_id);
+	//ERROR_PRINTF("my apic id %x\r\n", my_apic_id);
 	size_t this_cpu = -1;
 
 	for (int i = 0; i < numcpu; ++i) {
@@ -3109,7 +3141,7 @@ void init_cpus() {
 		if (current_cpu == i) {
 			cpus[i].flags |= CPU_STARTED;
 		} else if ((cpus[i].flags & (CPU_ENABLED|CPU_STARTED)) == CPU_ENABLED) {
-			ERROR_PRINTF("trying to INIT cpu %d\r\n", i);
+			//ERROR_PRINTF("trying to INIT cpu %d\r\n", i);
 			local_apic_write(0x310, cpus[i].apic_id << 24);
 			local_apic_write(0x300, 0x04500);
 		} else {
@@ -3123,7 +3155,7 @@ void init_cpus() {
 
 int start_cpu(size_t cpu, uint8_t page) {
 	uint32_t command_word = (0x04600 | page);
-	ERROR_PRINTF("trying to START cpu %d: %x\r\n", cpu, command_word);
+	//ERROR_PRINTF("trying to START cpu %d: %x\r\n", cpu, command_word);
 	local_apic_write(0x310, cpus[cpu].apic_id << 24);
 	local_apic_write(0x300, command_word);
 
@@ -3196,7 +3228,7 @@ void start_ap() {
 	current_cpu = this_cpu;
 	current_thread = cpus[current_cpu].current_thread;
 
-	ERROR_PRINTF("my apic id %x\r\n", my_apic_id);
+	//ERROR_PRINTF("my apic id %x\r\n", my_apic_id);
 
 	uint64_t base_msr = readmsr(0x1b);
 
@@ -3215,6 +3247,8 @@ void start_ap() {
 	asm volatile ("ltr %0" :: "a"(active_tss));
 
 	threads[current_thread].start = __rdtsc();
+	ap_clock_setup();
+	arm_timer(0);
 	LOCK(&thread_st);
 	switch_ap_thread(threads[current_thread].kern_stack_cur);
 }
@@ -3414,4 +3448,14 @@ void UNLOCK(struct lock * lock)
 		halt("halting\r\n", 0);
 	}
 	lock->locked = 0;
+}
+
+void ASSERT_LOCK(struct lock * lock)
+{
+	size_t lock_token = current_thread + 1;
+	__sync_synchronize();
+	if (lock_token != lock->locked) {
+		ERROR_PRINTF("lock %s(%p) locked by wrong thread %d != %d\r\n", lock->name, &(lock->locked), current_thread, lock->locked - 1);
+		halt("halting\r\n", 0);
+	}
 }

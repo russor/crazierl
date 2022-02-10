@@ -24,6 +24,8 @@ void local_apic_write(unsigned int reg, uint32_t value);
 uint32_t local_apic_read(unsigned int reg);
 void ioapic_set_gsi_vector(unsigned int irq, uint8_t flags, uint8_t vector, uint8_t physcpu);
 void pic_setup(int master_offset, int slave_offset);
+void arm_timer(uint64_t wait);
+void ap_clock_setup();
 void clock_setup();
 
 #define FIXED_POINT_TIME_NANOSECOND(seconds, nanoseconds) (((uint64_t) seconds << 24) + (((uint64_t) nanoseconds << 24) / 1000000000))
