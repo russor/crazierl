@@ -21,13 +21,13 @@ typedef enum {
 } thread_state;
 
 TAILQ_HEAD(, crazierl_thread) runqueue;
-TAILQ_HEAD(, crazierl_thread) waitqueue;
+TAILQ_HEAD(, crazierl_thread) timequeue;
 
 #define THREAD_PINNED (1 << 0)
 
 struct crazierl_thread {
     TAILQ_ENTRY(crazierl_thread) runq;
-    TAILQ_ENTRY(crazierl_thread) waitq;
+    TAILQ_ENTRY(crazierl_thread) timeq;
     uint64_t timeout;
     uint64_t time;
     uint64_t start;

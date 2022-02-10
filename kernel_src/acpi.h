@@ -18,7 +18,7 @@ struct cpu {
     uint32_t volatile flags;
     uint32_t volatile current_thread;
     TAILQ_HEAD(, crazierl_thread) runqueue;
-    TAILQ_HEAD(, crazierl_thread) waitqueue;
+    TAILQ_HEAD(, crazierl_thread) timequeue;
     uint32_t clock_tick;
     uint64_t timeout;
 };
