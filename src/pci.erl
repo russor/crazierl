@@ -92,10 +92,10 @@ list() ->
 	print_pci(Sorted).
 
 attach(Module, Args) ->
-	gen_server:call(?MODULE, {attach, Module, Args}).
+	gen_server:call(?MODULE, {attach, Module, Args}, infinity).
 
 enable_msix(Device, Vector, IRQ) when Vector >= 0 ->
-	gen_server:call(?MODULE, {enable_msix, Device, Vector, IRQ}).
+	gen_server:call(?MODULE, {enable_msix, Device, Vector, IRQ}, infinity).
 
 scan_bus(_, 32, _, Acc) -> Acc; % only 32 devices per Bus
 scan_bus(Bus, Device, Function, Acc) ->
