@@ -1,17 +1,26 @@
 #define BOGFD_MAX 1024
 #define BNOTE_MAX (BOGFD_MAX * 4)
 
-#define BOGFD_CLOSED 0
-#define BOGFD_TERMIN 1
-#define BOGFD_TERMOUT 2
-#define BOGFD_PIPE 3
-#define BOGFD_FILE 4
-#define BOGFD_DIR 5
-#define BOGFD_NULL 6
-#define BOGFD_IRQ 7
-#define BOGFD_UNIX 8
-#define BOGFD_KQUEUE 9
-#define BOGFD_PENDING 10
+// enum magic from https://kubyshkin.name/posts/c-language-enums-tips-and-tricks/
+#define BOGFD_TYPE_ENUM(VARIANT) \
+    VARIANT(CLOSED) \
+    VARIANT(TERMIN) \
+    VARIANT(TERMOUT) \
+    VARIANT(PIPE) \
+    VARIANT(BOGFD_FILE) \
+    VARIANT(DIR) \
+    VARIANT(BOGFD_NULL) \
+    VARIANT(IRQ) \
+    VARIANT(UNIX) \
+    VARIANT(KQUEUE) \
+    VARIANT(PENDING)
+
+#define BOGFD_TYPE_ENUM_VARIANT(NAME) NAME,
+
+typedef enum {
+    BOGFD_TYPE_ENUM(BOGFD_TYPE_ENUM_VARIANT)
+} bogfd_type;
+
 #define BOGFD_STATUS_SIZE sizeof(int)
 
 struct pipe_buffer {
@@ -26,7 +35,7 @@ struct pipe_buffer {
 
 
 struct BogusFD {
-	int type;
+	bogfd_type type;
 	unsigned long flags;
 	struct lock lock;
 	union {

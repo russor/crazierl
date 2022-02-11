@@ -460,10 +460,10 @@ void halt(char * message, int mode) {
 	}
 	for (int i = 2; i >= 0; --i) {
 		LOCK(&FDS[i].lock);
-		if (FDS[i].type == BOGFD_PIPE) {
+		if (FDS[i].type == PIPE) {
 			term_printn(FDS[i].pipe->pb->data, FDS[i].pipe->pb->length);
 		}
-		FDS[i].type = BOGFD_TERMOUT;
+		FDS[i].type = TERMOUT;
 		UNLOCK(&FDS[i].lock);
 	}
 	if (mode != 1) {
@@ -871,7 +871,7 @@ void handle_irq(unsigned int vector)
 		default: {
 			int found = 0;
 			for (int fd = 0; fd < BOGFD_MAX; ++fd) {
-				if (FDS[fd].type == BOGFD_IRQ && FDS[fd].status[0] == vector) {
+				if (FDS[fd].type == IRQ && FDS[fd].status[0] == vector) {
 					++found;
 					write(fd, "!", 1);
 				}
@@ -897,12 +897,12 @@ ssize_t write(int fd, const void * buf, size_t nbyte) {
 		return -EBADF;
 	}
 	LOCK(&FDS[fd].lock);
-	if (FDS[fd].type == BOGFD_TERMOUT || FDS[fd].type == BOGFD_TERMIN) {
+	if (FDS[fd].type == TERMOUT || FDS[fd].type == TERMIN) {
 		term_printn(buf, nbyte);
 		written = nbyte;
 		UNLOCK(&FDS[fd].lock);
 		return written; // bail out early, don't try to notify
-	} else if (FDS[fd].type == BOGFD_PIPE) {
+	} else if (FDS[fd].type == PIPE) {
 		if (FDS[fd].pipe == NULL) {
 			UNLOCK(&FDS[fd].lock);
 			return -EPIPE;
@@ -924,7 +924,7 @@ ssize_t write(int fd, const void * buf, size_t nbyte) {
 			check_bnotes_fd(FDS[fd].pipe);
 			UNLOCK(&FDS[fd].pipe->lock);
 		}
-	} else if (FDS[fd].type == BOGFD_IRQ) {
+	} else if (FDS[fd].type == IRQ) {
 		FDS[fd].status[1] = 1;
 		written = 1;
 		wait_target = &FDS[fd];
@@ -962,7 +962,7 @@ size_t kern_read(int fd, void * buf, size_t nbyte, int force_async) {
 	while (1) {
 		LOCK(&FDS[fd].lock);
 		size_t read = 0;
-		if (FDS[fd].type == BOGFD_PIPE) {
+		if (FDS[fd].type == PIPE) {
 			if (FDS[fd].pb->length) {
 				read = min(nbyte, FDS[fd].pb->length);
 				memcpy(buf, FDS[fd].pb->data, read);
@@ -995,7 +995,7 @@ size_t kern_read(int fd, void * buf, size_t nbyte, int force_async) {
 			// return here, because we don't want to block on a file!
 			UNLOCK(&FDS[fd].lock);
 			return read;
-		} else if (FDS[fd].type == BOGFD_IRQ) {
+		} else if (FDS[fd].type == IRQ) {
 			if (FDS[fd].status[1]) {
 				((char *)buf)[0] = '!';
 				read = 1;
@@ -1155,18 +1155,18 @@ int kern_ppoll(struct ppoll_args *a) {
 			if (a->fds[i].fd < 0 || a->fds[i].fd >= BOGFD_MAX) { continue; } // no EBADF?
 			struct BogusFD *fd = &FDS[a->fds[i].fd];
 			a->fds[i].revents = 0;
-			if (a->fds[i].events && fd->type == BOGFD_PIPE && fd->pipe == NULL) {
+			if (a->fds[i].events && fd->type == PIPE && fd->pipe == NULL) {
 				a->fds[i].revents = a->fds[i].events;
 				++changedfds;
 				continue;
 			}
-			if ((a->fds[i].events & POLLIN && fd->type == BOGFD_IRQ && fd->status[1] != 0) ||
-			    (a->fds[i].events & POLLIN && fd->type == BOGFD_PIPE && fd->pb->length != 0)
+			if ((a->fds[i].events & POLLIN && fd->type == IRQ && fd->status[1] != 0) ||
+			    (a->fds[i].events & POLLIN && fd->type == PIPE && fd->pb->length != 0)
 			   ) {
 				a->fds[i].revents |= POLLIN;
 				++changedfds;
 			}
-			if (a->fds[i].events & POLLOUT && fd->type == BOGFD_PIPE && fd->pipe->pb->length < BOGFD_PB_LEN) {
+			if (a->fds[i].events & POLLOUT && fd->type == PIPE && fd->pipe->pb->length < BOGFD_PB_LEN) {
 				a->fds[i].revents |= POLLOUT;
 				++changedfds;
 			}
@@ -1213,7 +1213,7 @@ int check_bnote(size_t i, struct BogusFD * fd) {
 	switch (BNOTES[i].filter) {
 		case EVFILT_READ: {
 			switch(fd->type) {
-				case BOGFD_PIPE: {
+				case PIPE: {
 					BNOTES[i].data = fd->pb->length;
 					if (BNOTES[i].data > 0) {
 						BNOTES[i].status = 1;
@@ -1222,12 +1222,12 @@ int check_bnote(size_t i, struct BogusFD * fd) {
 					}
 					break;
 				}
-				case BOGFD_UNIX: { // not yet bound, can't read
+				case UNIX: { // not yet bound, can't read
 					BNOTES[i].data = 0;
 					BNOTES[i].status = 0;
 					break;
 				}
-				case BOGFD_IRQ: {
+				case IRQ: {
 					if (fd->status[1]) {
 						BNOTES[i].data = 1;
 						BNOTES[i].status = 1;
@@ -1245,7 +1245,7 @@ int check_bnote(size_t i, struct BogusFD * fd) {
 		}
 		case EVFILT_WRITE: {
 			switch(fd->type) {
-				case BOGFD_PIPE: {
+				case PIPE: {
 					if (fd->pipe == NULL) {
 						BNOTES[i].data = -1;
 						BNOTES[i].status = -1;
@@ -1260,12 +1260,12 @@ int check_bnote(size_t i, struct BogusFD * fd) {
 						break;
 					}
 				}
-				case BOGFD_UNIX: { // not yet bound, can't write
+				case UNIX: { // not yet bound, can't write
 					BNOTES[i].data = 0;
 					BNOTES[i].status = 0;
 					break;
 				}
-				case BOGFD_IRQ: { // can't write to an interrupt vector
+				case IRQ: { // can't write to an interrupt vector
 					BNOTES[i].data = 0;
 					BNOTES[i].status = 0;
 					break;
@@ -1357,7 +1357,7 @@ int kern_kevent(struct kevent_args *a) {
 		//ERROR_PRINTF("thread %d kqueue %d, %d changes, waiting for %d events, timeout 0\r\n", current_thread, kq, a->nchanges, a->nevents);
 	}
 	LOCK(&FDS[kq].lock);
-	if (FDS[kq].type != BOGFD_KQUEUE) {
+	if (FDS[kq].type != KQUEUE) {
 		ERROR_PRINTF("kqueue (...) = EBADF\r\n");
 		UNLOCK(&FDS[kq].lock);
 		return -EBADF;
@@ -1373,10 +1373,10 @@ int kern_kevent(struct kevent_args *a) {
 			size_t fd = (size_t) a->changelist[i].ident;
 			u_short flags = a->changelist[i].flags;
 			LOCK(&FDS[fd].lock);
-			if (FDS[fd].type == BOGFD_KQUEUE) {
+			if (FDS[fd].type == KQUEUE) {
 				halt("can't kevent a kqueue, that's madness!", 0);
 			}
-			if (FDS[fd].type != BOGFD_CLOSED) {
+			if (FDS[fd].type != CLOSED) {
 				if (flags & (EV_ADD | EV_ENABLE | EV_DISABLE)) {
 					if (flags & ~ (EV_ADD  | EV_ENABLE | EV_DISABLE | EV_DISPATCH)) {
 						UNLOCK(&FDS[kq].lock);
@@ -1656,7 +1656,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 		case SYS_open: {
 			struct open_args *a = argp;
 			LOCK(&all_fds);
-			while (next_fd < BOGFD_MAX && FDS[next_fd].type != BOGFD_CLOSED) {
+			while (next_fd < BOGFD_MAX && FDS[next_fd].type != CLOSED) {
 				++next_fd;
 			}
 			if (next_fd >= BOGFD_MAX) {
@@ -1667,7 +1667,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			size_t the_fd = next_fd;
 			++next_fd;
 			LOCK(&FDS[the_fd].lock);
-			FDS[the_fd].type = BOGFD_PENDING;
+			FDS[the_fd].type = PENDING;
 			UNLOCK(&all_fds);
 
 			char path[256];
@@ -1681,7 +1681,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				size_t len = strlen(path);
 				file = find_dir(path, len, 0);
 				if (file) {
-					FDS[the_fd].type = BOGFD_DIR;
+					FDS[the_fd].type = DIR;
 					FDS[the_fd].file = file;
 					FDS[the_fd].namelen = len;
 					DEBUG_PRINTF("open (%s, ...) = %d\r\n", path, the_fd);
@@ -1707,7 +1707,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			}
 			DEBUG_PRINTF ("open (%s, %08x) = ENOENT\r\n", path, a->flags);
 			LOCK(&all_fds);
-			FDS[the_fd].type = BOGFD_CLOSED;
+			FDS[the_fd].type = CLOSED;
 			UNLOCK(&FDS[the_fd].lock);
 			if (the_fd < next_fd) {
 				next_fd = the_fd;
@@ -1722,14 +1722,14 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				SYSCALL_FAILURE(EBADF);
 			}
 			LOCK(&FDS[a->fd].lock);
-			if (FDS[a->fd].type == BOGFD_PIPE) {
+			if (FDS[a->fd].type == PIPE) {
 				if (FDS[a->fd].pipe == &FDS[0]) {
 					find_cursor();
 					term_print("unpiping STDIN\r\n");
 					term_printn(FDS[a->fd].pb->data, FDS[a->fd].pb->length);
 
 					kern_munmap(PROT_KERNEL, (uintptr_t) FDS[a->fd].pb, PAGE_SIZE);
-					FDS[0].type = BOGFD_TERMIN;
+					FDS[0].type = TERMIN;
 					FDS[0].buffer = NULL;
 					FDS[0].file = NULL;
 				} else if (FDS[a->fd].pipe == &FDS[1]) {
@@ -1738,7 +1738,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					term_printn(FDS[a->fd].pb->data, FDS[a->fd].pb->length);
 
 					kern_munmap(PROT_KERNEL, (uintptr_t) FDS[a->fd].pb, PAGE_SIZE);
-					FDS[1].type = BOGFD_TERMOUT;
+					FDS[1].type = TERMOUT;
 					FDS[1].file = NULL;
 					FDS[1].buffer = NULL;
 				} else if (FDS[a->fd].pipe == &FDS[2]) {
@@ -1747,7 +1747,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					term_printn(FDS[a->fd].pb->data, FDS[a->fd].pb->length);
 
 					kern_munmap(PROT_KERNEL, (uintptr_t) FDS[a->fd].pb, PAGE_SIZE);
-					FDS[2].type = BOGFD_TERMOUT;
+					FDS[2].type = TERMOUT;
 					FDS[2].file = NULL;
 					FDS[2].buffer = NULL;
 				} else {
@@ -1759,15 +1759,15 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				}
 			}
 
-			cleanup_bnotes(a->fd, FDS[a->fd].type == BOGFD_KQUEUE);
+			cleanup_bnotes(a->fd, FDS[a->fd].type == KQUEUE);
 
-			if (FDS[a->fd].type != BOGFD_CLOSED) {
+			if (FDS[a->fd].type != CLOSED) {
 				DEBUG_PRINTF("close (%d)\r\n", a->fd);
 				FDS[a->fd].flags = 0;
 				FDS[a->fd].file = NULL;
 				FDS[a->fd].buffer = NULL;
 				LOCK(&all_fds);
-				FDS[a->fd].type = BOGFD_CLOSED;
+				FDS[a->fd].type = CLOSED;
 				UNLOCK(&FDS[a->fd].lock);
 				if (a->fd < next_fd) {
 					next_fd = a->fd;
@@ -1799,7 +1799,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				SYSCALL_FAILURE(EBADF);
 			}
 			LOCK(&FDS[a->fdes].lock);
-			if (FDS[a->fdes].type != BOGFD_IRQ) {
+			if (FDS[a->fdes].type != IRQ) {
 				UNLOCK(&FDS[a->fdes].lock);
 				SYSCALL_FAILURE(ENOTSOCK);
 			}
@@ -1828,7 +1828,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			int ret = -1;
 			switch (a->com) {
 				case TIOCGETA: {
-					if (a->fd < 0 || a->fd >= BOGFD_MAX || (FDS[a->fd].type != BOGFD_TERMIN && FDS[a->fd].type != BOGFD_TERMOUT )) {
+					if (a->fd < 0 || a->fd >= BOGFD_MAX || (FDS[a->fd].type != TERMIN && FDS[a->fd].type != TERMOUT )) {
 						SYSCALL_FAILURE(ENOTTY);
 					}
 					struct termios *t = (struct termios *)a->data;
@@ -1845,7 +1845,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					SYSCALL_SUCCESS(0);
 				}
 				case TIOCGWINSZ: {
-					if (a->fd < 0 || a->fd >= BOGFD_MAX || (FDS[a->fd].type != BOGFD_TERMIN && FDS[a->fd].type != BOGFD_TERMOUT )) {
+					if (a->fd < 0 || a->fd >= BOGFD_MAX || (FDS[a->fd].type != TERMIN && FDS[a->fd].type != TERMOUT )) {
 						SYSCALL_FAILURE(ENOTTY);
 					}
 					struct winsize *w = (struct winsize *)a->data;
@@ -1873,7 +1873,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			DEBUG_PRINTF("socket (%d, %d, %d)\r\n", a->domain, a->type, a->protocol);
 			if (a->domain == PF_UNIX) {
 				LOCK(&all_fds);
-				while (next_fd < BOGFD_MAX && FDS[next_fd].type != BOGFD_CLOSED) {
+				while (next_fd < BOGFD_MAX && FDS[next_fd].type != CLOSED) {
 					++next_fd;
 				}
 				if (next_fd >= BOGFD_MAX) {
@@ -1883,7 +1883,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				}
 				size_t the_fd = next_fd;
 				LOCK(&FDS[the_fd].lock);
-				FDS[the_fd].type = BOGFD_UNIX;
+				FDS[the_fd].type = UNIX;
 				++next_fd;
 				UNLOCK(&all_fds);
 				UNLOCK(&FDS[the_fd].lock);
@@ -1898,7 +1898,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				SYSCALL_FAILURE(EBADF);
 			}
 			LOCK(&FDS[a->s].lock);
-			if (FDS[a->s].type == BOGFD_UNIX) {
+			if (FDS[a->s].type == UNIX) {
 				char const* name = ((const struct sockaddr *)a->name)->sa_data;
 				if (strncmp(IOAPIC_PATH, name, strlen(IOAPIC_PATH)) == 0) {
 					char * endptr;
@@ -1921,7 +1921,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					uint8_t my_vector = next_irq_vector;
 					++next_irq_vector;
 
-					FDS[a->s].type = BOGFD_IRQ;
+					FDS[a->s].type = IRQ;
 					FDS[a->s].status[0] = my_vector;
 					FDS[a->s].status[1] = 0;
 					FDS[a->s].status[2] = global_irq;
@@ -1957,7 +1957,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 						++next_irq_vector;
 					}
 
-					FDS[a->s].type = BOGFD_IRQ;
+					FDS[a->s].type = IRQ;
 					FDS[a->s].status[0] = my_vector;
 					FDS[a->s].status[1] = 0;
 					FDS[a->s].status[2] = 0;
@@ -1974,15 +1974,15 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					if (fd >= 0 && fd <= 2) {
 						ERROR_PRINTF("fd %d requested by %d\r\n", fd, a->s);
 						LOCK(&FDS[fd].lock);
-						if (FDS[fd].type == BOGFD_TERMIN || FDS[fd].type == BOGFD_TERMOUT) {
-							FDS[a->s].type = BOGFD_PIPE;
+						if (FDS[fd].type == TERMIN || FDS[fd].type == TERMOUT) {
+							FDS[a->s].type = PIPE;
 							FDS[a->s].pipe = &FDS[fd];
 							if (!kern_mmap((uintptr_t*)&FDS[a->s].pb, NULL, PAGE_SIZE, PROT_READ | PROT_WRITE | PROT_KERNEL, 0)) {
 								halt ("couldn't allocate buffer for /kern/fd/", 0);
 							}
 							FDS[a->s].pb->length = 0;
 							
-							FDS[fd].type = BOGFD_PIPE;
+							FDS[fd].type = PIPE;
 							FDS[fd].pipe = &FDS[a->s];
 							FDS[fd].pb = (struct pipe_buffer *)((uintptr_t)FDS[a->s].pb + (PAGE_SIZE >> 1));
 							FDS[fd].pb->length = 0;
@@ -2010,7 +2010,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				ERROR_PRINTF("fcntl (%d, ...) = EBADF\r\n", a->fd);
 				SYSCALL_FAILURE(EBADF);
 			}
-			if (FDS[a->fd].type == BOGFD_CLOSED) {
+			if (FDS[a->fd].type == CLOSED) {
 				ERROR_PRINTF("fcntl (%d, ...) = EBADF\r\n", a->fd);
 				SYSCALL_FAILURE(EBADF);
 			}
@@ -2350,7 +2350,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			struct pipe2_args *a = argp;
 			int pipe1, pipe2;
 			LOCK(&all_fds);
-			while (next_fd < BOGFD_MAX && FDS[next_fd].type != BOGFD_CLOSED) {
+			while (next_fd < BOGFD_MAX && FDS[next_fd].type != CLOSED) {
 				++next_fd;
 			}
 			if (next_fd >= BOGFD_MAX) {
@@ -2360,7 +2360,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			}
 			pipe1 = next_fd;
 			++next_fd;
-			while (next_fd < BOGFD_MAX && FDS[next_fd].type != BOGFD_CLOSED) {
+			while (next_fd < BOGFD_MAX && FDS[next_fd].type != CLOSED) {
 				++next_fd;
 			}
 			if (next_fd >= BOGFD_MAX) {
@@ -2381,8 +2381,8 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			}
 			LOCK(&FDS[pipe1].lock);
 			LOCK(&FDS[pipe2].lock);
-			FDS[pipe1].type = BOGFD_PIPE;
-			FDS[pipe2].type = BOGFD_PIPE;
+			FDS[pipe1].type = PIPE;
+			FDS[pipe2].type = PIPE;
 			UNLOCK(&all_fds);
 			FDS[pipe1].pipe = &(FDS[pipe2]);
 			FDS[pipe2].pipe = &(FDS[pipe1]);
@@ -2410,7 +2410,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				ERROR_PRINTF("fstat () = EBADF\r\n");
 				SYSCALL_FAILURE(EBADF);
 			}
-			if (FDS[a->fd].type == BOGFD_TERMIN || FDS[a->fd].type == BOGFD_TERMOUT) {
+			if (FDS[a->fd].type == TERMIN || FDS[a->fd].type == TERMOUT) {
 				explicit_bzero(a->sb, sizeof(*a->sb));
 				a->sb->st_mode = S_IWUSR | S_IRUSR | S_IFCHR;
 				SYSCALL_SUCCESS(0);
@@ -2433,7 +2433,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				ERROR_PRINTF("fstatfs () = EBADF\r\n");
 				SYSCALL_FAILURE(EBADF);
 			}
-			if ((FDS[a->fd].type == BOGFD_DIR || FDS[a->fd].type == BOGFD_FILE)) {
+			if ((FDS[a->fd].type == DIR || FDS[a->fd].type == BOGFD_FILE)) {
 				bzero(a->buf, sizeof(struct statfs));
 				a->buf->f_version = STATFS_VERSION;
 				strlcpy(a->buf->f_fstypename, "BogusFS", sizeof(a->buf->f_fstypename));
@@ -2458,7 +2458,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			file = find_dir(a->path, strlen(a->path), NULL);
 			if (file != NULL) {
 				explicit_bzero(a->buf, sizeof(*a->buf));
-				a->buf->st_dev = BOGFD_DIR;
+				a->buf->st_dev = DIR;
 				a->buf->st_ino = (ino_t) file;
 				a->buf->st_nlink = 1;
 				a->buf->st_size = file->size;
@@ -2474,7 +2474,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 				ERROR_PRINTF("getdirentries () = EBADF\r\n");
 				SYSCALL_FAILURE(EBADF);
 			}
-			if (FDS[a->fd].type == BOGFD_DIR) {
+			if (FDS[a->fd].type == DIR) {
 				struct dirent *b = (struct dirent*) a->buf;
 				if (a->basep != NULL) {
 					*a->basep = (off_t) FDS[a->fd].file;
@@ -2574,7 +2574,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 		case SYS_clock_getres: SYSCALL_FAILURE(EINVAL); // TODO clock stuff
 		case SYS_kqueue: {
 			LOCK(&all_fds);
-			while (next_fd < BOGFD_MAX && FDS[next_fd].type != BOGFD_CLOSED) {
+			while (next_fd < BOGFD_MAX && FDS[next_fd].type != CLOSED) {
 				++next_fd;
 			}
 			if (next_fd >= BOGFD_MAX) {
@@ -2586,7 +2586,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			size_t the_fd = next_fd;
 			++next_fd;
 			LOCK(&FDS[the_fd].lock);
-			FDS[the_fd].type = BOGFD_KQUEUE;
+			FDS[the_fd].type = KQUEUE;
 			UNLOCK(&all_fds);
 			UNLOCK(&FDS[the_fd].lock);
 			SYSCALL_SUCCESS(the_fd);
@@ -2888,12 +2888,12 @@ void enable_sse() {
 void setup_fds() 
 {
 	for (int i = 0; i < BOGFD_MAX; ++i) {
-		FDS[i].type = BOGFD_CLOSED;
+		FDS[i].type = CLOSED;
 		FDS[i].bnote = BNOTE_MAX;
 	}
-	FDS[0].type = BOGFD_TERMIN;
-	FDS[1].type = BOGFD_TERMOUT;
-	FDS[2].type = BOGFD_TERMOUT;
+	FDS[0].type = TERMIN;
+	FDS[1].type = TERMOUT;
+	FDS[2].type = TERMOUT;
 	next_fd = 3;
 	next_bnote = 0;
 	for (int i = 0; i < BNOTE_MAX; ++i) {
