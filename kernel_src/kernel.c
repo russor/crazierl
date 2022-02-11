@@ -212,7 +212,6 @@ volatile int global_tsc_generation;
 __thread uint64_t tsc_time;
 __thread uint64_t time_offset;
 __thread uint64_t tsc;
-__thread uint64_t last_time;
 __thread int tsc_generation;
 __thread uint64_t scaled_time_per_tick;
 
@@ -645,12 +644,12 @@ uint64_t fixed_point_time(long scaledppm) {
 			break;
 		}
 	}
-	if (fpt > last_time) {
-		last_time = fpt;
+	if (fpt > cpus[current_cpu].last_time) {
+		cpus[current_cpu].last_time = fpt;
 		return fpt;
 	} else {
 		ERROR_PRINTF("tsc_count %llu\r\ntsc_increment %llu\r\nfpt %llu\r\nlast_time%llu\r\n\r\n",
-				tsc_count, tsc_increment, fpt, last_time);
+				tsc_count, tsc_increment, fpt, cpus[current_cpu].last_time);
 		ERROR_PRINTF("tsc %llu\r\nglobal_tsc%llu\r\ntsc_time%llu\r\nglobal_tsc_time\r\n\r\n",
 				tsc, global_tsc, tsc_time, global_tsc_time);
 		ERROR_PRINTF("tsc generation %u\r\nglobal_tsc_generation%u\r\n\r\n",

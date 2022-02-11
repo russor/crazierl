@@ -21,6 +21,7 @@ struct cpu {
     struct threadqueue timequeue;
     uint32_t clock_tick;
     uint64_t timeout;
+    uint64_t last_time;
 };
 
 #define MAX_CPUS 256
