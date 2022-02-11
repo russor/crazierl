@@ -1,4 +1,4 @@
-#include <sys/queue.h>
+#include "threads.h"
 
 extern unsigned int numcpu;
 
@@ -17,8 +17,8 @@ struct cpu {
     uint32_t apic_id;
     uint32_t volatile flags;
     uint32_t volatile current_thread;
-    TAILQ_HEAD(, crazierl_thread) runqueue;
-    TAILQ_HEAD(, crazierl_thread) timequeue;
+    struct threadqueue runqueue;
+    struct threadqueue timequeue;
     uint32_t clock_tick;
     uint64_t timeout;
 };

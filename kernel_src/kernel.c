@@ -1,16 +1,54 @@
 #define USER_STACK_SIZE 1024 * 1024
 
 #include "common.h"
-#include "files.h"
-#include "kern_mmap.h"
-#include "bogfd.h"
-#include "acpi.h"
 
 #include <stddef.h>
 #include <stdint.h>
 #include <stdatomic.h>
 #include <string.h>
+#include <stdio.h>
+#include "/usr/src/stand/i386/libi386/multiboot.h"
+typedef uint32_t u_int32_t;
+
+#include <x86/elf.h>
+//#include <sys/elf32.h>
+
+#include <errno.h>
+#include <sys/sysctl.h>
+#include <vm/vm_param.h>
+#include <sys/syscall.h>
+#include <time.h>
+#include <sys/timex.h>
+#include <stdlib.h>
+#include <sys/stat.h>
+#include <sys/ioctl.h>
+#include <term.h>
+#include <sys/resource.h>
+
+
+#include <fcntl.h>
+#include <sys/param.h>
+#include <sys/mount.h>
+#include <sys/dirent.h>
+#include <sys/uio.h>
+#include <poll.h>
+#include <sys/rtprio.h>
+#include <sys/umtx.h>
+#include <sys/sysproto.h>
+#include <stdarg.h>
+#include <rtld_printf.h>
+#include <x86intrin.h>
+#include <cpuid.h>
+#include <sys/socket.h>
+#include <sys/thr.h>
+#include <sys/event.h>
+#include <x86/fpu.h>
+
 #include "apic.h"
+#include "files.h"
+#include "kern_mmap.h"
+#include "bogfd.h"
+#include "acpi.h"
 
 extern const char *syscallnames[];
 extern void * handle_int_80;
@@ -51,46 +89,7 @@ char *__progname = "crazierlkernel";
 	#error "This code must be compiled with an x86-elf compiler"
 #endif
 
-#include <stdio.h>
-#include "/usr/src/stand/i386/libi386/multiboot.h"
-typedef uint32_t u_int32_t;
- 
-#include <x86/elf.h>
-//#include <sys/elf32.h>
 
-#include <errno.h>
-#include <sys/sysctl.h>
-#include <vm/vm_param.h>
-#include <sys/syscall.h>
-#include <time.h>
-#include <sys/timex.h>
-#include <stdlib.h>
-#include <sys/stat.h>
-#include <sys/ioctl.h>
-#include <term.h>
-#include <sys/resource.h>
-
-
-#include <fcntl.h>
-#include <sys/param.h>
-#include <sys/mount.h>
-#include <sys/dirent.h>
-#include <sys/uio.h>
-#include <poll.h>
-#include <sys/rtprio.h>
-#include <sys/umtx.h>
-#include <sys/sysproto.h>
-#include <stdarg.h>
-#include <sys/cpuset.h>
-#include <rtld_printf.h>
-#include <x86intrin.h>
-#include <cpuid.h>
-#include <sys/socket.h>
-#include <sys/thr.h>
-#include <sys/event.h>
-#include <x86/fpu.h>
-
-#include "threads.h"
 
 // include this last; use _KERNEL to avoid conflicting but unused definition
 // of int sysarch between sysproto.h and sysarch.h
@@ -116,6 +115,7 @@ uint8_t WANT_NMI = 0;
 #define THREAD_ID_OFFSET 100002
 struct crazierl_thread threads[MAX_THREADS];
 union savefpu savearea[MAX_THREADS];
+struct threadqueue runqueue, timequeue, pollqueue;
 
 __thread size_t current_thread = 0;
 __thread size_t current_cpu = -1;
@@ -589,6 +589,11 @@ void mark_thread_runnable(size_t thread) {
 			TAILQ_REMOVE(&timequeue, &threads[thread], timeq);
 		}
 	}
+	if (threads[thread].waitqhead) {
+		TAILQ_REMOVE(threads[thread].waitqhead, &threads[thread], waitq);
+		threads[thread].waitqhead = NULL;
+	}
+	
 	if (threads[thread].flags & THREAD_PINNED) {
 		unsigned int cpu = CPU_FFS(&threads[thread].cpus) - 1;
 		TAILQ_INSERT_TAIL(&cpus[cpu].runqueue, &threads[thread], runq);
@@ -936,18 +941,16 @@ ssize_t write(int fd, const void * buf, size_t nbyte) {
 		for (int thread = 0; thread < MAX_THREADS; ++thread) {
 			if (threads[thread].state == IO_READ && (struct BogusFD *) threads[thread].wait_target == wait_target) {
 				mark_thread_runnable(thread);
-			} else if (threads[thread].state == POLL) {
-				mark_thread_runnable(thread);
 			}
 		}
 		FDS[fd].flags &= ~BOGFD_BLOCKED_READ;
-	} else {
-		for (int thread = 0; thread < MAX_THREADS; ++thread) {
-			if (threads[thread].state == POLL) {
-				mark_thread_runnable(thread);
-			}
-		}
 	}
+	struct crazierl_thread *tp;
+	while ((tp = TAILQ_FIRST(&pollqueue)) != NULL) {
+		size_t i = tp - threads;
+		mark_thread_runnable(i);
+	}
+
 	UNLOCK(&thread_st);
 	return written;
 }
@@ -1005,6 +1008,13 @@ size_t kern_read(int fd, void * buf, size_t nbyte, int force_async) {
 		if (read) {
 			check_bnotes_fd(&FDS[fd]);
 			UNLOCK(&FDS[fd].lock);
+			LOCK(&thread_st);
+			struct crazierl_thread *tp;
+			while ((tp = TAILQ_FIRST(&pollqueue)) != NULL) {
+				size_t i = tp - threads;
+				mark_thread_runnable(i);
+			}
+			UNLOCK(&thread_st);
 			return read;
 		} else if (force_async || FDS[fd].flags & O_NONBLOCK) {
 			UNLOCK(&FDS[fd].lock);
@@ -1123,6 +1133,7 @@ int kern_umtx_op(struct _umtx_op_args *a) {
 }
 
 // separate function, because uint64_t breaks stack setup for thr_new otherwise
+// TODO MAYBE\ rewrite to kqueue?
 int kern_ppoll(struct ppoll_args *a) {
 	//ERROR_PRINTF("ppoll nfds=%d!\r\n", a->nfds);
 	uint64_t timeout = 0;
@@ -1164,6 +1175,8 @@ int kern_ppoll(struct ppoll_args *a) {
 			UNLOCK(&thread_st);
 			return changedfds;
 		}
+		threads[current_thread].waitqhead = &pollqueue;
+		TAILQ_INSERT_TAIL(&pollqueue, &threads[current_thread], waitq);
 		if (switch_thread(POLL, timeout, 1)) {
 			return 0;
 		};
@@ -3356,6 +3369,7 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 	}
 	TAILQ_INIT(&runqueue);
 	TAILQ_INIT(&timequeue);
+	TAILQ_INIT(&pollqueue);
 
 	while (TIMER_COUNT == cpus_inited) {
 		asm volatile ("hlt" ::); // wait for at least one timer interrupt

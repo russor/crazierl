@@ -1,4 +1,5 @@
 #include <sys/queue.h>
+#include <sys/cpuset.h>
 
 // enum magic from https://kubyshkin.name/posts/c-language-enums-tips-and-tricks/
 #define THREAD_STATE_ENUM(VARIANT) \
@@ -20,14 +21,16 @@ typedef enum {
     THREAD_STATE_ENUM(THREAD_STATE_ENUM_VARIANT)
 } thread_state;
 
-TAILQ_HEAD(, crazierl_thread) runqueue;
-TAILQ_HEAD(, crazierl_thread) timequeue;
+TAILQ_HEAD(threadqueue, crazierl_thread);
+
 
 #define THREAD_PINNED (1 << 0)
 
 struct crazierl_thread {
     TAILQ_ENTRY(crazierl_thread) runq;
     TAILQ_ENTRY(crazierl_thread) timeq;
+    TAILQ_ENTRY(crazierl_thread) waitq;
+    struct threadqueue *waitqhead;
     uint64_t timeout;
     uint64_t time;
     uint64_t start;
