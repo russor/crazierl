@@ -47,8 +47,8 @@ typedef uint32_t u_int32_t;
 #include "apic.h"
 #include "files.h"
 #include "kern_mmap.h"
-#include "bogfd.h"
 #include "acpi.h"
+#include "bogfd.h"
 
 extern const char *syscallnames[];
 extern void * handle_int_80;
@@ -579,6 +579,9 @@ void wake_cpu_for_thread(size_t thread) {
 
 void mark_thread_runnable(size_t thread) {
 	ASSERT_LOCK(&thread_st);
+	if (threads[thread].state == RUNNABLE) {
+		halt("remarking thread as runnable\r\n", 0);
+	}
 	if (threads[thread].timeout) {
 		threads[thread].timeout = 0;
 		if (threads[thread].flags & THREAD_PINNED) {
@@ -658,7 +661,7 @@ uint64_t fixed_point_time(long scaledppm) {
 	}
 }
 
-int switch_thread(thread_state new_state, uint64_t timeout, int locked) {
+int switch_thread(thread_state new_state, uint64_t timeout, int locked, struct threadqueue * waitq) {
 	if (!locked) {
 		LOCK(&thread_st);
 	} else {
@@ -668,13 +671,14 @@ int switch_thread(thread_state new_state, uint64_t timeout, int locked) {
 	//DEBUG_PRINTF("current thread %d (%p), current cpu %d\r\n", current_thread, &current_thread, current_cpu);
 	size_t old_thread = current_thread;
 	size_t target = old_thread;
+	if (threads[old_thread].state != RUNNING && threads[old_thread].state != IDLE) {
+		halt("current thread isn't running or idle\r\n", 0);
+	}
 	int timed_out = 0;
 	uint64_t current_time = fixed_point_time(0);
 	uint64_t next_timeout = current_time + FIXED_POINT_TIME_NANOSECOND(300, 0);
 	if (timeout && timeout <= current_time) {
-		if (threads[current_thread].state != RUNNING) {
-			halt("unexpected thread state", 0);
-		}
+		threads[target].wait_target = 0;
 		UNLOCK(&thread_st);
 		return 1; // don't switch if it's already past the time
 	}
@@ -687,6 +691,10 @@ int switch_thread(thread_state new_state, uint64_t timeout, int locked) {
 		timed_out = 1;
 		threads[target].timeout = 0;
 		threads[target].wait_target = 0;
+		if (threads[target].waitqhead) {
+			TAILQ_REMOVE(threads[target].waitqhead, tp, waitq);
+			threads[target].waitqhead = NULL;
+		}
 		cpus[current_cpu].flags &= ~CPU_IDLE; // no longer idle
 	} else { // no local timeout, check globals
 		tp = TAILQ_FIRST(&timequeue);
@@ -698,6 +706,10 @@ int switch_thread(thread_state new_state, uint64_t timeout, int locked) {
 				timed_out = 1;
 				threads[target].timeout = 0;
 				threads[target].wait_target = 0;
+				if (threads[target].waitqhead) {
+					TAILQ_REMOVE(threads[target].waitqhead, tp, waitq);
+					threads[target].waitqhead = NULL;
+				}
 				cpus[current_cpu].flags &= ~CPU_IDLE; // no longer idle
 				break;
 			} else {
@@ -740,6 +752,9 @@ int switch_thread(thread_state new_state, uint64_t timeout, int locked) {
 			target = current_cpu + 1; // idle thread is cpu_number + 1, guaranteed by construction
 		}
 	}
+	if (threads[target].waitqhead) {
+		halt("shouldn't have waitqhead here\r\n", 0);
+	}
 
 	DEBUG_PRINTF("switching from %d (%d) to %d (%d) on cpu %d\r\n", old_thread, new_state, target, threads[target].state, current_cpu);
 	DEBUG_PRINTF("new stack %p of %p\r\n",
@@ -760,29 +775,27 @@ int switch_thread(thread_state new_state, uint64_t timeout, int locked) {
 	if (timeout) {
 		threads[old_thread].timeout = timeout;
 		int found = 0;
+		struct threadqueue * timehead = &timequeue;
+
 		if (threads[old_thread].flags & THREAD_PINNED) {
-			TAILQ_FOREACH(tp, &cpus[current_cpu].timequeue, timeq) {
-				if (timeout < tp->timeout) {
-					found = 1;
-					TAILQ_INSERT_BEFORE(tp, &threads[old_thread], timeq);
-					break;
-				}
-			}
-			if (!found) {
-				TAILQ_INSERT_TAIL(&cpus[current_cpu].timequeue, &threads[old_thread], timeq);
-			}
-		} else {
-			TAILQ_FOREACH(tp, &timequeue, timeq) {
-				if (timeout < tp->timeout) {
-					found = 1;
-					TAILQ_INSERT_BEFORE(tp, &threads[old_thread], timeq);
-					break;
-				}
-			}
-			if (!found) {
-				TAILQ_INSERT_TAIL(&timequeue, &threads[old_thread], timeq);
+			timehead = &cpus[current_cpu].timequeue;
+		}
+		TAILQ_FOREACH(tp, timehead, timeq) {
+			if (timeout < tp->timeout) {
+				found = 1;
+				TAILQ_INSERT_BEFORE(tp, &threads[old_thread], timeq);
+				break;
 			}
 		}
+		if (!found) {
+			TAILQ_INSERT_TAIL(timehead, &threads[old_thread], timeq);
+		}
+
+		if (waitq) {
+			threads[old_thread].waitqhead = waitq;
+			TAILQ_INSERT_TAIL(threads[old_thread].waitqhead, &threads[old_thread], waitq);
+		}
+
 		if (timeout < next_timeout) {
 			next_timeout = timeout;
 		}
@@ -815,8 +828,8 @@ int switch_thread(thread_state new_state, uint64_t timeout, int locked) {
 	} else {
 		arm_timer(0);
 	}
-	int we_timed_out = switch_thread_impl(&threads[old_thread].kern_stack_cur, threads[target].kern_stack_cur);
 	cpus[current_cpu].current_thread = current_thread;
+	int we_timed_out = switch_thread_impl(&threads[old_thread].kern_stack_cur, threads[target].kern_stack_cur);
 	UNLOCK(&thread_st);
 	asm volatile ( "fxrstor (%0)" :: "a"(&savearea[current_thread]) :);
 	return we_timed_out;
@@ -856,11 +869,11 @@ void handle_irq(unsigned int vector)
 				break;
 			}
 
-			switch_thread(RUNNABLE, 0, 0);
+			switch_thread(RUNNABLE, 0, 0, NULL);
 			break;
 		}
 		case SWITCH_VECTOR: {
-			switch_thread(RUNNABLE, 0, 0);
+			switch_thread(RUNNABLE, 0, 0, NULL);
 			break;
 		}
 		case HALT_VECTOR: {
@@ -935,16 +948,14 @@ ssize_t write(int fd, const void * buf, size_t nbyte) {
 	check_bnotes_fd(&FDS[fd]);
 	UNLOCK(&FDS[fd].lock);
 	LOCK(&thread_st);
-	if (wait_target != NULL && wait_target->flags & BOGFD_BLOCKED_READ) {
-		//TODO avoid thundering herd, maybe
-		for (int thread = 0; thread < MAX_THREADS; ++thread) {
-			if (threads[thread].state == IO_READ && (struct BogusFD *) threads[thread].wait_target == wait_target) {
-				mark_thread_runnable(thread);
-			}
-		}
-		FDS[fd].flags &= ~BOGFD_BLOCKED_READ;
-	}
 	struct crazierl_thread *tp;
+	if (wait_target != NULL && wait_target->flags & BOGFD_BLOCKED_READ) {
+		while ((tp = TAILQ_FIRST(&wait_target->waiters)) != NULL) {
+			size_t i = tp - threads;
+			mark_thread_runnable(i);
+		}
+		wait_target->flags &= ~BOGFD_BLOCKED_READ;
+	}
 	while ((tp = TAILQ_FIRST(&pollqueue)) != NULL) {
 		size_t i = tp - threads;
 		mark_thread_runnable(i);
@@ -1021,9 +1032,8 @@ size_t kern_read(int fd, void * buf, size_t nbyte, int force_async) {
 		} else {
 			FDS[fd].flags |= BOGFD_BLOCKED_READ;
 			LOCK(&thread_st);
-			threads[current_thread].wait_target = (uintptr_t) &FDS[fd];
 			UNLOCK(&FDS[fd].lock);
-			switch_thread(IO_READ, 0, 1);
+			switch_thread(IO_READ, 0, 1, &FDS[fd].waiters);
 		}
 	}
 }
@@ -1070,7 +1080,7 @@ int kern_umtx_op(struct _umtx_op_args *a) {
 					halt("umtx wait_uint with timespec timeout\r\n", 0);
 				}
 				threads[current_thread].wait_target = kern_mmap_physical((uintptr_t) a->obj);
-				if (switch_thread(UMTX_WAIT, timeout, 1)) {
+				if (switch_thread(UMTX_WAIT, timeout, 1, NULL)) {
 					return -ETIMEDOUT;
 				}
 			} else {
@@ -1092,7 +1102,7 @@ int kern_umtx_op(struct _umtx_op_args *a) {
 				}
 				if (__sync_bool_compare_and_swap(&mutex->m_owner, old, old | UMUTEX_CONTESTED)) {
 					threads[current_thread].wait_target = (uintptr_t) a->obj;
-					switch_thread(UMTX_MUTEX_WAIT, 0, 1);
+					switch_thread(UMTX_MUTEX_WAIT, 0, 1, NULL);
 					LOCK(&thread_st);
 				}
 			}
@@ -1174,9 +1184,7 @@ int kern_ppoll(struct ppoll_args *a) {
 			UNLOCK(&thread_st);
 			return changedfds;
 		}
-		threads[current_thread].waitqhead = &pollqueue;
-		TAILQ_INSERT_TAIL(&pollqueue, &threads[current_thread], waitq);
-		if (switch_thread(POLL, timeout, 1)) {
+		if (switch_thread(POLL, timeout, 1, &pollqueue)) {
 			return 0;
 		};
 	}
@@ -1288,10 +1296,10 @@ void wake_kq(int kq) {
 	if (kq != BOGFD_MAX) {
 		LOCK(&thread_st);
 		if (FDS[kq].flags & BOGFD_BLOCKED_READ) {
-			for (int thread = 0; thread < MAX_THREADS; ++thread) {
-				if (threads[thread].state == IO_READ && (struct BogusFD *) threads[thread].wait_target == &FDS[kq]) {
-					mark_thread_runnable(thread);
-				}
+			struct crazierl_thread *tp;
+			while ((tp = TAILQ_FIRST(&FDS[kq].waiters)) != NULL) {
+				size_t i = tp - threads;
+				mark_thread_runnable(i);
 			}
 			FDS[kq].flags &= ~BOGFD_BLOCKED_READ;
 		}
@@ -1462,8 +1470,7 @@ int kern_kevent(struct kevent_args *a) {
 		LOCK(&thread_st);
 		FDS[kq].flags |= BOGFD_BLOCKED_READ;
 		UNLOCK(&FDS[kq].lock);
-		threads[current_thread].wait_target = (uintptr_t) &FDS[kq];
-		if (switch_thread(IO_READ, timeout, 1)) {
+		if (switch_thread(IO_READ, timeout, 1, &FDS[kq].waiters)) {
 			break;
 		}
 		LOCK(&FDS[kq].lock);
@@ -1587,8 +1594,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					} else {
 						halt("bad locking, needs fixing\r\n", 0);
 						FDS[a->s].flags |= BOGFD_BLOCKED_WRITE;
-						threads[current_thread].wait_target = (uintptr_t) &FDS[a->s];
-						switch_thread(IO_WRITE, 0, 0);
+						switch_thread(IO_WRITE, 0, 0, &FDS[a->s].waiters);
 					}
 				} else {
 					SYSCALL_FAILURE(-ret);
@@ -1607,8 +1613,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					} else {
 						halt("bad locking needs fixing\r\n", 0);
 						FDS[a->fd].flags |= BOGFD_BLOCKED_WRITE;
-						threads[current_thread].wait_target = (uintptr_t) &FDS[a->fd];
-						switch_thread(IO_WRITE, 0, 0);
+						switch_thread(IO_WRITE, 0, 0, &FDS[a->fd].waiters);
 					}
 				} else {
 					SYSCALL_FAILURE(-ret);
@@ -1641,8 +1646,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					} else {
 						halt("bad locking, needs fixing\r\n", 0);
 						FDS[a->fd].flags |= BOGFD_BLOCKED_WRITE;
-						threads[current_thread].wait_target = (uintptr_t) &FDS[a->fd];
-						switch_thread(IO_WRITE, 0, 0);
+						switch_thread(IO_WRITE, 0, 0, &FDS[a->fd].waiters);
 					}
 				} else {
 					ERROR_PRINTF("writev (%d, %08x, %d)\r\n", a->fd, a->iovp, a->iovcnt);
@@ -2033,7 +2037,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			struct select_args *a = argp;
 			if (a->nd == 0 && a->tv == NULL) {
 				ERROR_PRINTF("thread %d waiting forever\r\n", current_thread);
-				switch_thread(WAIT_FOREVER, 0, 0);
+				switch_thread(WAIT_FOREVER, 0, 0, NULL);
 			}
 			ERROR_PRINTF("select(%d, %p, %p, %p, %p)\r\n", a->nd, a->in, a->ou, a->ex, a->tv);
 			break;
@@ -2234,7 +2238,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			SYSCALL_FAILURE(EINVAL);
 		}
 		case SYS_sched_yield: {
-			switch_thread(RUNNABLE, 0, 0);
+			switch_thread(RUNNABLE, 0, 0, NULL);
 			SYSCALL_SUCCESS(0);
 		}
 		case SYS_sigprocmask: {
@@ -2305,7 +2309,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					threads[current_thread].flags &= ~THREAD_PINNED;
 				}
 				if (!CPU_ISSET(current_cpu, &threads[current_thread].cpus)) {
-					switch_thread(RUNNABLE, 0, 0);
+					switch_thread(RUNNABLE, 0, 0, NULL);
 				}
 				SYSCALL_SUCCESS(0);
 			}
@@ -2568,7 +2572,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			if (current_thread < next_thread) {
 				next_thread = current_thread;
 			}
-			switch_thread(EMPTY, 0, 1);
+			switch_thread(EMPTY, 0, 1, NULL);
 		}
 		case SYS_clock_getres: SYSCALL_FAILURE(EINVAL); // TODO clock stuff
 		case SYS_kqueue: {
@@ -2889,6 +2893,7 @@ void setup_fds()
 	for (int i = 0; i < BOGFD_MAX; ++i) {
 		FDS[i].type = CLOSED;
 		FDS[i].bnote = BNOTE_MAX;
+		TAILQ_INIT(&FDS[i].waiters);
 	}
 	FDS[0].type = TERMIN;
 	FDS[1].type = TERMOUT;
@@ -3440,6 +3445,9 @@ void LOCK(struct lock * lock)
 		_mm_pause();
 	}
 	__sync_synchronize();
+	if (lock->start != 0) {
+		halt("lock start should be zero when locked\r\n", 0);
+	}
 	if (first) {
 		lock->start = start;
 	} else {
@@ -3455,6 +3463,7 @@ void UNLOCK(struct lock * lock)
 	uint64_t end = __rdtsc();
 	size_t lock_token = current_thread + 1;
 	lock->lock_time += end - lock->start;
+	lock->start = 0;
 	__sync_synchronize();
 	if (lock_token != lock->locked) {
 		ERROR_PRINTF("lock %s(%p) unlocked by wrong thread %d != %d\r\n", lock->name, &(lock->locked), current_thread, lock->locked - 1);

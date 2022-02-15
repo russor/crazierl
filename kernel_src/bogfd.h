@@ -37,6 +37,7 @@ struct pipe_buffer {
 struct BogusFD {
 	bogfd_type type;
 	unsigned long flags;
+	struct threadqueue waiters;
 	struct lock lock;
 	union {
 		struct hardcoded_file * file;
@@ -51,7 +52,6 @@ struct BogusFD {
 		char * buffer;
 	};
 	size_t bnote;
-	
 };
 
 struct bnote { // like a FreeBSD knote, but Bogus
