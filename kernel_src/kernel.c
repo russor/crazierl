@@ -790,16 +790,16 @@ int switch_thread(thread_state new_state, uint64_t timeout, int locked, struct t
 		if (!found) {
 			TAILQ_INSERT_TAIL(timehead, &threads[old_thread], timeq);
 		}
-
-		if (waitq) {
-			threads[old_thread].waitqhead = waitq;
-			TAILQ_INSERT_TAIL(threads[old_thread].waitqhead, &threads[old_thread], waitq);
-		}
-
 		if (timeout < next_timeout) {
 			next_timeout = timeout;
 		}
 	}
+
+	if (waitq) {
+		threads[old_thread].waitqhead = waitq;
+		TAILQ_INSERT_TAIL(threads[old_thread].waitqhead, &threads[old_thread], waitq);
+	}
+
 	asm volatile ( "fxsave (%0)" :: "a"(&savearea[old_thread]) :);
 	if (threads[target].start != 0) {
 		halt("thread start time should be 0\r\n", 0);
