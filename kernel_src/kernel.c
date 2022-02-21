@@ -661,12 +661,7 @@ uint64_t fixed_point_time(long scaledppm) {
 	}
 }
 
-int switch_thread(thread_state new_state, uint64_t timeout, int locked, struct threadqueue * waitq) {
-	if (!locked) {
-		LOCK(&thread_st);
-	} else {
-		ASSERT_LOCK(&thread_st);
-	}
+int switch_thread(thread_state new_state, uint64_t timeout, int locked, struct threadqueue * waitq, struct lock * lock) {
 
 	//DEBUG_PRINTF("current thread %d (%p), current cpu %d\r\n", current_thread, &current_thread, current_cpu);
 	size_t old_thread = current_thread;
@@ -679,8 +674,18 @@ int switch_thread(thread_state new_state, uint64_t timeout, int locked, struct t
 	uint64_t next_timeout = current_time + FIXED_POINT_TIME_NANOSECOND(300, 0);
 	if (timeout && timeout <= current_time) {
 		threads[target].wait_target = 0;
-		UNLOCK(&thread_st);
+		if (locked) {
+			UNLOCK(&thread_st);
+		}
+		if (lock) {
+			UNLOCK(lock);
+		}
 		return 1; // don't switch if it's already past the time
+	}
+	if (!locked) {
+		LOCK(&thread_st);
+	} else {
+		ASSERT_LOCK(&thread_st);
 	}
 	struct crazierl_thread *tp;
 	tp = TAILQ_FIRST(&cpus[current_cpu].timequeue);
@@ -746,6 +751,9 @@ int switch_thread(thread_state new_state, uint64_t timeout, int locked, struct t
 		cpus[current_cpu].flags |= CPU_IDLE;
 		if (new_state == RUNNABLE) {
 			UNLOCK(&thread_st);
+			if (lock) {
+				UNLOCK(lock);
+			}
 			arm_timer(next_timeout - current_time);
 			return 0;
 		} else {
@@ -798,6 +806,9 @@ int switch_thread(thread_state new_state, uint64_t timeout, int locked, struct t
 	if (waitq) {
 		threads[old_thread].waitqhead = waitq;
 		TAILQ_INSERT_TAIL(threads[old_thread].waitqhead, &threads[old_thread], waitq);
+	}
+	if (lock) {
+		UNLOCK(lock);
 	}
 
 	asm volatile ( "fxsave (%0)" :: "a"(&savearea[old_thread]) :);
@@ -869,11 +880,11 @@ void handle_irq(unsigned int vector)
 				break;
 			}
 
-			switch_thread(RUNNABLE, 0, 0, NULL);
+			switch_thread(RUNNABLE, 0, 0, NULL, NULL);
 			break;
 		}
 		case SWITCH_VECTOR: {
-			switch_thread(RUNNABLE, 0, 0, NULL);
+			switch_thread(RUNNABLE, 0, 0, NULL, NULL);
 			break;
 		}
 		case HALT_VECTOR: {
@@ -1031,9 +1042,7 @@ size_t kern_read(int fd, void * buf, size_t nbyte, int force_async) {
 			return -EAGAIN;
 		} else {
 			FDS[fd].flags |= BOGFD_BLOCKED_READ;
-			LOCK(&thread_st);
-			UNLOCK(&FDS[fd].lock);
-			switch_thread(IO_READ, 0, 1, &FDS[fd].waiters);
+			switch_thread(IO_READ, 0, 0, &FDS[fd].waiters, &FDS[fd].lock);
 		}
 	}
 }
@@ -1080,7 +1089,7 @@ int kern_umtx_op(struct _umtx_op_args *a) {
 					halt("umtx wait_uint with timespec timeout\r\n", 0);
 				}
 				threads[current_thread].wait_target = kern_mmap_physical((uintptr_t) a->obj);
-				if (switch_thread(UMTX_WAIT, timeout, 1, NULL)) {
+				if (switch_thread(UMTX_WAIT, timeout, 1, NULL, NULL)) {
 					return -ETIMEDOUT;
 				}
 			} else {
@@ -1102,7 +1111,7 @@ int kern_umtx_op(struct _umtx_op_args *a) {
 				}
 				if (__sync_bool_compare_and_swap(&mutex->m_owner, old, old | UMUTEX_CONTESTED)) {
 					threads[current_thread].wait_target = (uintptr_t) a->obj;
-					switch_thread(UMTX_MUTEX_WAIT, 0, 1, NULL);
+					switch_thread(UMTX_MUTEX_WAIT, 0, 1, NULL, NULL);
 					LOCK(&thread_st);
 				}
 			}
@@ -1184,7 +1193,7 @@ int kern_ppoll(struct ppoll_args *a) {
 			UNLOCK(&thread_st);
 			return changedfds;
 		}
-		if (switch_thread(POLL, timeout, 1, &pollqueue)) {
+		if (switch_thread(POLL, timeout, 1, &pollqueue, NULL)) {
 			return 0;
 		};
 	}
@@ -1469,8 +1478,7 @@ int kern_kevent(struct kevent_args *a) {
 		//ERROR_PRINTF("thread %d kq %d sleeping until %lld (currently %lld, checked %d notes\r\n", current_thread, kq, timeout, fixed_point_time, checked);
 		LOCK(&thread_st);
 		FDS[kq].flags |= BOGFD_BLOCKED_READ;
-		UNLOCK(&FDS[kq].lock);
-		if (switch_thread(IO_READ, timeout, 1, &FDS[kq].waiters)) {
+		if (switch_thread(IO_READ, timeout, 1, &FDS[kq].waiters, &FDS[kq].lock)) {
 			break;
 		}
 		LOCK(&FDS[kq].lock);
@@ -1594,7 +1602,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					} else {
 						halt("bad locking, needs fixing\r\n", 0);
 						FDS[a->s].flags |= BOGFD_BLOCKED_WRITE;
-						switch_thread(IO_WRITE, 0, 0, &FDS[a->s].waiters);
+						switch_thread(IO_WRITE, 0, 0, &FDS[a->s].waiters, NULL);
 					}
 				} else {
 					SYSCALL_FAILURE(-ret);
@@ -1613,7 +1621,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					} else {
 						halt("bad locking needs fixing\r\n", 0);
 						FDS[a->fd].flags |= BOGFD_BLOCKED_WRITE;
-						switch_thread(IO_WRITE, 0, 0, &FDS[a->fd].waiters);
+						switch_thread(IO_WRITE, 0, 0, &FDS[a->fd].waiters, NULL);
 					}
 				} else {
 					SYSCALL_FAILURE(-ret);
@@ -1646,7 +1654,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					} else {
 						halt("bad locking, needs fixing\r\n", 0);
 						FDS[a->fd].flags |= BOGFD_BLOCKED_WRITE;
-						switch_thread(IO_WRITE, 0, 0, &FDS[a->fd].waiters);
+						switch_thread(IO_WRITE, 0, 0, &FDS[a->fd].waiters, NULL);
 					}
 				} else {
 					ERROR_PRINTF("writev (%d, %08x, %d)\r\n", a->fd, a->iovp, a->iovcnt);
@@ -2037,7 +2045,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			struct select_args *a = argp;
 			if (a->nd == 0 && a->tv == NULL) {
 				ERROR_PRINTF("thread %d waiting forever\r\n", current_thread);
-				switch_thread(WAIT_FOREVER, 0, 0, NULL);
+				switch_thread(WAIT_FOREVER, 0, 0, NULL, NULL);
 			}
 			ERROR_PRINTF("select(%d, %p, %p, %p, %p)\r\n", a->nd, a->in, a->ou, a->ex, a->tv);
 			break;
@@ -2238,7 +2246,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			SYSCALL_FAILURE(EINVAL);
 		}
 		case SYS_sched_yield: {
-			switch_thread(RUNNABLE, 0, 0, NULL);
+			switch_thread(RUNNABLE, 0, 0, NULL, NULL);
 			SYSCALL_SUCCESS(0);
 		}
 		case SYS_sigprocmask: {
@@ -2309,7 +2317,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 					threads[current_thread].flags &= ~THREAD_PINNED;
 				}
 				if (!CPU_ISSET(current_cpu, &threads[current_thread].cpus)) {
-					switch_thread(RUNNABLE, 0, 0, NULL);
+					switch_thread(RUNNABLE, 0, 0, NULL, NULL);
 				}
 				SYSCALL_SUCCESS(0);
 			}
@@ -2572,7 +2580,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			if (current_thread < next_thread) {
 				next_thread = current_thread;
 			}
-			switch_thread(EMPTY, 0, 1, NULL);
+			switch_thread(EMPTY, 0, 1, NULL, NULL);
 		}
 		case SYS_clock_getres: SYSCALL_FAILURE(EINVAL); // TODO clock stuff
 		case SYS_kqueue: {
