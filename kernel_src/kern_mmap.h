@@ -5,7 +5,7 @@
 
 #define PROT_KERNEL 0x1000
 #define PROT_FORCE  0x2000
-
+#define MAP_EARLY MAP_RESERVED0020 /* reuse reserved flag to skip locking */
 
 void kern_mmap_init(unsigned int, unsigned int);
 void kern_munmap(uint16_t, uintptr_t, uintptr_t);

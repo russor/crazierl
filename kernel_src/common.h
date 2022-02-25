@@ -9,6 +9,7 @@
 //#define DEBUG_PRINTF(...) term_printf(__VA_ARGS__); move_cursor()
 #define DEBUG_PRINTF(...)
 #define ERROR_PRINTF(...) term_printf(__VA_ARGS__); move_cursor()
+#define EARLY_ERROR_PRINTF(...) early_term_printf(__VA_ARGS__)
 
 #define FIRST_IRQ_VECTOR 0x20
 #define TIMER_VECTOR FIRST_IRQ_VECTOR
@@ -41,6 +42,7 @@ extern __thread size_t current_cpu;
 _Noreturn void halt(char * message, int dontpropagate);
 void move_cursor();
 void term_printf(const char *, ...);
+void early_term_printf(const char *, ...);
 
 #endif
 

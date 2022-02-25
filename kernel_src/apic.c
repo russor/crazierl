@@ -194,7 +194,7 @@ void ap_clock_setup()
 // Initially based on https://wiki.osdev.org/APIC_timer
 void clock_setup()
 {
-	ERROR_PRINTF("Starting clock timer calibration\r\n");
+	EARLY_ERROR_PRINTF("Starting clock timer calibration\r\n");
 	// divider 16
 	local_apic_write(APIC_LVT_TIMER, TIMER_VECTOR);
 	local_apic_write(APIC_TIMER_DIVIDE, 0x3);
@@ -211,25 +211,25 @@ void clock_setup()
 
 	uint64_t ticks = 0xFFFFFFFF - local_apic_read(APIC_TIMER_CURRENT);
 
-	ERROR_PRINTF("Clock: %llu apic ticks have occurred in %d ms\r\n", ticks, calibms);
+	EARLY_ERROR_PRINTF("Clock: %llu apic ticks have occurred in %d ms\r\n", ticks, calibms);
 
 	uint64_t tsc_ticks_per_s = (ticks * 16 * 1000) / calibms;
-	ERROR_PRINTF("Clock: Est speed (Mhz): %llu\r\n", tsc_ticks_per_s / 1000000);
+	EARLY_ERROR_PRINTF("Clock: Est speed (Mhz): %llu\r\n", tsc_ticks_per_s / 1000000);
 
 	uint64_t tsc_ticks = tsc_end - tsc_start;
-	ERROR_PRINTF("Clock: %llu tsc ticks have occurred in %d ms\r\n", tsc_ticks, calibms);
+	EARLY_ERROR_PRINTF("Clock: %llu tsc ticks have occurred in %d ms\r\n", tsc_ticks, calibms);
 	tsc_ticks_per_s = (tsc_ticks * 1000) / calibms;
-	ERROR_PRINTF("Clock: Est speed (Mhz): %llu\r\n", tsc_ticks_per_s / 1000000);
+	EARLY_ERROR_PRINTF("Clock: Est speed (Mhz): %llu\r\n", tsc_ticks_per_s / 1000000);
 	SCALED_S_PER_TSC_TICK = ((FIXED_POINT_TIME_NANOSECOND(1, 0) << TSC_TICK_SCALE)* calibms / 1000) / tsc_ticks ;
-	ERROR_PRINTF("(scaled) fixedpoint time per tsc_tick %llu\r\n", SCALED_S_PER_TSC_TICK);
+	EARLY_ERROR_PRINTF("(scaled) fixedpoint time per tsc_tick %llu\r\n", SCALED_S_PER_TSC_TICK);
 
-	ERROR_PRINTF("fixed point time in %llu ticks: %llu ns\r\n", tsc_ticks, FIXED_POINT_NANOSECONDS((SCALED_S_PER_TSC_TICK * tsc_ticks) >> TSC_TICK_SCALE));
+	EARLY_ERROR_PRINTF("fixed point time in %llu ticks: %llu ns\r\n", tsc_ticks, FIXED_POINT_NANOSECONDS((SCALED_S_PER_TSC_TICK * tsc_ticks) >> TSC_TICK_SCALE));
 
 	// Ok, now we disable the PIT timer by putting it into one-shot mode and not firing it
 	outb(PIT_CMD,  0b00110000); // 0x43 = Command regisger
 
 	clock_ticks = (ticks * CLOCK_MS) / calibms;
-	ERROR_PRINTF("Clock: Will interrupt every %d ms using %u\r\n", CLOCK_MS, clock_ticks);
+	EARLY_ERROR_PRINTF("Clock: Will interrupt every %d ms using %u\r\n", CLOCK_MS, clock_ticks);
 
 	local_apic_write(APIC_TIMER_INITIAL, clock_ticks);
 	local_apic_write(APIC_LVT_TIMER, TIMER_VECTOR);

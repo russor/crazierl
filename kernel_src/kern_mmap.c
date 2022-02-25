@@ -251,7 +251,7 @@ void kern_mmap_init (unsigned int length, unsigned int addr)
 			DEBUG_PRINTF("unavailable memory (%d) at 0x%08x; 0x%08x (%u) bytes\r\n", mmm->type, addr, len, len);
 		}
 	}
-	ERROR_PRINTF("finished setting up pages\r\n");
+	EARLY_ERROR_PRINTF("finished setting up pages\r\n");
 	PAGE_SETUP_FINISHED = 1;
 }
 
@@ -282,7 +282,9 @@ int kern_mmap (uintptr_t *ret, void * addr, size_t len, int prot, int flags)
 		mappingflags |= PAGE_FORCE;
 	}
 
-	LOCK(&mmap_lock);
+	if (! ((prot & PROT_KERNEL) && (flags & MAP_EARLY))) {
+		LOCK(&mmap_lock);
+	}
 	if (len & (PAGE_SIZE -1)) {
 		len = (len & ~(PAGE_SIZE - 1)) + PAGE_SIZE;
 	}
@@ -340,7 +342,9 @@ int kern_mmap (uintptr_t *ret, void * addr, size_t len, int prot, int flags)
 	}
 	add_page_mappings(mappingflags, *ret, len);
 	DEBUG_PRINTF("kern_mmap (%08x (%08x), %08x, %08x, %x, %x)\r\n", *ret, ret, addr, len, prot, flags);
-	UNLOCK(&mmap_lock);
+	if (! ((prot & PROT_KERNEL) && (flags & MAP_EARLY))) {
+		UNLOCK(&mmap_lock);
+	}
 	return 1;
 }
 

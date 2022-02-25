@@ -446,6 +446,16 @@ void term_printf(const char* format, ...)
        write(2, foo, strlen(foo));
 }
 
+void early_term_printf(const char* format, ...)
+{
+       va_list args;
+       va_start(args, format);
+
+       char foo[512];
+       rtld_vsnprintf(foo, sizeof(foo), format, args);
+       term_printn((uint8_t *)foo, strlen(foo));
+}
+
 void wake_cpu(size_t cpu) {
 	local_apic_write(0x310, cpus[cpu].apic_id << 24);
 	local_apic_write(0x300, 0x04000 | SWITCH_VECTOR);
@@ -2703,7 +2713,7 @@ void interrupt_setup()
 	if (rsdt == NULL) {
 		halt("ACPI is required, but could not find RSDP", 1);
 	}
-	ERROR_PRINTF("RSDT is at %p\r\n", rsdt);
+	EARLY_ERROR_PRINTF("RSDT is at %p\r\n", rsdt);
 	if (! acpi_check_table(rsdt)) {
 		halt("Invalid ACPI RSDT table\r\n", 1);
 	}
@@ -2931,24 +2941,24 @@ void idle() {
 void setup_cpus()
 {
 	if (numcpu >= MAX_THREADS) {
-		ERROR_PRINTF("MAX_THREADS set too low, minimum is numcpu (%d) + 1; 2 * numcpu would be better\r\n", numcpu);
+		EARLY_ERROR_PRINTF("MAX_THREADS set too low, minimum is numcpu (%d) + 1; 2 * numcpu would be better\r\n", numcpu);
 		halt("too many CPUs", 1);
 	}
 
-	ERROR_PRINTF("kernel TLS %08x - %08x\r\n", &__tdata_start, &__tdata_end);
+	EARLY_ERROR_PRINTF("kernel TLS %08x - %08x\r\n", &__tdata_start, &__tdata_end);
 	// add a pointer to the end, and align both start and end
 	size_t raw_tls_size = &__tdata_end - &__tdata_start;
 	size_t tls_start_padding = (uintptr_t)&__tdata_start & MAX_ALIGN;
 	size_t tls_end_padding = (((uintptr_t)&__tdata_end + sizeof(uintptr_t) + MAX_ALIGN) & ~MAX_ALIGN) - (uintptr_t)&__tdata_end;
 	size_t padded_tls_size = raw_tls_size + tls_start_padding + tls_end_padding;
-	ERROR_PRINTF("TLS size %d, padded %d\r\n", raw_tls_size, padded_tls_size);
+	EARLY_ERROR_PRINTF("TLS size %d, padded %d\r\n", raw_tls_size, padded_tls_size);
 
 	uintptr_t kernel_tls;
-	if (!kern_mmap(&kernel_tls, NULL, numcpu * padded_tls_size, PROT_READ | PROT_WRITE | PROT_KERNEL, MAP_STACK)) {
+	if (!kern_mmap(&kernel_tls, NULL, numcpu * padded_tls_size, PROT_READ | PROT_WRITE | PROT_KERNEL, MAP_STACK | MAP_EARLY)) {
 		halt("couldn't allocate Kernel TLS memory\r\n", 1);
 	}
 	explicit_bzero((void *)kernel_tls, (numcpu * padded_tls_size + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1));
-	ERROR_PRINTF("kernel_tls at %p\r\n", kernel_tls);
+	EARLY_ERROR_PRINTF("kernel_tls at %p\r\n", kernel_tls);
 
 	strncpy(threads[0].name, "main", sizeof(threads[0].name));
 	threads[0].state = RUNNING;
@@ -2970,7 +2980,7 @@ void setup_cpus()
 
 		// setup cpu specific idle thread
 		uintptr_t stack_page;
-		if (!kern_mmap(&stack_page, NULL, PAGE_SIZE, PROT_READ | PROT_WRITE | PROT_KERNEL, MAP_STACK)) {
+		if (!kern_mmap(&stack_page, NULL, PAGE_SIZE, PROT_READ | PROT_WRITE | PROT_KERNEL, MAP_STACK | MAP_EARLY)) {
 			halt("no stack page for idle thread", 1);
 		}
 		explicit_bzero((void *)stack_page, PAGE_SIZE);
@@ -3284,13 +3294,13 @@ void check_cpuid()
 	unsigned int a, b, c, d;
 	__get_cpuid(1, &a, &b, &c, &d);
 	if (! (d & bit_SSE)) {
-		ERROR_PRINTF("CPU support for SSE is required\r\n");
+		EARLY_ERROR_PRINTF("CPU support for SSE is required\r\n");
 		cont = 0;
 	}
 	if (__get_cpuid(0x80000007, &a, &b, &c, &d) == 0) {
-		ERROR_PRINTF("CPU should support cpuid leaf 0x80000007\r\n");
+		EARLY_ERROR_PRINTF("CPU should support cpuid leaf 0x80000007\r\n");
 	} else if (!(d & 0x100)) {
-		ERROR_PRINTF("CPU TSC should be invariant %X\r\n", d);
+		EARLY_ERROR_PRINTF("CPU TSC should be invariant %X\r\n", d);
 	}
 
 	if (!cont) {
@@ -3309,7 +3319,7 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 	setup_fds();
  
 	// Display some messages
-	ERROR_PRINTF("Hello, World!\r\n");
+	EARLY_ERROR_PRINTF("Hello, World!\r\n");
 	check_cpuid();
 	enable_sse();
 	interrupt_setup();
@@ -3320,11 +3330,11 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 	uintptr_t scratch;
 	
 	kern_mmap_init(mb->mmap_length, mb->mmap_addr);
-	if (!kern_mmap(&scratch, (void *)local_apic, PAGE_SIZE, PROT_KERNEL | PROT_READ | PROT_WRITE | PROT_FORCE, 0)) {
+	if (!kern_mmap(&scratch, (void *)local_apic, PAGE_SIZE, PROT_KERNEL | PROT_READ | PROT_WRITE | PROT_FORCE, MAP_EARLY)) {
 		halt("couldn't map space for Local APIC\r\n", 1);
 	}
 	for (size_t i = 0; i < io_apic_count; ++i) {
-		if (!kern_mmap(&scratch, (void *)io_apics[i].address, PAGE_SIZE, PROT_KERNEL | PROT_READ | PROT_WRITE | PROT_FORCE, 0)) {
+		if (!kern_mmap(&scratch, (void *)io_apics[i].address, PAGE_SIZE, PROT_KERNEL | PROT_READ | PROT_WRITE | PROT_FORCE, MAP_EARLY)) {
 			halt("couldn't map space for IO-APIC\r\n", 1);
 		}
 	}
