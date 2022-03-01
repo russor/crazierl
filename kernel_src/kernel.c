@@ -580,14 +580,24 @@ void wake_cpu_for_thread(size_t thread) {
 	cpuset_t t_cpus;
 	CPU_COPY(&threads[thread].cpus, &t_cpus);
 	int cpu = CPU_FFS(&t_cpus) - 1;
+	int wake_self = 0;
 	while (cpu != -1) {
 		if (cpus[cpu].flags & CPU_IDLE) {
-			cpus[cpu].flags &= ~CPU_IDLE; // don't wake multiple times!
-			wake_cpu(cpu);
-			break;
+			if (cpu == current_cpu) {
+				wake_self = 1;
+			} else {
+				cpus[cpu].flags &= ~CPU_IDLE; // don't wake multiple times!
+				wake_self = 0;
+				wake_cpu(cpu);
+				break;
+			}
 		}
 		CPU_CLR(cpu, &t_cpus);
 		cpu = CPU_FFS(&t_cpus) - 1;
+	}
+	if (wake_self) {
+		cpus[current_cpu].flags &= ~CPU_IDLE;
+		arm_timer(1);
 	}
 }
 

@@ -179,6 +179,9 @@ void arm_timer(uint64_t wait)
 		if (ticks > 0xFFFFFFFF) {
 			ticks = 0xFFFFFFFF;
 		}
+		if (ticks < 1) {
+			ticks = 1;
+		}
 		cpus[current_cpu].clock_tick = ticks & 0xFFFFFFFF;
 		local_apic_write(APIC_TIMER_INITIAL, ticks & 0xFFFFFFFF);
 	}
