@@ -115,7 +115,7 @@ uint8_t WANT_NMI = 0;
 #define THREAD_ID_OFFSET 100002
 struct crazierl_thread threads[MAX_THREADS];
 union savefpu savearea[MAX_THREADS];
-struct threadqueue runqueue, timequeue, pollqueue;
+struct threadqueue runqueue, timequeue, pollqueue, umtx_waitqueue, umtx_mutexqueue;
 
 __thread size_t current_thread = 0;
 __thread size_t current_cpu = -1;
@@ -216,6 +216,10 @@ __thread int tsc_generation;
 __thread uint64_t scaled_time_per_tick;
 
 uintptr_t user_stack;
+
+DECLARE_LOCK(umtx_wait);
+DECLARE_LOCK(umtx_mutex);
+
 
 #define IOAPIC_PATH "/kern/ioapic/"
 #define IRQ_PATH "/kern/irq/"
@@ -604,6 +608,7 @@ void mark_thread_runnable(size_t thread) {
 	if (threads[thread].waitqhead) {
 		TAILQ_REMOVE(threads[thread].waitqhead, &threads[thread], waitq);
 		threads[thread].waitqhead = NULL;
+		threads[thread].wait_target = 0;
 	}
 	
 	if (threads[thread].flags & THREAD_PINNED) {
@@ -1059,14 +1064,28 @@ size_t kern_read(int fd, void * buf, size_t nbyte, int force_async) {
 
 void umtx_wake(void * obj, u_long count) {
 	uintptr_t phys = kern_mmap_physical((uintptr_t) obj);
-	LOCK(&thread_st);
-	for (int thread = 0; count > 0 && thread < MAX_THREADS; ++thread) {
-		if (threads[thread].state == UMTX_WAIT && threads[thread].wait_target == phys) {
-			mark_thread_runnable(thread);
+	int locked = 0;
+	LOCK(&umtx_wait);
+	struct crazierl_thread *tp;
+	tp = TAILQ_FIRST(&umtx_waitqueue);
+	while (count && tp != NULL) {
+		if (tp->wait_target == phys) {
+			size_t i = tp - threads;
+			tp = TAILQ_NEXT(tp, waitq);
+			if (!locked) {
+				LOCK(&thread_st);
+				locked = 1;
+			}
+			mark_thread_runnable(i);
 			--count;
+		} else {
+			tp = TAILQ_NEXT(tp, waitq);
 		}
 	}
-	UNLOCK(&thread_st);
+	if (locked) {
+		UNLOCK(&thread_st);
+	}
+	UNLOCK(&umtx_wait);
 }
 
 // separate function, because uint64_t breaks stack setup for thr_new otherwise
@@ -1085,7 +1104,7 @@ int kern_umtx_op(struct _umtx_op_args *a) {
 		case UMTX_OP_WAIT:
 		case UMTX_OP_WAIT_UINT:
 		case UMTX_OP_WAIT_UINT_PRIVATE: {
-			LOCK(&thread_st);
+			LOCK(&umtx_wait);
 			if ((a->op == UMTX_OP_WAIT && *(u_long *)a->obj == a->val) ||
 			    (a->op != UMTX_OP_WAIT && *(u_int *)a->obj == a->val)) {
 				uint64_t timeout = 0;
@@ -1099,11 +1118,11 @@ int kern_umtx_op(struct _umtx_op_args *a) {
 					halt("umtx wait_uint with timespec timeout\r\n", 0);
 				}
 				threads[current_thread].wait_target = kern_mmap_physical((uintptr_t) a->obj);
-				if (switch_thread(UMTX_WAIT, timeout, 1, NULL, NULL)) {
+				if (switch_thread(UMTX_WAIT, timeout, 0, &umtx_waitqueue, &umtx_wait)) {
 					return -ETIMEDOUT;
 				}
 			} else {
-				UNLOCK(&thread_st);
+				UNLOCK(&umtx_wait);
 			}
 			return 0;
 		}
@@ -1112,17 +1131,17 @@ int kern_umtx_op(struct _umtx_op_args *a) {
 			if (a->uaddr1 != NULL || a->uaddr2 != NULL) {
 				halt("umtx mutex_wait with timeout\r\n", 0);
 			}
-			LOCK(&thread_st);
+			LOCK(&umtx_mutex);
 			while (1) {
 				uint32_t old = mutex->m_owner;
 				if ((old & ~UMUTEX_CONTESTED) == UMUTEX_UNOWNED) {
-					UNLOCK(&thread_st);
+					UNLOCK(&umtx_mutex);
 					break;
 				}
 				if (__sync_bool_compare_and_swap(&mutex->m_owner, old, old | UMUTEX_CONTESTED)) {
 					threads[current_thread].wait_target = (uintptr_t) a->obj;
-					switch_thread(UMTX_MUTEX_WAIT, 0, 1, NULL, NULL);
-					LOCK(&thread_st);
+					switch_thread(UMTX_MUTEX_WAIT, 0, 0, &umtx_mutexqueue, &umtx_mutex);
+					LOCK(&umtx_mutex);
 				}
 			}
 			return 0;
@@ -1130,15 +1149,19 @@ int kern_umtx_op(struct _umtx_op_args *a) {
 		case UMTX_OP_MUTEX_WAKE2: {
 			struct umutex *mutex = a->obj;
 			int found = 0;
+			LOCK(&umtx_mutex);
 			if ((mutex->m_owner & ~UMUTEX_CONTESTED) != UMUTEX_UNOWNED) {
 				found = 1;
 			}
-			LOCK(&thread_st);
-			for (int thread = 0; thread < MAX_THREADS; ++thread) {
-				if (threads[thread].state == UMTX_MUTEX_WAIT &&
-					threads[thread].wait_target == (uintptr_t) a->obj) {
+			struct crazierl_thread *tp;
+			tp = TAILQ_FIRST(&umtx_mutexqueue);
+			while (tp != NULL) {
+				if (tp->wait_target == (uintptr_t) a->obj) {
 					if (found == 0) {
-						mark_thread_runnable(thread);
+						size_t i = tp - threads;
+						tp = TAILQ_NEXT(tp, waitq);
+						LOCK(&thread_st);
+						mark_thread_runnable(i);
 						found = 1;
 					} else {
 						while (1) {
@@ -1151,7 +1174,10 @@ int kern_umtx_op(struct _umtx_op_args *a) {
 					}
 				}
 			}
-			UNLOCK(&thread_st);
+			if (found) {
+				UNLOCK(&thread_st);
+			}
+			UNLOCK(&umtx_mutex);
 			return 0;
 		}
 	}
@@ -3392,6 +3418,8 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 	TAILQ_INIT(&runqueue);
 	TAILQ_INIT(&timequeue);
 	TAILQ_INIT(&pollqueue);
+	TAILQ_INIT(&umtx_waitqueue);
+	TAILQ_INIT(&umtx_mutexqueue);
 
 	while (TIMER_COUNT == cpus_inited) {
 		asm volatile ("hlt" ::); // wait for at least one timer interrupt
@@ -3417,9 +3445,17 @@ void summary()
 {
 	uint64_t now = __rdtsc();
 	ERROR_PRINTF("%12s %16s %16s %16s %16s\r\n",
-		"lock summary", "count", "cycles", "contention", "cycles");
+		"lock summary", "count", "cycles/l", "contention", "cycles/l");
 	for (struct lock *l = (struct lock*) &__locks_start; l != &__locks_end; ++l) {
-		ERROR_PRINTF("%12s %16llu %16llu %16llu %16llu\r\n", l->name, l->lock_count, l->lock_time, l->contend_count, l->contend_time);
+		uint64_t lock_per = 0;
+		uint64_t contend_per = 0;
+		if (l->lock_count) {
+			lock_per = l->lock_time / l->lock_count;
+		}
+		if (l->contend_count) {
+			contend_per = l->contend_time / l->contend_count;
+		}
+		ERROR_PRINTF("%12s %16llu %16llu %16llu %16llu\r\n", l->name, l->lock_count, lock_per, l->contend_count, contend_per);
 	}
 
 	ERROR_PRINTF("\r\n%20s %15s %16s\r\n", "thread summary", "state", "cycles");
