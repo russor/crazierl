@@ -1565,1097 +1565,1114 @@ void kern_clock_gettime (clockid_t clock_id, struct timespec *tp) {
 #define SYSCALL_SUCCESS(ret) { iframe->flags &= ~CARRY; return ret; }
 #define SYSCALL_FAILURE(ret) { iframe->flags |= CARRY; return ret; }
 
-int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
-{	
-	void *argp = (void *)(iframe->sp + sizeof(iframe->sp));
-	switch(call) {
-	        case SYS_exit: {
-			struct sys_exit_args *a = argp;
-			ERROR_PRINTF("exit %d\r\n", a->rval);
-			halt("rebooting\r\n", 2);
-		}
-		case SYS_fork: {
-			SYSCALL_FAILURE(EAGAIN);
-		}
-		case SYS_read: {
-			struct read_args *a = argp;
-			ssize_t read = kern_read(a->fd, a->buf, a->nbyte, 0);
-			if (read < 0) {
-				SYSCALL_FAILURE(-read);
-			}
-			SYSCALL_SUCCESS(read);
-		}
-		case SYS_readv: {
-			struct readv_args *a = argp;
-			struct iovec *iov = a->iovp;
-			unsigned int iovcnt = a->iovcnt;
-			ssize_t ret = 0;
-			while (iovcnt) {
-				ssize_t nbyte = kern_read(a->fd, iov->iov_base, iov->iov_len, iovcnt != a->iovcnt);
-				if (nbyte > 0) {
-					ret += nbyte;
-				}
-				if (nbyte != a->iovcnt) {
-					if (nbyte >= 0) {
-						SYSCALL_SUCCESS(ret);
-					} else if (ret >= 0) {
-						SYSCALL_SUCCESS(ret);
-					} else {
-						SYSCALL_FAILURE(-nbyte);
-					}
-				}
-			}
-			SYSCALL_SUCCESS(ret);
-		}
-		case SYS_pread: {
-			struct pread_args *a = argp;
-			if (a->fd < 0 || a->fd >= BOGFD_MAX) {
-				ERROR_PRINTF("pread (...) = EBADF\r\n");
-				SYSCALL_FAILURE(EBADF);
-			}
-			if (FDS[a->fd].type == BOGFD_FILE) {
-				DEBUG_PRINTF("pread (%d, %p, %d)\r\n", a->fd, a->buf, a->nbyte);
-				size_t read = 0;
-				struct BogusFD *fd = &FDS[a->fd];
-				if (a->offset > 0 && a->offset < fd->file->size) {
-					read = min(a->nbyte, fd->file->size - a->offset);
-					memcpy(a->buf, fd->file->start + a->offset, read);
-				}
-				SYSCALL_SUCCESS(read);
-			}
-			ERROR_PRINTF("pread (%d, ...) = EBADF\r\n", a->fd);
-			SYSCALL_FAILURE(EBADF);
-		}
-		case SYS_sendto: {
-			struct sendto_args *a = argp;
-			while (1) {
-				ssize_t ret = write(a->s, a->buf, a->len);
-				if (ret > 0) {
-					SYSCALL_SUCCESS(ret);
-				} else if (ret == 0) {
-					if (FDS[a->s].flags & O_NONBLOCK) {
-						SYSCALL_FAILURE(EAGAIN);
-					} else {
-						halt("bad locking, needs fixing\r\n", 0);
-						FDS[a->s].flags |= BOGFD_BLOCKED_WRITE;
-						switch_thread(IO_WRITE, 0, 0, &FDS[a->s].waiters, NULL);
-					}
-				} else {
-					SYSCALL_FAILURE(-ret);
-				}
-			}
-		}
-		case SYS_write: {
-			struct write_args *a = argp;
-			while (1) { 
-				ssize_t ret = write(a->fd, a->buf, a->nbyte);
-				if (ret > 0) {
-					SYSCALL_SUCCESS(ret);
-				} else if (ret == 0) {
-					if (FDS[a->fd].flags & O_NONBLOCK) {
-						SYSCALL_FAILURE(EAGAIN);
-					} else {
-						halt("bad locking needs fixing\r\n", 0);
-						FDS[a->fd].flags |= BOGFD_BLOCKED_WRITE;
-						switch_thread(IO_WRITE, 0, 0, &FDS[a->fd].waiters, NULL);
-					}
-				} else {
-					SYSCALL_FAILURE(-ret);
-				}
-			}
-		}
-		case SYS_writev: {
-			struct writev_args *a = argp;
-			struct iovec *iov = a->iovp;
-			unsigned int iovcnt = a->iovcnt;
-			while (1) {
-				ssize_t ret = 0;
-				while (iovcnt) {
-					ssize_t nbyte = write(a->fd, iov->iov_base, iov->iov_len);
-					if (nbyte < 0) {
-						SYSCALL_FAILURE(-ret);
-					}
-					ret += nbyte;
-					if (nbyte != iov->iov_len) {
-						break;
-					}
-					++iov;
-					--iovcnt;
-				}
-				if (ret > 0) {
-					SYSCALL_SUCCESS(ret);
-				} else if (ret == 0) {
-					if (FDS[a->fd].flags & O_NONBLOCK) {
-						SYSCALL_FAILURE(EAGAIN);
-					} else {
-						halt("bad locking, needs fixing\r\n", 0);
-						FDS[a->fd].flags |= BOGFD_BLOCKED_WRITE;
-						switch_thread(IO_WRITE, 0, 0, &FDS[a->fd].waiters, NULL);
-					}
-				} else {
-					ERROR_PRINTF("writev (%d, %08x, %d)\r\n", a->fd, a->iovp, a->iovcnt);
-					SYSCALL_FAILURE(-ret);
-				}
-			}
-		}
-		case SYS_openat:
-			argp += sizeof(argp);
-		case SYS_open: {
-			struct open_args *a = argp;
-			LOCK(&all_fds);
-			while (next_fd < BOGFD_MAX && FDS[next_fd].type != CLOSED) {
-				++next_fd;
-			}
-			if (next_fd >= BOGFD_MAX) {
-				ERROR_PRINTF("open (%s) = EMFILE\r\n", a->path);
-				UNLOCK(&all_fds);
-				SYSCALL_FAILURE(EMFILE);
-			}
-			size_t the_fd = next_fd;
-			++next_fd;
-			LOCK(&FDS[the_fd].lock);
-			FDS[the_fd].type = PENDING;
-			UNLOCK(&all_fds);
+int syscall_exit (struct sys_exit_args *a, struct interrupt_frame *iframe) {
+	ERROR_PRINTF("exit %d\r\n", a->rval);
+	halt("rebooting\r\n", 2);
+}
 
-			char path[256];
-			strlcpy (path, a->path, sizeof(path));
-			if (strcmp(path, ".") == 0) {
-				strcpy(path, "");
-			}
-
-			struct hardcoded_file * file;
-			if (a->flags & O_DIRECTORY) {
-				size_t len = strlen(path);
-				file = find_dir(path, len, 0);
-				if (file) {
-					FDS[the_fd].type = DIR;
-					FDS[the_fd].file = file;
-					FDS[the_fd].namelen = len;
-					DEBUG_PRINTF("open (%s, ...) = %d\r\n", path, the_fd);
-					UNLOCK(&FDS[the_fd].lock);
-					SYSCALL_SUCCESS(the_fd);
-				}
-			} else {
-				file = find_file(path);
-				if (file != NULL) {
-					FDS[the_fd].type = BOGFD_FILE;
-					FDS[the_fd].file = file;
-					FDS[the_fd].pos = file->start;
-					DEBUG_PRINTF("open (%s, ...) = %d\r\n", path, the_fd);
-					UNLOCK(&FDS[the_fd].lock);
-					SYSCALL_SUCCESS(the_fd);
-				}
-			}
-			if (strcmp("/dev/null", path) == 0) {
-				FDS[the_fd].type = BOGFD_NULL;
-				DEBUG_PRINTF("open (%s, ...) = %d\r\n", path, the_fd);
-				UNLOCK(&FDS[the_fd].lock);
-				SYSCALL_SUCCESS(the_fd);
-			}
-			DEBUG_PRINTF ("open (%s, %08x) = ENOENT\r\n", path, a->flags);
-			LOCK(&all_fds);
-			FDS[the_fd].type = CLOSED;
-			UNLOCK(&FDS[the_fd].lock);
-			if (the_fd < next_fd) {
-				next_fd = the_fd;
-			}
-			UNLOCK(&all_fds);
-			SYSCALL_FAILURE(ENOENT);
+int syscall_read (struct read_args *a, struct interrupt_frame *iframe) {
+	ssize_t read = kern_read(a->fd, a->buf, a->nbyte, 0);
+	if (read < 0) {
+		SYSCALL_FAILURE(-read);
+	}
+	SYSCALL_SUCCESS(read);
+}
+int syscall_readv (struct readv_args *a, struct interrupt_frame *iframe) {
+	struct iovec *iov = a->iovp;
+	unsigned int iovcnt = a->iovcnt;
+	ssize_t ret = 0;
+	while (iovcnt) {
+		ssize_t nbyte = kern_read(a->fd, iov->iov_base, iov->iov_len, iovcnt != a->iovcnt);
+		if (nbyte > 0) {
+			ret += nbyte;
 		}
-		case SYS_close: {
-			struct close_args *a = argp;
-			if (a->fd < 0 || a->fd >= BOGFD_MAX) {
-				ERROR_PRINTF("close (...) = EBADF\r\n");
-				SYSCALL_FAILURE(EBADF);
-			}
-			LOCK(&FDS[a->fd].lock);
-			if (FDS[a->fd].type == PIPE) {
-				if (FDS[a->fd].pipe == &FDS[0]) {
-					find_cursor();
-					term_print("unpiping STDIN\r\n");
-					term_printn(FDS[a->fd].pb->data, FDS[a->fd].pb->length);
-
-					kern_munmap(PROT_KERNEL, (uintptr_t) FDS[a->fd].pb, PAGE_SIZE);
-					FDS[0].type = TERMIN;
-					FDS[0].buffer = NULL;
-					FDS[0].file = NULL;
-				} else if (FDS[a->fd].pipe == &FDS[1]) {
-					find_cursor();
-					term_print("unpiping STDOUT\r\n");
-					term_printn(FDS[a->fd].pb->data, FDS[a->fd].pb->length);
-
-					kern_munmap(PROT_KERNEL, (uintptr_t) FDS[a->fd].pb, PAGE_SIZE);
-					FDS[1].type = TERMOUT;
-					FDS[1].file = NULL;
-					FDS[1].buffer = NULL;
-				} else if (FDS[a->fd].pipe == &FDS[2]) {
-					find_cursor();
-					term_print("unpiping STDERR\r\n");
-					term_printn(FDS[a->fd].pb->data, FDS[a->fd].pb->length);
-
-					kern_munmap(PROT_KERNEL, (uintptr_t) FDS[a->fd].pb, PAGE_SIZE);
-					FDS[2].type = TERMOUT;
-					FDS[2].file = NULL;
-					FDS[2].buffer = NULL;
-				} else {
-					if (FDS[a->fd].pipe == NULL) {
-						kern_munmap(PROT_KERNEL, (uintptr_t) FDS[a->fd].pb & ~(PAGE_SIZE -1), PAGE_SIZE);
-					} else {
-						FDS[a->fd].pipe->pipe = NULL;
-					}
-				}
-			}
-
-			cleanup_bnotes(a->fd, FDS[a->fd].type == KQUEUE);
-
-			if (FDS[a->fd].type != CLOSED) {
-				DEBUG_PRINTF("close (%d)\r\n", a->fd);
-				FDS[a->fd].flags = 0;
-				FDS[a->fd].file = NULL;
-				FDS[a->fd].buffer = NULL;
-				LOCK(&all_fds);
-				FDS[a->fd].type = CLOSED;
-				UNLOCK(&FDS[a->fd].lock);
-				if (a->fd < next_fd) {
-					next_fd = a->fd;
-				}
-				UNLOCK(&all_fds);
-				SYSCALL_SUCCESS(0);
-			} else {
-				ERROR_PRINTF("close (%d) = EBADF\r\n", a->fd);
-				UNLOCK(&FDS[a->fd].lock);
-				SYSCALL_FAILURE(EBADF);
-			}
-		}
-		case SYS_getpid: SYSCALL_SUCCESS(2);
-		case SYS_geteuid: SYSCALL_SUCCESS(0);
-		case SYS_recvfrom: {
-			struct recvfrom_args *a = argp;
-			int ret = kern_read(a->s, a->buf, a->len, 0);
-			if (ret < 0) {
-				SYSCALL_FAILURE(-ret);
-			}
-		        if (a->from != NULL) {
-				bzero(a->from, *a->fromlenaddr);
-			}
-			SYSCALL_SUCCESS(ret);
-		}
-		case SYS_getsockname: {
-			struct getsockname_args *a = argp;
-			if (a->fdes < 0 || a->fdes >= BOGFD_MAX) {
-				SYSCALL_FAILURE(EBADF);
-			}
-			LOCK(&FDS[a->fdes].lock);
-			if (FDS[a->fdes].type != IRQ) {
-				UNLOCK(&FDS[a->fdes].lock);
-				SYSCALL_FAILURE(ENOTSOCK);
-			}
-			int len;
-			//int len = rtld_snprintf(a->asa->sa_data, *a->alen, "%s%d", IRQ_PATH, FDS[a->fdes].status[0]);
-			if (*a->alen < strlen(IRQ_PATH) + 3 + 1) { // max 256, plus 0
-				halt("buffer is too small", 0);
-			}
-
-			len = rtld_snprintf(a->asa->sa_data, *a->alen, "%s%u", IRQ_PATH, FDS[a->fdes].status[0]);
-			if (len + 1 > *a->alen) {
-				halt("buffer was too small", 0);
-			}
-			a->asa->sa_family = AF_LOCAL;
-			a->asa->sa_len = strlen(a->asa->sa_data) + 1;
-
-			UNLOCK(&FDS[a->fdes].lock);
-			SYSCALL_SUCCESS(0);
-		}
-		case SYS_access: {
-			SYSCALL_FAILURE(ENOENT);
-		}
-		case SYS_ioctl: {
-			struct ioctl_args *a = argp;
-			DEBUG_PRINTF("ioctl (%d, %08lx, ...)\r\n", a->fd, a->com);
-			int ret = -1;
-			switch (a->com) {
-				case TIOCGETA: {
-					if (a->fd < 0 || a->fd >= BOGFD_MAX || (FDS[a->fd].type != TERMIN && FDS[a->fd].type != TERMOUT )) {
-						SYSCALL_FAILURE(ENOTTY);
-					}
-					struct termios *t = (struct termios *)a->data;
-					t->c_iflag = 11010;
-					t->c_oflag = 3;
-					t->c_cflag = 19200;
-					t->c_lflag = 1483;
-					//t->c_cc = "\004\377\377\177\027\025\022\b\003\034\032\031\021\023\026\017\001\000\024\377";
-					t->c_ispeed = 38400;
-					t->c_ospeed = 38400;
-					SYSCALL_SUCCESS(0);
-				}
-				case TIOCSETA: {
-					SYSCALL_SUCCESS(0);
-				}
-				case TIOCGWINSZ: {
-					if (a->fd < 0 || a->fd >= BOGFD_MAX || (FDS[a->fd].type != TERMIN && FDS[a->fd].type != TERMOUT )) {
-						SYSCALL_FAILURE(ENOTTY);
-					}
-					struct winsize *w = (struct winsize *)a->data;
-					w->ws_row = 25;
-					w->ws_col = 80;
-					ret = 0;
-					SYSCALL_SUCCESS(0);
-				}
-			}
-			DEBUG_PRINTF("fd %d, parm_len %ld, cmd %ld, group %c\r\n", a->fd, IOCPARM_LEN(a->com), a->com & 0xff, (char) IOCGROUP(a->com));
-			SYSCALL_FAILURE(ENOTTY);
-		}
-		case SYS_readlink: {
-			SYSCALL_FAILURE(ENOENT);
-		}
-		case SYS_munmap: {
-			struct munmap_args *a = argp;
-			DEBUG_PRINTF("munmap (%08x, %d)\r\n",
-				a->addr, a->len);
-			kern_munmap(0, (uintptr_t) a->addr, a->len);
-			SYSCALL_SUCCESS(0);
-		}
-		case SYS_socket: {
-			struct socket_args *a = argp;
-			DEBUG_PRINTF("socket (%d, %d, %d)\r\n", a->domain, a->type, a->protocol);
-			if (a->domain == PF_UNIX) {
-				LOCK(&all_fds);
-				while (next_fd < BOGFD_MAX && FDS[next_fd].type != CLOSED) {
-					++next_fd;
-				}
-				if (next_fd >= BOGFD_MAX) {
-					UNLOCK(&all_fds);
-					ERROR_PRINTF("socket (..) = EMFILE\r\n");
-					SYSCALL_FAILURE(EMFILE);
-				}
-				size_t the_fd = next_fd;
-				LOCK(&FDS[the_fd].lock);
-				FDS[the_fd].type = UNIX;
-				++next_fd;
-				UNLOCK(&all_fds);
-				UNLOCK(&FDS[the_fd].lock);
-				SYSCALL_SUCCESS(the_fd);
-			}
-			SYSCALL_FAILURE(EACCES);
-		}
-		case SYS_bind: {
-			struct bind_args *a = argp;
-			if (a->s < 0 || a->s > BOGFD_MAX) {
-				ERROR_PRINTF("bind (%d, %08x, %d) = EBADF\r\n", a->s, a->name, a->namelen);
-				SYSCALL_FAILURE(EBADF);
-			}
-			LOCK(&FDS[a->s].lock);
-			if (FDS[a->s].type == UNIX) {
-				char const* name = ((const struct sockaddr *)a->name)->sa_data;
-				if (strncmp(IOAPIC_PATH, name, strlen(IOAPIC_PATH)) == 0) {
-					char * endptr;
-					long global_irq = strtol(name + strlen(IOAPIC_PATH), &endptr, 10);
-					if (*endptr != '/') {
-						halt("bad path for interrupt\r\n", 0);
-					}
-					long flags = strtol(endptr, NULL, 10);
-
-					LOCK(&all_irqs);
-					while (next_irq_vector < 0xF0) {
-						if (!(IDT[next_irq_vector].type_attr & 0x80)) {
-						    break;
-						}
-						++next_irq_vector;
-					}
-					if (next_irq_vector >= 0xF0) {
-						halt("too many irq vectors were requested, max vector is 0xF0\r\n", 0);
-					}
-					uint8_t my_vector = next_irq_vector;
-					++next_irq_vector;
-
-					FDS[a->s].type = IRQ;
-					FDS[a->s].status[0] = my_vector;
-					FDS[a->s].status[1] = 0;
-					FDS[a->s].status[2] = global_irq;
-
-					IDT[my_vector].type_attr |= 0x80;
-					UNLOCK(&all_irqs);
-					
-					ioapic_set_gsi_vector(global_irq, flags, my_vector, current_cpu);
-
-					UNCLAIMED_IRQ = 0;
-					check_bnotes_fd(&FDS[a->s]);
-					UNLOCK(&FDS[a->s].lock);
-					SYSCALL_SUCCESS(0);
-				} else if (strncmp(IRQ_PATH, name, strlen(IRQ_PATH)) == 0) {
-					char * endptr;
-					long my_vector = strtol(name + strlen(IRQ_PATH), &endptr, 10);
-					if (*endptr != '\0') {
-						halt("bad path for interrupt\r\n", 0);
-					}
-
-					LOCK(&all_irqs);
-					if (my_vector == 0) {
-						while (next_irq_vector < 0xF0) {
-							if (!(IDT[next_irq_vector].type_attr & 0x80)) {
-							    break;
-							}
-							++next_irq_vector;
-						}
-						if (next_irq_vector >= 0xF0) {
-							halt("too many irq vectors were requested, max vector is 0xF0\r\n", 0);
-						}
-						my_vector = next_irq_vector;
-						++next_irq_vector;
-					}
-
-					FDS[a->s].type = IRQ;
-					FDS[a->s].status[0] = my_vector;
-					FDS[a->s].status[1] = 0;
-					FDS[a->s].status[2] = 0;
-
-					IDT[my_vector].type_attr |= 0x80;
-					UNLOCK(&all_irqs);
-
-					UNCLAIMED_IRQ = 0;
-					check_bnotes_fd(&FDS[a->s]);
-					UNLOCK(&FDS[a->s].lock);
-					SYSCALL_SUCCESS(0);
-				} else if (strncmp("/kern/fd/", name, 9) == 0) {
-					int fd = name[9] - '0';
-					if (fd >= 0 && fd <= 2) {
-						ERROR_PRINTF("fd %d requested by %d\r\n", fd, a->s);
-						LOCK(&FDS[fd].lock);
-						if (FDS[fd].type == TERMIN || FDS[fd].type == TERMOUT) {
-							FDS[a->s].type = PIPE;
-							FDS[a->s].pipe = &FDS[fd];
-							if (!kern_mmap((uintptr_t*)&FDS[a->s].pb, NULL, PAGE_SIZE, PROT_READ | PROT_WRITE | PROT_KERNEL, 0)) {
-								halt ("couldn't allocate buffer for /kern/fd/", 0);
-							}
-							FDS[a->s].pb->length = 0;
-							
-							FDS[fd].type = PIPE;
-							FDS[fd].pipe = &FDS[a->s];
-							FDS[fd].pb = (struct pipe_buffer *)((uintptr_t)FDS[a->s].pb + (PAGE_SIZE >> 1));
-							FDS[fd].pb->length = 0;
-							check_bnotes_fd(&FDS[a->s]);
-							check_bnotes_fd(&FDS[fd]);
-							UNLOCK(&FDS[fd].lock);
-							UNLOCK(&FDS[a->s].lock);
-							SYSCALL_SUCCESS(0);
-						}
-						UNLOCK(&FDS[fd].lock);
-					}
-					UNLOCK(&FDS[a->s].lock);
-
-				}
-				SYSCALL_FAILURE(EACCES);
-			}
-			SYSCALL_FAILURE(ENOTSOCK);
-		}
-
-		case SYS_mprotect: SYSCALL_SUCCESS(0); //ignore
-		case SYS_madvise: SYSCALL_SUCCESS(0); //ignore
-		case SYS_fcntl: {
-			struct fcntl_args *a = argp;
-			if (a->fd < 0 || a->fd > BOGFD_MAX) {
-				ERROR_PRINTF("fcntl (%d, ...) = EBADF\r\n", a->fd);
-				SYSCALL_FAILURE(EBADF);
-			}
-			if (FDS[a->fd].type == CLOSED) {
-				ERROR_PRINTF("fcntl (%d, ...) = EBADF\r\n", a->fd);
-				SYSCALL_FAILURE(EBADF);
-			}
-			switch (a->cmd) {
-				case F_GETFL:
-					SYSCALL_SUCCESS(FDS[a->fd].flags &
-						(O_NONBLOCK | O_APPEND | O_DIRECT | O_ASYNC));
-				case F_SETFL: {
-					if ((a->arg & (O_NONBLOCK | O_APPEND | O_DIRECT | O_ASYNC)) != a->arg) {
-						halt("bad args to fcntl F_SETFL", 0);
-					}
-					FDS[a->fd].flags = (FDS[a->fd].flags & (O_NONBLOCK | O_APPEND | O_DIRECT | O_ASYNC)) | a->arg;
-					SYSCALL_SUCCESS(0);
-				}
-				case F_ISUNIONSTACK: {
-					SYSCALL_SUCCESS(0);
-				}
-			}
-		}
-		case SYS_select: {
-			struct select_args *a = argp;
-			if (a->nd == 0 && a->tv == NULL) {
-				ERROR_PRINTF("thread %d waiting forever\r\n", current_thread);
-				switch_thread(WAIT_FOREVER, 0, 0, NULL, NULL);
-			}
-			ERROR_PRINTF("select(%d, %p, %p, %p, %p)\r\n", a->nd, a->in, a->ou, a->ex, a->tv);
-			break;
-		}
-		case SYS_gettimeofday: {
-			struct gettimeofday_args *a = argp;
-			if (a->tp != NULL) {
-				kern_clock_gettimeofday(a->tp);
-			}
-			if (a->tzp != NULL) {
-				a->tzp->tz_minuteswest = 0;
-				a->tzp->tz_dsttime = 0;
-			}
-			SYSCALL_SUCCESS(0);
-		}
-		case SYS_getsockopt: {
-			SYSCALL_FAILURE(EBADF);
-		}
-		case SYS_settimeofday: {
-			struct gettimeofday_args *a = argp;
-			if (a->tzp != NULL) {
-				if (a->tzp->tz_minuteswest != 0 || a->tzp->tz_dsttime != 0) {
-					halt("timezones not supported\r\n", 0);
-				}
-			}
-			if (a->tp != NULL) {
-				kern_clock_settimeofday(a->tp);
-			}
-			SYSCALL_SUCCESS(0);
-		}
-		case SYS_sysarch: {
-			struct sysarch_args *a = argp;
-			switch (a->op) {
-				case I386_SET_GSBASE: {
-					uint32_t base = *((uint32_t *) a->parms);
-					threads[current_thread].tls_base = base;
-					size_t user_gs = GDT_GSBASE_OFFSET + (current_cpu * 2) + 1;
-					GDT[user_gs].base_1 = base & 0xFFFF;
-					base >>= 16;
-					GDT[user_gs].base_2 = base & 0xFF;
-					base >>= 8;
-					GDT[user_gs].base_3 = base & 0xFF;
-					SYSCALL_SUCCESS(0);
-				}
-			}
-			break;
-		}
-		case SYS_ntp_adjtime: {
-			struct ntp_adjtime_args *a = argp;
-			unsigned int modes = a->tp->modes;
-			if (modes & MOD_FREQUENCY) {
-				modes &= ~MOD_FREQUENCY;
-				fixed_point_time(a->tp->freq);
-			}
-			if (modes) {
-				ERROR_PRINTF("unhandled modes in ntp_adjtime %X\r\n", modes);
-				halt("halting\r\n", 0);
-			}
-			SYSCALL_SUCCESS(TIME_OK);
-		}
-		case SYS_getrlimit: {
-			struct __getrlimit_args *a = argp;
-			switch (a->which) {
-				case RLIMIT_STACK:
-					a->rlp->rlim_cur = USER_STACK_SIZE;
-					a->rlp->rlim_max = USER_STACK_SIZE;
-					break;
-				case RLIMIT_NOFILE:
-					a->rlp->rlim_cur = BOGFD_MAX;
-					a->rlp->rlim_max = BOGFD_MAX;
-					break;
-				default:
-					a->rlp->rlim_cur = RLIM_INFINITY;
-					a->rlp->rlim_max = RLIM_INFINITY;
-			}
-			SYSCALL_SUCCESS(0);
-		}
-		case SYS_setrlimit: {
-			struct __setrlimit_args *a = argp;
-			DEBUG_PRINTF("setrlimit (%d, {%d, %d})\r\n", a->which, a->rlp->rlim_cur, a->rlp->rlim_max);
-			switch (a->which) {
-				case RLIMIT_STACK:
-					if (a->rlp->rlim_cur > USER_STACK_SIZE) {
-						SYSCALL_FAILURE(EPERM);
-					}
-					SYSCALL_SUCCESS(0);
-			}
-			break;
-		}
-		case SYS___sysctlbyname: { // probably need to check buffer addresses and lengths
-			struct __sysctlbyname_args *a = argp;
-			if (strncmp("kern.smp.cpus", a->name, a->namelen) == 0) {
-				*(u_int *)a->old = numcpu;
-				*a->oldlenp = sizeof(u_int);
-				SYSCALL_SUCCESS(0);
-			}
-			ERROR_PRINTF("sysctlbyname (\"%s\" ...)\r\n", a->name);
-			SYSCALL_FAILURE(ENOENT);
-		}
-		case SYS___sysctl: { // probably need to check buffer addresses and lengths
-			struct sysctl_args *a = argp;
-			if (a->namelen == 2) {
-				switch (a->name[0]) {
-					case CTL_KERN: switch(a->name[1]) {
-						case KERN_OSTYPE:
-							strlcpy(a->old, "FreeBSD", *a->oldlenp);
-							SYSCALL_SUCCESS(0);
-						case KERN_OSRELEASE:
-							strlcpy(a->old, "13.0-RELEASE", *a->oldlenp);
-							SYSCALL_SUCCESS(0);
-						case KERN_VERSION:
-							strlcpy(a->old, "FreeBSD 13.0-RELEASE #0 releng/13.0-n244733-ea31abc261f: Fri Apr  9 04:24:09 UTC 2021\
-    root@releng1.nyi.freebsd.org:/usr/obj/usr/src/amd64.amd64/sys/GENERIC", *a->oldlenp);
-							SYSCALL_SUCCESS(0);
-						case KERN_HOSTNAME:
-							strlcpy(a->old, "node0.crazierl.org", *a->oldlenp);
-							SYSCALL_SUCCESS(0);
-						case KERN_ARND:{
-							rand_bytes((uint8_t *)a->old, *a->oldlenp);
-							SYSCALL_SUCCESS(0);
-						}
-						case KERN_OSRELDATE:
-							*(u_int *)a->old = 1300139; // pretend to be freebsd 13.0 for now
-							*a->oldlenp = sizeof(uint);
-							SYSCALL_SUCCESS(0);
-						case KERN_USRSTACK:
-							*(uintptr_t *)a->old = user_stack;
-							SYSCALL_SUCCESS(0);
-						case KERN_IOV_MAX:
-							*(uintptr_t *)a->old = IOV_MAX;
-							SYSCALL_SUCCESS(0);
-					}
-					case CTL_VM: switch (a->name[1]) {
-						case VM_OVERCOMMIT:
-							*(u_int *)a->old = 0;
-							*a->oldlenp = sizeof(u_int);
-							SYSCALL_SUCCESS(0);
-					}
-					case CTL_HW: switch (a->name[1]) {
-						case HW_MACHINE:
-							strlcpy(a->old, "i386", *a->oldlenp);
-							SYSCALL_SUCCESS(0);
-						case HW_NCPU:
-							DEBUG_PRINTF("hw.ncpu\r\n");
-							*(u_int *)a->old = numcpu;
-							*a->oldlenp = sizeof(u_int);
-							SYSCALL_SUCCESS(0);
-						case HW_PAGESIZE:
-							DEBUG_PRINTF("hw.pagesize\r\n");
-							*(u_int *)a->old = PAGE_SIZE;
-							*a->oldlenp = sizeof(u_int);
-							SYSCALL_SUCCESS(0);
-					}
-					case CTL_P1003_1B: switch (a->name[1]) {
-						case CTL_P1003_1B_PAGESIZE:
-							DEBUG_PRINTF("posix.pagesize\r\n");
-							*(u_int *)a->old = PAGE_SIZE;
-							*a->oldlenp = sizeof(u_int);
-							SYSCALL_SUCCESS(0);
-					}
-				}
-			}
-			ERROR_PRINTF("__sysctl (%08x, %d, %08x, %d, %08x, %d)\r\n",
-				a->name, a->namelen,
-				a->old, *a->oldlenp,
-				a->new, a->newlen);
-			for (int i = 0; i < a->namelen; ++i) {
-				ERROR_PRINTF("  %d\r\n", a->name[i]);
-			}
-			halt("sysctl\r\n", 0);
-			SYSCALL_FAILURE(ENOENT);
-		}
-		case SYS_clock_gettime: {
-			struct clock_gettime_args *a = argp;
-			switch(a->clock_id) {
-				case CLOCK_MONOTONIC: /*fall through*/
-				case CLOCK_UPTIME:
-				case CLOCK_REALTIME:
-				case CLOCK_SECOND:
-					kern_clock_gettime(a->clock_id, a->tp);
-					break;
-				default:
-					ERROR_PRINTF("clock gettime clock_id %d\r\n", a->clock_id);
-					halt("need to handle other clock mode?", 0);
-			}
-			SYSCALL_SUCCESS(0);
-		}
-		case SYS_issetugid: {
-			DEBUG_PRINTF("issetugid()\r\n");
-			SYSCALL_SUCCESS(0);
-		}
-		case SYS___getcwd: {
-			struct __getcwd_args *a = argp;
-			if (a->buflen >= 2) {
-				strlcpy(a->buf, "/", a->buflen);
-				SYSCALL_SUCCESS(0);
-			}
-			SYSCALL_FAILURE(EINVAL);
-		}
-		case SYS_sched_yield: {
-			switch_thread(RUNNABLE, 0, 0, NULL, NULL);
-			SYSCALL_SUCCESS(0);
-		}
-		case SYS_sigprocmask: {
-			struct sigprocmask_args *a = argp;
-			DEBUG_PRINTF("sigprocmask (%d, %08x, %08x)\r\n", a->how, a->set, a->oset);
-			SYSCALL_SUCCESS(0);
-		}
-		case SYS_sigaction: {
-			struct sigaction_args *a = argp;
-			DEBUG_PRINTF("sigaction (%d, %08x, %08x)\r\n", a->sig, a->act, a->oact);
-			SYSCALL_SUCCESS(0);
-		}
-		case SYS_getcontext:
-			ERROR_PRINTF("xxx sending back bogus success for getcontext\r\n");
-			SYSCALL_SUCCESS(0);
-		case SYS_thr_self: {
-			struct thr_self_args *a = argp;
-			DEBUG_PRINTF("thr_self()\r\n");
-			*a->id = THREAD_ID_OFFSET + current_thread;
-			SYSCALL_SUCCESS(0);
-		}
-		case SYS__umtx_op: {
-			int ret = kern_umtx_op((struct _umtx_op_args *) argp);
-			if (ret >= 0) {
-				SYSCALL_SUCCESS(0);
-			} else {
-				SYSCALL_FAILURE(-ret);
-			}
-		}
-		case SYS_rtprio_thread: {
-			struct rtprio_thread_args *a = argp;
-			if (a->function == RTP_LOOKUP) {
-				a->rtp->type = RTP_PRIO_NORMAL;
-				SYSCALL_SUCCESS(0);
-			}
-			break;
-		}
-		case SYS_cpuset_getaffinity: {
-			struct cpuset_getaffinity_args *a = argp;
-			if (a->cpusetsize != sizeof(cpuset_t)) {
-				ERROR_PRINTF("cpuset size %d, expecting %d\r\n", a->cpusetsize, sizeof(cpuset_t)) ;
-				SYSCALL_FAILURE(ERANGE);
-			}
-			if (a->level == CPU_LEVEL_WHICH && a->which == CPU_WHICH_PID && a->id == -1) {
-				CPU_ZERO(a->mask);
-				for (int i = 0; i < numcpu; ++i) {
-					CPU_SET(i, a->mask);
-				}
-				SYSCALL_SUCCESS(0);
-			} else if (a->level == CPU_LEVEL_WHICH && a->which == CPU_WHICH_TID && a->id == -1) {
-				CPU_COPY(&threads[current_thread].cpus, a->mask);
-				SYSCALL_SUCCESS(0);
-			}
-			ERROR_PRINTF("cpuset_getaffinity(%d, %d, %llx, %d, %08x)\r\n", a->level, a->which, a->id, a->cpusetsize, a->mask);
-			break;
-		}
-		case SYS_cpuset_setaffinity: {
-			struct cpuset_getaffinity_args *a = argp;
-			if (a->cpusetsize != sizeof(cpuset_t)) {
-				ERROR_PRINTF("cpuset size %d, expecting %d\r\n", a->cpusetsize, sizeof(cpuset_t)) ;
-				SYSCALL_FAILURE(ERANGE);
-			}
-			if (a->level == CPU_LEVEL_WHICH && a->which == CPU_WHICH_TID && a->id == -1) {
-				CPU_COPY(a->mask, &threads[current_thread].cpus);
-				if (CPU_COUNT(&threads[current_thread].cpus) == 1) {
-					threads[current_thread].flags |= THREAD_PINNED;
-				} else {
-					threads[current_thread].flags &= ~THREAD_PINNED;
-				}
-				if (!CPU_ISSET(current_cpu, &threads[current_thread].cpus)) {
-					switch_thread(RUNNABLE, 0, 0, NULL, NULL);
-				}
-				SYSCALL_SUCCESS(0);
-			}
-			ERROR_PRINTF("cpuset_setaffinity(%d, %d, %llx, %d, %08x)\r\n", a->level, a->which, a->id, a->cpusetsize, a->mask);
-			break;
-		}
-		case SYS_mmap: {
-			struct mmap_args *a = argp;
-			uintptr_t ret_addr;
-
-			if (kern_mmap(&ret_addr, a->addr, a->len, a->prot, a->flags)) {
-				if (a->fd != -1 && a->fd < BOGFD_MAX && FDS[a->fd].type == BOGFD_FILE) {
-					if (a->pos == 0 && a->addr != NULL) { // && a->len > PAGE_SIZE) {
-						ERROR_PRINTF("add-symbol-file %s -o 0x%08x\r\n", FDS[a->fd].file->name, a->addr);
-					}
-
-					if (a->pos + a->len > FDS[a->fd].file->size) {
-						size_t avail = FDS[a->fd].file->size - a->pos;
-						memcpy((void *)ret_addr, FDS[a->fd].file->start + a->pos, avail);
-						explicit_bzero((void*)(ret_addr + avail), a->len - avail);
-					} else {
-						memcpy((void *)ret_addr, FDS[a->fd].file->start + a->pos, a->len);
-					}
-				} else if (a->prot != PROT_NONE && (a->prot & PROT_FORCE) == 0) {
-					explicit_bzero((void*)ret_addr, a->len);
-				}
-				SYSCALL_SUCCESS(ret_addr);
-			} else {
-				SYSCALL_FAILURE(ret_addr);
-			}
-		}
-		case SYS_socketpair: {
-		        struct socketpair_args *spa = argp;
-			struct pipe2_args x;
-			x.fildes = spa->rsv;
-			x.flags = 0;
-			argp = &x;
-			/* fall-through */
-		}
-		case SYS_pipe2: {
-			struct pipe2_args *a = argp;
-			int pipe1, pipe2;
-			LOCK(&all_fds);
-			while (next_fd < BOGFD_MAX && FDS[next_fd].type != CLOSED) {
-				++next_fd;
-			}
-			if (next_fd >= BOGFD_MAX) {
-				ERROR_PRINTF("pipe2 (...) = EMFILE (1)\r\n");
-				UNLOCK(&all_fds);
-				SYSCALL_FAILURE(EMFILE);
-			}
-			pipe1 = next_fd;
-			++next_fd;
-			while (next_fd < BOGFD_MAX && FDS[next_fd].type != CLOSED) {
-				++next_fd;
-			}
-			if (next_fd >= BOGFD_MAX) {
-				next_fd = pipe1;
-				ERROR_PRINTF("pipe2 (...) = EMFILE (2)\r\n");
-				UNLOCK(&all_fds);
-				SYSCALL_FAILURE(EMFILE);
-			}
-			pipe2 = next_fd;
-			++next_fd;
-
-			DEBUG_PRINTF("pipe2 (%p, %08x)\r\n", a->fildes, a->flags);
-			if (!kern_mmap((uintptr_t*)&FDS[pipe1].pb, NULL, PAGE_SIZE, PROT_READ | PROT_WRITE | PROT_KERNEL, 0)) {
-				next_fd = pipe1;
-				ERROR_PRINTF("pipe2 (...) = ENOMEM\r\n");
-				UNLOCK(&all_fds);
-				SYSCALL_FAILURE(ENOMEM);
-			}
-			LOCK(&FDS[pipe1].lock);
-			LOCK(&FDS[pipe2].lock);
-			FDS[pipe1].type = PIPE;
-			FDS[pipe2].type = PIPE;
-			UNLOCK(&all_fds);
-			FDS[pipe1].pipe = &(FDS[pipe2]);
-			FDS[pipe2].pipe = &(FDS[pipe1]);
-			FDS[pipe1].pb->length = 0;
-			FDS[pipe2].pb = (struct pipe_buffer *)((uintptr_t)FDS[pipe1].pb + (PAGE_SIZE >> 1));
-			FDS[pipe2].pb->length = 0;
-			a->fildes[0] = pipe1;
-			a->fildes[1] = pipe2;
-			ERROR_PRINTF("pipe2 -> %d <-> %d\r\n", pipe1, pipe2);
-			UNLOCK(&FDS[pipe1].lock);
-			UNLOCK(&FDS[pipe2].lock);
-			SYSCALL_SUCCESS(0);
-		}
-		case SYS_ppoll: {
-			int ret = kern_ppoll((struct ppoll_args *) argp);
-			if (ret >= 0) {
+		if (nbyte != a->iovcnt) {
+			if (nbyte >= 0) {
+				SYSCALL_SUCCESS(ret);
+			} else if (ret >= 0) {
 				SYSCALL_SUCCESS(ret);
 			} else {
-				SYSCALL_FAILURE(ret);
-			};
+				SYSCALL_FAILURE(-nbyte);
+			}
 		}
-		case SYS_fstat: {
-			struct fstat_args *a = argp;
-			if (a->fd < 0 || a->fd >= BOGFD_MAX) {
-				ERROR_PRINTF("fstat () = EBADF\r\n");
-				SYSCALL_FAILURE(EBADF);
-			}
-			if (FDS[a->fd].type == TERMIN || FDS[a->fd].type == TERMOUT) {
-				explicit_bzero(a->sb, sizeof(*a->sb));
-				a->sb->st_mode = S_IWUSR | S_IRUSR | S_IFCHR;
-				SYSCALL_SUCCESS(0);
-			} else if (FDS[a->fd].type == BOGFD_FILE) {
-				explicit_bzero(a->sb, sizeof(*a->sb));
-				struct BogusFD * fd = &FDS[a->fd];
-				a->sb->st_dev = BOGFD_FILE;
-				a->sb->st_ino = (ino_t) fd->file;
-				a->sb->st_nlink = 1;
-				a->sb->st_size = fd->file->size;
-				a->sb->st_mode = S_IRUSR | S_IFREG | S_IRWXU;
-				SYSCALL_SUCCESS(0);
-			}
-			DEBUG_PRINTF("fstat (%d)\r\n", a->fd);
-			break;
+	}
+	SYSCALL_SUCCESS(ret);
+}
+int syscall_pread (struct pread_args *a, struct interrupt_frame *iframe) {
+	if (a->fd < 0 || a->fd >= BOGFD_MAX) {
+		ERROR_PRINTF("pread (...) = EBADF\r\n");
+		SYSCALL_FAILURE(EBADF);
+	}
+	if (FDS[a->fd].type == BOGFD_FILE) {
+		DEBUG_PRINTF("pread (%d, %p, %d)\r\n", a->fd, a->buf, a->nbyte);
+		size_t read = 0;
+		struct BogusFD *fd = &FDS[a->fd];
+		if (a->offset > 0 && a->offset < fd->file->size) {
+			read = min(a->nbyte, fd->file->size - a->offset);
+			memcpy(a->buf, fd->file->start + a->offset, read);
 		}
-		case SYS_fstatfs: {
-			struct fstatfs_args *a = argp;
-			if (a->fd < 0 || a->fd >= BOGFD_MAX) {
-				ERROR_PRINTF("fstatfs () = EBADF\r\n");
-				SYSCALL_FAILURE(EBADF);
+		SYSCALL_SUCCESS(read);
+	}
+	ERROR_PRINTF("pread (%d, ...) = EBADF\r\n", a->fd);
+	SYSCALL_FAILURE(EBADF);
+}
+int syscall_sendto (struct sendto_args *a, struct interrupt_frame *iframe) {
+	while (1) {
+		ssize_t ret = write(a->s, a->buf, a->len);
+		if (ret > 0) {
+			SYSCALL_SUCCESS(ret);
+		} else if (ret == 0) {
+			if (FDS[a->s].flags & O_NONBLOCK) {
+				SYSCALL_FAILURE(EAGAIN);
+			} else {
+				halt("bad locking, needs fixing\r\n", 0);
+				FDS[a->s].flags |= BOGFD_BLOCKED_WRITE;
+				switch_thread(IO_WRITE, 0, 0, &FDS[a->s].waiters, NULL);
 			}
-			if ((FDS[a->fd].type == DIR || FDS[a->fd].type == BOGFD_FILE)) {
-				bzero(a->buf, sizeof(struct statfs));
-				a->buf->f_version = STATFS_VERSION;
-				strlcpy(a->buf->f_fstypename, "BogusFS", sizeof(a->buf->f_fstypename));
-				SYSCALL_SUCCESS(0);
-			}
-			ERROR_PRINTF("fstatfs (%d)\r\n", a->fd);
-			SYSCALL_FAILURE(EBADF);
+		} else {
+			SYSCALL_FAILURE(-ret);
 		}
-		case SYS_fstatat: {
-			struct fstatat_args *a = argp;
-			struct hardcoded_file * file;
-			file = find_file(a->path);
-			if (file != NULL) {
-				explicit_bzero(a->buf, sizeof(*a->buf));
-				a->buf->st_dev = BOGFD_FILE;
-				a->buf->st_ino = (ino_t) file;
-				a->buf->st_nlink = 1;
-				a->buf->st_size = file->size;
-				a->buf->st_mode = S_IRUSR | S_IFREG;
-				SYSCALL_SUCCESS(0);
+	}
+}
+int syscall_write (struct write_args *a, struct interrupt_frame *iframe) {
+	while (1) { 
+		ssize_t ret = write(a->fd, a->buf, a->nbyte);
+		if (ret > 0) {
+			SYSCALL_SUCCESS(ret);
+		} else if (ret == 0) {
+			if (FDS[a->fd].flags & O_NONBLOCK) {
+				SYSCALL_FAILURE(EAGAIN);
+			} else {
+				halt("bad locking needs fixing\r\n", 0);
+				FDS[a->fd].flags |= BOGFD_BLOCKED_WRITE;
+				switch_thread(IO_WRITE, 0, 0, &FDS[a->fd].waiters, NULL);
 			}
-			file = find_dir(a->path, strlen(a->path), NULL);
-			if (file != NULL) {
-				explicit_bzero(a->buf, sizeof(*a->buf));
-				a->buf->st_dev = DIR;
-				a->buf->st_ino = (ino_t) file;
-				a->buf->st_nlink = 1;
-				a->buf->st_size = file->size;
-				a->buf->st_mode = S_IRUSR | S_IFDIR;
-				SYSCALL_SUCCESS(0);
-			}
-			DEBUG_PRINTF("stat (%s, %p) = ENOENT \r\n", a->path, a->buf);
-			SYSCALL_FAILURE(ENOENT);
+		} else {
+			SYSCALL_FAILURE(-ret);
 		}
-		case SYS_getdirentries: {
-			struct getdirentries_args *a = argp;
-			if (a->fd < 0 || a->fd >= BOGFD_MAX) {
-				ERROR_PRINTF("getdirentries () = EBADF\r\n");
-				SYSCALL_FAILURE(EBADF);
+	}
+}
+int syscall_writev (struct writev_args *a, struct interrupt_frame *iframe) {
+	struct iovec *iov = a->iovp;
+	unsigned int iovcnt = a->iovcnt;
+	while (1) {
+		ssize_t ret = 0;
+		while (iovcnt) {
+			ssize_t nbyte = write(a->fd, iov->iov_base, iov->iov_len);
+			if (nbyte < 0) {
+				SYSCALL_FAILURE(-ret);
 			}
-			if (FDS[a->fd].type == DIR) {
-				struct dirent *b = (struct dirent*) a->buf;
-				if (a->basep != NULL) {
-					*a->basep = (off_t) FDS[a->fd].file;
-				}
-				if (FDS[a->fd].file == NULL) {
-					SYSCALL_SUCCESS(0);
-				}
-				bzero(b, sizeof(*b));
-				b->d_fileno = (ino_t) FDS[a->fd].file;
-				b->d_reclen = sizeof(*b);
-				char * start = FDS[a->fd].file->name + FDS[a->fd].namelen + 1;
-				char * nextslash = strchr(start, '/');
+			ret += nbyte;
+			if (nbyte != iov->iov_len) {
+				break;
+			}
+			++iov;
+			--iovcnt;
+		}
+		if (ret > 0) {
+			SYSCALL_SUCCESS(ret);
+		} else if (ret == 0) {
+			if (FDS[a->fd].flags & O_NONBLOCK) {
+				SYSCALL_FAILURE(EAGAIN);
+			} else {
+				halt("bad locking, needs fixing\r\n", 0);
+				FDS[a->fd].flags |= BOGFD_BLOCKED_WRITE;
+				switch_thread(IO_WRITE, 0, 0, &FDS[a->fd].waiters, NULL);
+			}
+		} else {
+			ERROR_PRINTF("writev (%d, %08x, %d)\r\n", a->fd, a->iovp, a->iovcnt);
+			SYSCALL_FAILURE(-ret);
+		}
+	}
+}
 
-				if (nextslash != NULL) {
-					b->d_type = DT_DIR;
-					b->d_namlen = nextslash - start;
-					strlcpy(b->d_name, start, b->d_namlen + 1);
-					struct hardcoded_file * file = FDS[a->fd].file;
-					while (FDS[a->fd].file != NULL && strncmp(
-							FDS[a->fd].file->name + FDS[a->fd].namelen + 1,
-							file->name + FDS[a->fd].namelen + 1,
-							b->d_namlen + 1) == 0) {
-						file = FDS[a->fd].file;
-						FDS[a->fd].file = find_dir(file->name, FDS[a->fd].namelen, file + 1);
-					}
-				} else {
-					b->d_type = DT_REG;
-					strlcpy(b->d_name, start, sizeof(b->d_name));
-					b->d_namlen = strlen(b->d_name);
-					FDS[a->fd].file = find_dir(FDS[a->fd].file->name, FDS[a->fd].namelen, FDS[a->fd].file + 1);
-				}
-				b->d_off = (off_t) FDS[a->fd].file;
-				SYSCALL_SUCCESS(b->d_reclen);
-			}
-			ERROR_PRINTF("getdirentries (%d)\r\n", a->fd);
-			SYSCALL_FAILURE(EBADF);
-		}
-		case SYS_thr_new: {
-			struct thr_new_args *a = argp;
-			uintptr_t stack_page;
-			LOCK(&thread_st);
+int syscall_open (struct open_args *a, struct interrupt_frame *iframe) {
+	LOCK(&all_fds);
+	while (next_fd < BOGFD_MAX && FDS[next_fd].type != CLOSED) {
+		++next_fd;
+	}
+	if (next_fd >= BOGFD_MAX) {
+		ERROR_PRINTF("open (%s) = EMFILE\r\n", a->path);
+		UNLOCK(&all_fds);
+		SYSCALL_FAILURE(EMFILE);
+	}
+	size_t the_fd = next_fd;
+	++next_fd;
+	LOCK(&FDS[the_fd].lock);
+	FDS[the_fd].type = PENDING;
+	UNLOCK(&all_fds);
 
-			while (threads[next_thread].state != EMPTY && next_thread < MAX_THREADS) {
-				++next_thread;
-			}
-			size_t new_thread = next_thread;
-			if (new_thread >= MAX_THREADS) {
-				ERROR_PRINTF("thr_new (...) = EPROCLIM\r\n");
-				SYSCALL_FAILURE(EPROCLIM);
-			}
-			if (threads[new_thread].kern_stack_top != 0) {
-				stack_page = threads[new_thread].kern_stack_top - PAGE_SIZE;
-			} else if (!kern_mmap(&stack_page, NULL, PAGE_SIZE, PROT_READ | PROT_WRITE | PROT_KERNEL, 0)) {
-				ERROR_PRINTF("thr_new (...) = ENOMEM\r\n");
-				SYSCALL_FAILURE(ENOMEM);
-			}
+	char path[256];
+	strlcpy (path, a->path, sizeof(path));
+	if (strcmp(path, ".") == 0) {
+		strcpy(path, "");
+	}
 
-			explicit_bzero((void *)stack_page, PAGE_SIZE);
-			++next_thread;
-			threads[new_thread].state = INITING;
-			UNLOCK(&thread_st);
-			CPU_COPY(&threads[current_thread].cpus, &threads[new_thread].cpus);
-			threads[new_thread].flags = threads[current_thread].flags;
-			threads[new_thread].kern_stack_top = stack_page + PAGE_SIZE;
-			threads[new_thread].tls_base = (uintptr_t)a->param->tls_base;
-			bzero(&savearea[new_thread], sizeof(savearea[new_thread]));
-
-			uintptr_t new_stack_cur = setup_new_stack(threads[new_thread].kern_stack_top, threads[current_thread].kern_stack_top);
-			DEBUG_PRINTF("thr_new return (%d) on old thread (%d) cpu %d\r\n", new_thread, current_thread, current_cpu);
-			threads[new_thread].kern_stack_cur = new_stack_cur;
-			*a->param->child_tid = *a->param->parent_tid = THREAD_ID_OFFSET + new_thread;
-			struct interrupt_frame * new_frame = (struct interrupt_frame *) (threads[new_thread].kern_stack_top - sizeof(struct interrupt_frame));
-			new_frame->ip = (uint32_t) a->param->start_func;
-			new_frame->sp = (uint32_t) a->param->stack_base + a->param->stack_size - sizeof(a->param->arg);
-			*(void **)new_frame->sp = a->param->arg;
-			new_frame->sp -= sizeof(a->param->arg); //skip a spot for the return address from the initial function
-			new_frame->flags &= ~CARRY;
-			LOCK(&thread_st);
-			mark_thread_runnable(new_thread);
-			UNLOCK(&thread_st);
-			SYSCALL_SUCCESS(0);
-		}
-		case SYS_thr_exit: {
-			struct thr_exit_args *a = argp;
-			if (a->state != NULL) {
-				*(a->state) = 1;
-			}
-			umtx_wake(a->state, MAX_THREADS);
-			LOCK(&thread_st);
-
-			// TODO, check if there's any other non-empty thread
-			if (current_thread < next_thread) {
-				next_thread = current_thread;
-			}
-			switch_thread(EMPTY, 0, 1, NULL, NULL);
-		}
-		case SYS_clock_getres: SYSCALL_FAILURE(EINVAL); // TODO clock stuff
-		case SYS_kqueue: {
-			LOCK(&all_fds);
-			while (next_fd < BOGFD_MAX && FDS[next_fd].type != CLOSED) {
-				++next_fd;
-			}
-			if (next_fd >= BOGFD_MAX) {
-				ERROR_PRINTF("kqueue (...) = EMFILE\r\n");
-				UNLOCK(&all_fds);
-				SYSCALL_FAILURE(EMFILE);
-			}
-
-			size_t the_fd = next_fd;
-			++next_fd;
-			LOCK(&FDS[the_fd].lock);
-			FDS[the_fd].type = KQUEUE;
-			UNLOCK(&all_fds);
+	struct hardcoded_file * file;
+	if (a->flags & O_DIRECTORY) {
+		size_t len = strlen(path);
+		file = find_dir(path, len, 0);
+		if (file) {
+			FDS[the_fd].type = DIR;
+			FDS[the_fd].file = file;
+			FDS[the_fd].namelen = len;
+			DEBUG_PRINTF("open (%s, ...) = %d\r\n", path, the_fd);
 			UNLOCK(&FDS[the_fd].lock);
 			SYSCALL_SUCCESS(the_fd);
 		}
-		case SYS_kevent: {
-			int ret = kern_kevent((struct kevent_args *) argp);
-			if (ret >= 0) {
-				SYSCALL_SUCCESS(ret);
+	} else {
+		file = find_file(path);
+		if (file != NULL) {
+			FDS[the_fd].type = BOGFD_FILE;
+			FDS[the_fd].file = file;
+			FDS[the_fd].pos = file->start;
+			DEBUG_PRINTF("open (%s, ...) = %d\r\n", path, the_fd);
+			UNLOCK(&FDS[the_fd].lock);
+			SYSCALL_SUCCESS(the_fd);
+		}
+	}
+	if (strcmp("/dev/null", path) == 0) {
+		FDS[the_fd].type = BOGFD_NULL;
+		DEBUG_PRINTF("open (%s, ...) = %d\r\n", path, the_fd);
+		UNLOCK(&FDS[the_fd].lock);
+		SYSCALL_SUCCESS(the_fd);
+	}
+	DEBUG_PRINTF ("open (%s, %08x) = ENOENT\r\n", path, a->flags);
+	LOCK(&all_fds);
+	FDS[the_fd].type = CLOSED;
+	UNLOCK(&FDS[the_fd].lock);
+	if (the_fd < next_fd) {
+		next_fd = the_fd;
+	}
+	UNLOCK(&all_fds);
+	SYSCALL_FAILURE(ENOENT);
+}
+int syscall_close (struct close_args *a, struct interrupt_frame *iframe) {
+	if (a->fd < 0 || a->fd >= BOGFD_MAX) {
+		ERROR_PRINTF("close (...) = EBADF\r\n");
+		SYSCALL_FAILURE(EBADF);
+	}
+	LOCK(&FDS[a->fd].lock);
+	if (FDS[a->fd].type == PIPE) {
+		if (FDS[a->fd].pipe == &FDS[0]) {
+			find_cursor();
+			term_print("unpiping STDIN\r\n");
+			term_printn(FDS[a->fd].pb->data, FDS[a->fd].pb->length);
+
+			kern_munmap(PROT_KERNEL, (uintptr_t) FDS[a->fd].pb, PAGE_SIZE);
+			FDS[0].type = TERMIN;
+			FDS[0].buffer = NULL;
+			FDS[0].file = NULL;
+		} else if (FDS[a->fd].pipe == &FDS[1]) {
+			find_cursor();
+			term_print("unpiping STDOUT\r\n");
+			term_printn(FDS[a->fd].pb->data, FDS[a->fd].pb->length);
+
+			kern_munmap(PROT_KERNEL, (uintptr_t) FDS[a->fd].pb, PAGE_SIZE);
+			FDS[1].type = TERMOUT;
+			FDS[1].file = NULL;
+			FDS[1].buffer = NULL;
+		} else if (FDS[a->fd].pipe == &FDS[2]) {
+			find_cursor();
+			term_print("unpiping STDERR\r\n");
+			term_printn(FDS[a->fd].pb->data, FDS[a->fd].pb->length);
+
+			kern_munmap(PROT_KERNEL, (uintptr_t) FDS[a->fd].pb, PAGE_SIZE);
+			FDS[2].type = TERMOUT;
+			FDS[2].file = NULL;
+			FDS[2].buffer = NULL;
+		} else {
+			if (FDS[a->fd].pipe == NULL) {
+				kern_munmap(PROT_KERNEL, (uintptr_t) FDS[a->fd].pb & ~(PAGE_SIZE -1), PAGE_SIZE);
 			} else {
-				SYSCALL_FAILURE(-ret);
+				FDS[a->fd].pipe->pipe = NULL;
 			}
 		}
-		case SYS_thr_set_name: {
-			struct thr_set_name_args *a = argp;
-			rtld_snprintf(threads[a->id - THREAD_ID_OFFSET].name, sizeof(threads[0].name), "%s", a->name);
+	}
+
+	cleanup_bnotes(a->fd, FDS[a->fd].type == KQUEUE);
+
+	if (FDS[a->fd].type != CLOSED) {
+		DEBUG_PRINTF("close (%d)\r\n", a->fd);
+		FDS[a->fd].flags = 0;
+		FDS[a->fd].file = NULL;
+		FDS[a->fd].buffer = NULL;
+		LOCK(&all_fds);
+		FDS[a->fd].type = CLOSED;
+		UNLOCK(&FDS[a->fd].lock);
+		if (a->fd < next_fd) {
+			next_fd = a->fd;
+		}
+		UNLOCK(&all_fds);
+		SYSCALL_SUCCESS(0);
+	} else {
+		ERROR_PRINTF("close (%d) = EBADF\r\n", a->fd);
+		UNLOCK(&FDS[a->fd].lock);
+		SYSCALL_FAILURE(EBADF);
+	}
+}
+
+int syscall_recvfrom (struct recvfrom_args *a, struct interrupt_frame *iframe) {
+	int ret = kern_read(a->s, a->buf, a->len, 0);
+	if (ret < 0) {
+		SYSCALL_FAILURE(-ret);
+	}
+        if (a->from != NULL) {
+		bzero(a->from, *a->fromlenaddr);
+	}
+	SYSCALL_SUCCESS(ret);
+}
+int syscall_getsockname (struct getsockname_args *a, struct interrupt_frame *iframe) {
+	if (a->fdes < 0 || a->fdes >= BOGFD_MAX) {
+		SYSCALL_FAILURE(EBADF);
+	}
+	LOCK(&FDS[a->fdes].lock);
+	if (FDS[a->fdes].type != IRQ) {
+		UNLOCK(&FDS[a->fdes].lock);
+		SYSCALL_FAILURE(ENOTSOCK);
+	}
+	int len;
+	//int len = rtld_snprintf(a->asa->sa_data, *a->alen, "%s%d", IRQ_PATH, FDS[a->fdes].status[0]);
+	if (*a->alen < strlen(IRQ_PATH) + 3 + 1) { // max 256, plus 0
+		halt("buffer is too small", 0);
+	}
+
+	len = rtld_snprintf(a->asa->sa_data, *a->alen, "%s%u", IRQ_PATH, FDS[a->fdes].status[0]);
+	if (len + 1 > *a->alen) {
+		halt("buffer was too small", 0);
+	}
+	a->asa->sa_family = AF_LOCAL;
+	a->asa->sa_len = strlen(a->asa->sa_data) + 1;
+
+	UNLOCK(&FDS[a->fdes].lock);
+	SYSCALL_SUCCESS(0);
+}
+int syscall_access (struct access_args *a, struct interrupt_frame *iframe) {
+	SYSCALL_FAILURE(ENOENT);
+}
+int syscall_ioctl (struct ioctl_args *a, struct interrupt_frame *iframe) {
+	DEBUG_PRINTF("ioctl (%d, %08lx, ...)\r\n", a->fd, a->com);
+	int ret = -1;
+	switch (a->com) {
+		case TIOCGETA: {
+			if (a->fd < 0 || a->fd >= BOGFD_MAX || (FDS[a->fd].type != TERMIN && FDS[a->fd].type != TERMOUT )) {
+				SYSCALL_FAILURE(ENOTTY);
+			}
+			struct termios *t = (struct termios *)a->data;
+			t->c_iflag = 11010;
+			t->c_oflag = 3;
+			t->c_cflag = 19200;
+			t->c_lflag = 1483;
+			//t->c_cc = "\004\377\377\177\027\025\022\b\003\034\032\031\021\023\026\017\001\000\024\377";
+			t->c_ispeed = 38400;
+			t->c_ospeed = 38400;
 			SYSCALL_SUCCESS(0);
 		}
-		case SYS_getrandom: {
-		        struct getrandom_args *a = argp;
-		        rand_bytes(a->buf, a->buflen);
-		        SYSCALL_SUCCESS(a->buflen);
+		case TIOCSETA: {
+			SYSCALL_SUCCESS(0);
 		}
+		case TIOCGWINSZ: {
+			if (a->fd < 0 || a->fd >= BOGFD_MAX || (FDS[a->fd].type != TERMIN && FDS[a->fd].type != TERMOUT )) {
+				SYSCALL_FAILURE(ENOTTY);
+			}
+			struct winsize *w = (struct winsize *)a->data;
+			w->ws_row = 25;
+			w->ws_col = 80;
+			ret = 0;
+			SYSCALL_SUCCESS(0);
+		}
+	}
+	DEBUG_PRINTF("fd %d, parm_len %ld, cmd %ld, group %c\r\n", a->fd, IOCPARM_LEN(a->com), a->com & 0xff, (char) IOCGROUP(a->com));
+	SYSCALL_FAILURE(ENOTTY);
+}
+int syscall_readlink (struct readlink_args *a, struct interrupt_frame *iframe) {
+	SYSCALL_FAILURE(ENOENT);
+}
+int syscall_munmap (struct munmap_args *a, struct interrupt_frame *iframe) {
+	DEBUG_PRINTF("munmap (%08x, %d)\r\n",
+		a->addr, a->len);
+	kern_munmap(0, (uintptr_t) a->addr, a->len);
+	SYSCALL_SUCCESS(0);
+}
+int syscall_socket (struct socket_args *a, struct interrupt_frame *iframe) {
+	DEBUG_PRINTF("socket (%d, %d, %d)\r\n", a->domain, a->type, a->protocol);
+	if (a->domain == PF_UNIX) {
+		LOCK(&all_fds);
+		while (next_fd < BOGFD_MAX && FDS[next_fd].type != CLOSED) {
+			++next_fd;
+		}
+		if (next_fd >= BOGFD_MAX) {
+			UNLOCK(&all_fds);
+			ERROR_PRINTF("socket (..) = EMFILE\r\n");
+			SYSCALL_FAILURE(EMFILE);
+		}
+		size_t the_fd = next_fd;
+		LOCK(&FDS[the_fd].lock);
+		FDS[the_fd].type = UNIX;
+		++next_fd;
+		UNLOCK(&all_fds);
+		UNLOCK(&FDS[the_fd].lock);
+		SYSCALL_SUCCESS(the_fd);
+	}
+	SYSCALL_FAILURE(EACCES);
+}
+int syscall_bind (struct bind_args *a, struct interrupt_frame *iframe) {
+	if (a->s < 0 || a->s > BOGFD_MAX) {
+		ERROR_PRINTF("bind (%d, %08x, %d) = EBADF\r\n", a->s, a->name, a->namelen);
+		SYSCALL_FAILURE(EBADF);
+	}
+	LOCK(&FDS[a->s].lock);
+	if (FDS[a->s].type == UNIX) {
+		char const* name = ((const struct sockaddr *)a->name)->sa_data;
+		if (strncmp(IOAPIC_PATH, name, strlen(IOAPIC_PATH)) == 0) {
+			char * endptr;
+			long global_irq = strtol(name + strlen(IOAPIC_PATH), &endptr, 10);
+			if (*endptr != '/') {
+				halt("bad path for interrupt\r\n", 0);
+			}
+			long flags = strtol(endptr, NULL, 10);
+
+			LOCK(&all_irqs);
+			while (next_irq_vector < 0xF0) {
+				if (!(IDT[next_irq_vector].type_attr & 0x80)) {
+				    break;
+				}
+				++next_irq_vector;
+			}
+			if (next_irq_vector >= 0xF0) {
+				halt("too many irq vectors were requested, max vector is 0xF0\r\n", 0);
+			}
+			uint8_t my_vector = next_irq_vector;
+			++next_irq_vector;
+
+			FDS[a->s].type = IRQ;
+			FDS[a->s].status[0] = my_vector;
+			FDS[a->s].status[1] = 0;
+			FDS[a->s].status[2] = global_irq;
+
+			IDT[my_vector].type_attr |= 0x80;
+			UNLOCK(&all_irqs);
+
+			ioapic_set_gsi_vector(global_irq, flags, my_vector, current_cpu);
+
+			UNCLAIMED_IRQ = 0;
+			check_bnotes_fd(&FDS[a->s]);
+			UNLOCK(&FDS[a->s].lock);
+			SYSCALL_SUCCESS(0);
+		} else if (strncmp(IRQ_PATH, name, strlen(IRQ_PATH)) == 0) {
+			char * endptr;
+			long my_vector = strtol(name + strlen(IRQ_PATH), &endptr, 10);
+			if (*endptr != '\0') {
+				halt("bad path for interrupt\r\n", 0);
+			}
+
+			LOCK(&all_irqs);
+			if (my_vector == 0) {
+				while (next_irq_vector < 0xF0) {
+					if (!(IDT[next_irq_vector].type_attr & 0x80)) {
+					    break;
+					}
+					++next_irq_vector;
+				}
+				if (next_irq_vector >= 0xF0) {
+					halt("too many irq vectors were requested, max vector is 0xF0\r\n", 0);
+				}
+				my_vector = next_irq_vector;
+				++next_irq_vector;
+			}
+
+			FDS[a->s].type = IRQ;
+			FDS[a->s].status[0] = my_vector;
+			FDS[a->s].status[1] = 0;
+			FDS[a->s].status[2] = 0;
+
+			IDT[my_vector].type_attr |= 0x80;
+			UNLOCK(&all_irqs);
+
+			UNCLAIMED_IRQ = 0;
+			check_bnotes_fd(&FDS[a->s]);
+			UNLOCK(&FDS[a->s].lock);
+			SYSCALL_SUCCESS(0);
+		} else if (strncmp("/kern/fd/", name, 9) == 0) {
+			int fd = name[9] - '0';
+			if (fd >= 0 && fd <= 2) {
+				ERROR_PRINTF("fd %d requested by %d\r\n", fd, a->s);
+				LOCK(&FDS[fd].lock);
+				if (FDS[fd].type == TERMIN || FDS[fd].type == TERMOUT) {
+					FDS[a->s].type = PIPE;
+					FDS[a->s].pipe = &FDS[fd];
+					if (!kern_mmap((uintptr_t*)&FDS[a->s].pb, NULL, PAGE_SIZE, PROT_READ | PROT_WRITE | PROT_KERNEL, 0)) {
+						halt ("couldn't allocate buffer for /kern/fd/", 0);
+					}
+					FDS[a->s].pb->length = 0;
+
+					FDS[fd].type = PIPE;
+					FDS[fd].pipe = &FDS[a->s];
+					FDS[fd].pb = (struct pipe_buffer *)((uintptr_t)FDS[a->s].pb + (PAGE_SIZE >> 1));
+					FDS[fd].pb->length = 0;
+					check_bnotes_fd(&FDS[a->s]);
+					check_bnotes_fd(&FDS[fd]);
+					UNLOCK(&FDS[fd].lock);
+					UNLOCK(&FDS[a->s].lock);
+					SYSCALL_SUCCESS(0);
+				}
+				UNLOCK(&FDS[fd].lock);
+			}
+			UNLOCK(&FDS[a->s].lock);
+
+		}
+		SYSCALL_FAILURE(EACCES);
+	}
+	SYSCALL_FAILURE(ENOTSOCK);
+}
+
+int syscall_fcntl (struct fcntl_args *a, struct interrupt_frame *iframe) {
+	if (a->fd < 0 || a->fd > BOGFD_MAX) {
+		ERROR_PRINTF("fcntl (%d, ...) = EBADF\r\n", a->fd);
+		SYSCALL_FAILURE(EBADF);
+	}
+	if (FDS[a->fd].type == CLOSED) {
+		ERROR_PRINTF("fcntl (%d, ...) = EBADF\r\n", a->fd);
+		SYSCALL_FAILURE(EBADF);
+	}
+	switch (a->cmd) {
+		case F_GETFL:
+			SYSCALL_SUCCESS(FDS[a->fd].flags &
+				(O_NONBLOCK | O_APPEND | O_DIRECT | O_ASYNC));
+		case F_SETFL: {
+			if ((a->arg & (O_NONBLOCK | O_APPEND | O_DIRECT | O_ASYNC)) != a->arg) {
+				halt("bad args to fcntl F_SETFL", 0);
+			}
+			FDS[a->fd].flags = (FDS[a->fd].flags & (O_NONBLOCK | O_APPEND | O_DIRECT | O_ASYNC)) | a->arg;
+			SYSCALL_SUCCESS(0);
+		}
+		case F_ISUNIONSTACK: {
+			SYSCALL_SUCCESS(0);
+		}
+	}
+	halt("fcntl\r\n", 0);
+}
+int syscall_select (struct select_args *a, struct interrupt_frame *iframe) {
+	if (a->nd == 0 && a->tv == NULL) {
+		ERROR_PRINTF("thread %d waiting forever\r\n", current_thread);
+		switch_thread(WAIT_FOREVER, 0, 0, NULL, NULL);
+	}
+	ERROR_PRINTF("select(%d, %p, %p, %p, %p)\r\n", a->nd, a->in, a->ou, a->ex, a->tv);
+	halt ("halting\r\n", 0);
+}
+int syscall_gettimeofday (struct gettimeofday_args *a, struct interrupt_frame *iframe) {
+	if (a->tp != NULL) {
+		kern_clock_gettimeofday(a->tp);
+	}
+	if (a->tzp != NULL) {
+		a->tzp->tz_minuteswest = 0;
+		a->tzp->tz_dsttime = 0;
+	}
+	SYSCALL_SUCCESS(0);
+}
+int syscall_getsockopt (struct getsockopt_args *a, struct interrupt_frame *iframe) {
+	SYSCALL_FAILURE(EBADF);
+}
+int syscall_settimeofday (struct gettimeofday_args *a, struct interrupt_frame *iframe) {
+	if (a->tzp != NULL) {
+		if (a->tzp->tz_minuteswest != 0 || a->tzp->tz_dsttime != 0) {
+			halt("timezones not supported\r\n", 0);
+		}
+	}
+	if (a->tp != NULL) {
+		kern_clock_settimeofday(a->tp);
+	}
+	SYSCALL_SUCCESS(0);
+}
+int syscall_sysarch (struct sysarch_args *a, struct interrupt_frame *iframe) {
+	switch (a->op) {
+		case I386_SET_GSBASE: {
+			uint32_t base = *((uint32_t *) a->parms);
+			threads[current_thread].tls_base = base;
+			size_t user_gs = GDT_GSBASE_OFFSET + (current_cpu * 2) + 1;
+			GDT[user_gs].base_1 = base & 0xFFFF;
+			base >>= 16;
+			GDT[user_gs].base_2 = base & 0xFF;
+			base >>= 8;
+			GDT[user_gs].base_3 = base & 0xFF;
+			SYSCALL_SUCCESS(0);
+		}
+	}
+	halt ("sysarch halting\r\n", 0);
+}
+int syscall_ntp_adjtime (struct ntp_adjtime_args *a, struct interrupt_frame *iframe) {
+	unsigned int modes = a->tp->modes;
+	if (modes & MOD_FREQUENCY) {
+		modes &= ~MOD_FREQUENCY;
+		fixed_point_time(a->tp->freq);
+	}
+	if (modes) {
+		ERROR_PRINTF("unhandled modes in ntp_adjtime %X\r\n", modes);
+		halt("halting\r\n", 0);
+	}
+	SYSCALL_SUCCESS(TIME_OK);
+}
+int syscall_getrlimit (struct __getrlimit_args *a, struct interrupt_frame *iframe) {
+	switch (a->which) {
+		case RLIMIT_STACK:
+			a->rlp->rlim_cur = USER_STACK_SIZE;
+			a->rlp->rlim_max = USER_STACK_SIZE;
+			break;
+		case RLIMIT_NOFILE:
+			a->rlp->rlim_cur = BOGFD_MAX;
+			a->rlp->rlim_max = BOGFD_MAX;
+			break;
+		default:
+			a->rlp->rlim_cur = RLIM_INFINITY;
+			a->rlp->rlim_max = RLIM_INFINITY;
+	}
+	SYSCALL_SUCCESS(0);
+}
+int syscall_setrlimit (struct __setrlimit_args *a, struct interrupt_frame *iframe) {
+	DEBUG_PRINTF("setrlimit (%d, {%d, %d})\r\n", a->which, a->rlp->rlim_cur, a->rlp->rlim_max);
+	switch (a->which) {
+		case RLIMIT_STACK:
+			if (a->rlp->rlim_cur > USER_STACK_SIZE) {
+				SYSCALL_FAILURE(EPERM);
+			}
+			SYSCALL_SUCCESS(0);
+	}
+	halt ("setrlimit halting\r\n", 0);
+}
+int syscall___sysctlbyname (struct __sysctlbyname_args *a, struct interrupt_frame *iframe) { // probably need to check buffer addresses and lengths
+	if (strncmp("kern.smp.cpus", a->name, a->namelen) == 0) {
+		*(u_int *)a->old = numcpu;
+		*a->oldlenp = sizeof(u_int);
+		SYSCALL_SUCCESS(0);
+	}
+	ERROR_PRINTF("sysctlbyname (\"%s\" ...)\r\n", a->name);
+	SYSCALL_FAILURE(ENOENT);
+}
+int syscall___sysctl (struct sysctl_args *a, struct interrupt_frame *iframe) { // probably need to check buffer addresses and lengths
+	if (a->namelen == 2) {
+		switch (a->name[0]) {
+			case CTL_KERN: switch(a->name[1]) {
+				case KERN_OSTYPE:
+					strlcpy(a->old, "FreeBSD", *a->oldlenp);
+					SYSCALL_SUCCESS(0);
+				case KERN_OSRELEASE:
+					strlcpy(a->old, "13.0-RELEASE", *a->oldlenp);
+					SYSCALL_SUCCESS(0);
+				case KERN_VERSION:
+					strlcpy(a->old, "FreeBSD 13.0-RELEASE #0 releng/13.0-n244733-ea31abc261f: Fri Apr  9 04:24:09 UTC 2021\
+.nyi.freebsd.org:/usr/obj/usr/src/amd64.amd64/sys/GENERIC", *a->oldlenp);
+					SYSCALL_SUCCESS(0);
+				case KERN_HOSTNAME:
+					strlcpy(a->old, "node0.crazierl.org", *a->oldlenp);
+					SYSCALL_SUCCESS(0);
+				case KERN_ARND:{
+					rand_bytes((uint8_t *)a->old, *a->oldlenp);
+					SYSCALL_SUCCESS(0);
+				}
+				case KERN_OSRELDATE:
+					*(u_int *)a->old = 1300139; // pretend to be freebsd 13.0 for now
+					*a->oldlenp = sizeof(uint);
+					SYSCALL_SUCCESS(0);
+				case KERN_USRSTACK:
+					*(uintptr_t *)a->old = user_stack;
+					SYSCALL_SUCCESS(0);
+				case KERN_IOV_MAX:
+					*(uintptr_t *)a->old = IOV_MAX;
+					SYSCALL_SUCCESS(0);
+			}
+			case CTL_VM: switch (a->name[1]) {
+				case VM_OVERCOMMIT:
+					*(u_int *)a->old = 0;
+					*a->oldlenp = sizeof(u_int);
+					SYSCALL_SUCCESS(0);
+			}
+			case CTL_HW: switch (a->name[1]) {
+				case HW_MACHINE:
+					strlcpy(a->old, "i386", *a->oldlenp);
+					SYSCALL_SUCCESS(0);
+				case HW_NCPU:
+					DEBUG_PRINTF("hw.ncpu\r\n");
+					*(u_int *)a->old = numcpu;
+					*a->oldlenp = sizeof(u_int);
+					SYSCALL_SUCCESS(0);
+				case HW_PAGESIZE:
+					DEBUG_PRINTF("hw.pagesize\r\n");
+					*(u_int *)a->old = PAGE_SIZE;
+					*a->oldlenp = sizeof(u_int);
+					SYSCALL_SUCCESS(0);
+			}
+			case CTL_P1003_1B: switch (a->name[1]) {
+				case CTL_P1003_1B_PAGESIZE:
+					DEBUG_PRINTF("posix.pagesize\r\n");
+					*(u_int *)a->old = PAGE_SIZE;
+					*a->oldlenp = sizeof(u_int);
+					SYSCALL_SUCCESS(0);
+			}
+		}
+	}
+	ERROR_PRINTF("__sysctl (%08x, %d, %08x, %d, %08x, %d)\r\n",
+		a->name, a->namelen,
+		a->old, *a->oldlenp,
+		a->new, a->newlen);
+	for (int i = 0; i < a->namelen; ++i) {
+		ERROR_PRINTF("  %d\r\n", a->name[i]);
+	}
+	halt("sysctl\r\n", 0);
+	SYSCALL_FAILURE(ENOENT);
+}
+int syscall_clock_gettime (struct clock_gettime_args *a, struct interrupt_frame *iframe) {
+	switch(a->clock_id) {
+		case CLOCK_MONOTONIC: /*fall through*/
+		case CLOCK_UPTIME:
+		case CLOCK_REALTIME:
+		case CLOCK_SECOND:
+			kern_clock_gettime(a->clock_id, a->tp);
+			break;
+		default:
+			ERROR_PRINTF("clock gettime clock_id %d\r\n", a->clock_id);
+			halt("need to handle other clock mode?", 0);
+	}
+	SYSCALL_SUCCESS(0);
+}
+int syscall_issetugid (struct issetugid_args *a, struct interrupt_frame *iframe) {
+	DEBUG_PRINTF("issetugid()\r\n");
+	SYSCALL_SUCCESS(0);
+}
+int syscall___getcwd (struct __getcwd_args *a, struct interrupt_frame *iframe) {
+	if (a->buflen >= 2) {
+		strlcpy(a->buf, "/", a->buflen);
+		SYSCALL_SUCCESS(0);
+	}
+	SYSCALL_FAILURE(EINVAL);
+}
+int syscall_sched_yield (struct sched_yield_args *a, struct interrupt_frame *iframe) {
+	switch_thread(RUNNABLE, 0, 0, NULL, NULL);
+	SYSCALL_SUCCESS(0);
+}
+int syscall_sigprocmask (struct sigprocmask_args *a, struct interrupt_frame *iframe) {
+	DEBUG_PRINTF("sigprocmask (%d, %08x, %08x)\r\n", a->how, a->set, a->oset);
+	SYSCALL_SUCCESS(0);
+}
+int syscall_sigaction (struct sigaction_args *a, struct interrupt_frame *iframe) {
+	DEBUG_PRINTF("sigaction (%d, %08x, %08x)\r\n", a->sig, a->act, a->oact);
+	SYSCALL_SUCCESS(0);
+}
+int syscall_thr_self (struct thr_self_args *a, struct interrupt_frame *iframe) {
+	DEBUG_PRINTF("thr_self()\r\n");
+	*a->id = THREAD_ID_OFFSET + current_thread;
+	SYSCALL_SUCCESS(0);
+}
+int syscall__umtx_op (struct _umtx_op_args *a, struct interrupt_frame *iframe) {
+	int ret = kern_umtx_op(a);
+	if (ret >= 0) {
+		SYSCALL_SUCCESS(0);
+	} else {
+		SYSCALL_FAILURE(-ret);
+	}
+}
+int syscall_rtprio_thread (struct rtprio_thread_args *a, struct interrupt_frame *iframe) {
+	if (a->function == RTP_LOOKUP) {
+		a->rtp->type = RTP_PRIO_NORMAL;
+		SYSCALL_SUCCESS(0);
+	}
+	halt ("rtprio halting\r\n", 0);
+}
+int syscall_cpuset_getaffinity (struct cpuset_getaffinity_args *a, struct interrupt_frame *iframe) {
+	if (a->cpusetsize != sizeof(cpuset_t)) {
+		ERROR_PRINTF("cpuset size %d, expecting %d\r\n", a->cpusetsize, sizeof(cpuset_t)) ;
+		SYSCALL_FAILURE(ERANGE);
+	}
+	if (a->level == CPU_LEVEL_WHICH && a->which == CPU_WHICH_PID && a->id == -1) {
+		CPU_ZERO(a->mask);
+		for (int i = 0; i < numcpu; ++i) {
+			CPU_SET(i, a->mask);
+		}
+		SYSCALL_SUCCESS(0);
+	} else if (a->level == CPU_LEVEL_WHICH && a->which == CPU_WHICH_TID && a->id == -1) {
+		CPU_COPY(&threads[current_thread].cpus, a->mask);
+		SYSCALL_SUCCESS(0);
+	}
+	ERROR_PRINTF("cpuset_getaffinity(%d, %d, %llx, %d, %08x)\r\n", a->level, a->which, a->id, a->cpusetsize, a->mask);
+	halt ("halting\r\n", 0);
+}
+int syscall_cpuset_setaffinity (struct cpuset_getaffinity_args *a, struct interrupt_frame *iframe) {
+	if (a->cpusetsize != sizeof(cpuset_t)) {
+		ERROR_PRINTF("cpuset size %d, expecting %d\r\n", a->cpusetsize, sizeof(cpuset_t)) ;
+		SYSCALL_FAILURE(ERANGE);
+	}
+	if (a->level == CPU_LEVEL_WHICH && a->which == CPU_WHICH_TID && a->id == -1) {
+		CPU_COPY(a->mask, &threads[current_thread].cpus);
+		if (CPU_COUNT(&threads[current_thread].cpus) == 1) {
+			threads[current_thread].flags |= THREAD_PINNED;
+		} else {
+			threads[current_thread].flags &= ~THREAD_PINNED;
+		}
+		if (!CPU_ISSET(current_cpu, &threads[current_thread].cpus)) {
+			switch_thread(RUNNABLE, 0, 0, NULL, NULL);
+		}
+		SYSCALL_SUCCESS(0);
+	}
+	ERROR_PRINTF("cpuset_setaffinity(%d, %d, %llx, %d, %08x)\r\n", a->level, a->which, a->id, a->cpusetsize, a->mask);
+	halt ("halting\r\n", 0);
+}
+int syscall_mmap (struct mmap_args *a, struct interrupt_frame *iframe) {
+	uintptr_t ret_addr;
+
+	if (kern_mmap(&ret_addr, a->addr, a->len, a->prot, a->flags)) {
+		if (a->fd != -1 && a->fd < BOGFD_MAX && FDS[a->fd].type == BOGFD_FILE) {
+			if (a->pos == 0 && a->addr != NULL) { // && a->len > PAGE_SIZE) {
+				ERROR_PRINTF("add-symbol-file %s -o 0x%08x\r\n", FDS[a->fd].file->name, a->addr);
+			}
+
+			if (a->pos + a->len > FDS[a->fd].file->size) {
+				size_t avail = FDS[a->fd].file->size - a->pos;
+				memcpy((void *)ret_addr, FDS[a->fd].file->start + a->pos, avail);
+				explicit_bzero((void*)(ret_addr + avail), a->len - avail);
+			} else {
+				memcpy((void *)ret_addr, FDS[a->fd].file->start + a->pos, a->len);
+			}
+		} else if (a->prot != PROT_NONE && (a->prot & PROT_FORCE) == 0) {
+			explicit_bzero((void*)ret_addr, a->len);
+		}
+		SYSCALL_SUCCESS(ret_addr);
+	} else {
+		SYSCALL_FAILURE(ret_addr);
+	}
+}
+int syscall_pipe2 (struct pipe2_args *a, struct interrupt_frame *iframe) {
+	int pipe1, pipe2;
+	LOCK(&all_fds);
+	while (next_fd < BOGFD_MAX && FDS[next_fd].type != CLOSED) {
+		++next_fd;
+	}
+	if (next_fd >= BOGFD_MAX) {
+		ERROR_PRINTF("pipe2 (...) = EMFILE (1)\r\n");
+		UNLOCK(&all_fds);
+		SYSCALL_FAILURE(EMFILE);
+	}
+	pipe1 = next_fd;
+	++next_fd;
+	while (next_fd < BOGFD_MAX && FDS[next_fd].type != CLOSED) {
+		++next_fd;
+	}
+	if (next_fd >= BOGFD_MAX) {
+		next_fd = pipe1;
+		ERROR_PRINTF("pipe2 (...) = EMFILE (2)\r\n");
+		UNLOCK(&all_fds);
+		SYSCALL_FAILURE(EMFILE);
+	}
+	pipe2 = next_fd;
+	++next_fd;
+
+	DEBUG_PRINTF("pipe2 (%p, %08x)\r\n", a->fildes, a->flags);
+	if (!kern_mmap((uintptr_t*)&FDS[pipe1].pb, NULL, PAGE_SIZE, PROT_READ | PROT_WRITE | PROT_KERNEL, 0)) {
+		next_fd = pipe1;
+		ERROR_PRINTF("pipe2 (...) = ENOMEM\r\n");
+		UNLOCK(&all_fds);
+		SYSCALL_FAILURE(ENOMEM);
+	}
+	LOCK(&FDS[pipe1].lock);
+	LOCK(&FDS[pipe2].lock);
+	FDS[pipe1].type = PIPE;
+	FDS[pipe2].type = PIPE;
+	UNLOCK(&all_fds);
+	FDS[pipe1].pipe = &(FDS[pipe2]);
+	FDS[pipe2].pipe = &(FDS[pipe1]);
+	FDS[pipe1].pb->length = 0;
+	FDS[pipe2].pb = (struct pipe_buffer *)((uintptr_t)FDS[pipe1].pb + (PAGE_SIZE >> 1));
+	FDS[pipe2].pb->length = 0;
+	a->fildes[0] = pipe1;
+	a->fildes[1] = pipe2;
+	ERROR_PRINTF("pipe2 -> %d <-> %d\r\n", pipe1, pipe2);
+	UNLOCK(&FDS[pipe1].lock);
+	UNLOCK(&FDS[pipe2].lock);
+	SYSCALL_SUCCESS(0);
+}
+
+int syscall_socketpair (struct socketpair_args *a, struct interrupt_frame *iframe) {
+	struct pipe2_args x;
+	x.fildes = a->rsv;
+	x.flags = 0;
+	return syscall_pipe2(&x, iframe);
+}
+
+
+int syscall_ppoll (struct ppoll_args *a, struct interrupt_frame *iframe) {
+	int ret = kern_ppoll(a);
+	if (ret >= 0) {
+		SYSCALL_SUCCESS(ret);
+	} else {
+		SYSCALL_FAILURE(ret);
+	};
+}
+int syscall_fstat (struct fstat_args *a, struct interrupt_frame *iframe) {
+	if (a->fd < 0 || a->fd >= BOGFD_MAX) {
+		ERROR_PRINTF("fstat () = EBADF\r\n");
+		SYSCALL_FAILURE(EBADF);
+	}
+	if (FDS[a->fd].type == TERMIN || FDS[a->fd].type == TERMOUT) {
+		explicit_bzero(a->sb, sizeof(*a->sb));
+		a->sb->st_mode = S_IWUSR | S_IRUSR | S_IFCHR;
+		SYSCALL_SUCCESS(0);
+	} else if (FDS[a->fd].type == BOGFD_FILE) {
+		explicit_bzero(a->sb, sizeof(*a->sb));
+		struct BogusFD * fd = &FDS[a->fd];
+		a->sb->st_dev = BOGFD_FILE;
+		a->sb->st_ino = (ino_t) fd->file;
+		a->sb->st_nlink = 1;
+		a->sb->st_size = fd->file->size;
+		a->sb->st_mode = S_IRUSR | S_IFREG | S_IRWXU;
+		SYSCALL_SUCCESS(0);
+	}
+	ERROR_PRINTF("fstat (%d)\r\n", a->fd);
+	halt ("halting\r\n", 0);
+}
+int syscall_fstatfs (struct fstatfs_args *a, struct interrupt_frame *iframe) {
+	if (a->fd < 0 || a->fd >= BOGFD_MAX) {
+		ERROR_PRINTF("fstatfs () = EBADF\r\n");
+		SYSCALL_FAILURE(EBADF);
+	}
+	if ((FDS[a->fd].type == DIR || FDS[a->fd].type == BOGFD_FILE)) {
+		bzero(a->buf, sizeof(struct statfs));
+		a->buf->f_version = STATFS_VERSION;
+		strlcpy(a->buf->f_fstypename, "BogusFS", sizeof(a->buf->f_fstypename));
+		SYSCALL_SUCCESS(0);
+	}
+	ERROR_PRINTF("fstatfs (%d)\r\n", a->fd);
+	SYSCALL_FAILURE(EBADF);
+}
+int syscall_fstatat (struct fstatat_args *a, struct interrupt_frame *iframe) {
+	struct hardcoded_file * file;
+	file = find_file(a->path);
+	if (file != NULL) {
+		explicit_bzero(a->buf, sizeof(*a->buf));
+		a->buf->st_dev = BOGFD_FILE;
+		a->buf->st_ino = (ino_t) file;
+		a->buf->st_nlink = 1;
+		a->buf->st_size = file->size;
+		a->buf->st_mode = S_IRUSR | S_IFREG;
+		SYSCALL_SUCCESS(0);
+	}
+	file = find_dir(a->path, strlen(a->path), NULL);
+	if (file != NULL) {
+		explicit_bzero(a->buf, sizeof(*a->buf));
+		a->buf->st_dev = DIR;
+		a->buf->st_ino = (ino_t) file;
+		a->buf->st_nlink = 1;
+		a->buf->st_size = file->size;
+		a->buf->st_mode = S_IRUSR | S_IFDIR;
+		SYSCALL_SUCCESS(0);
+	}
+	DEBUG_PRINTF("stat (%s, %p) = ENOENT \r\n", a->path, a->buf);
+	SYSCALL_FAILURE(ENOENT);
+}
+int syscall_getdirentries (struct getdirentries_args *a, struct interrupt_frame *iframe) {
+	if (a->fd < 0 || a->fd >= BOGFD_MAX) {
+		ERROR_PRINTF("getdirentries () = EBADF\r\n");
+		SYSCALL_FAILURE(EBADF);
+	}
+	if (FDS[a->fd].type == DIR) {
+		struct dirent *b = (struct dirent*) a->buf;
+		if (a->basep != NULL) {
+			*a->basep = (off_t) FDS[a->fd].file;
+		}
+		if (FDS[a->fd].file == NULL) {
+			SYSCALL_SUCCESS(0);
+		}
+		bzero(b, sizeof(*b));
+		b->d_fileno = (ino_t) FDS[a->fd].file;
+		b->d_reclen = sizeof(*b);
+		char * start = FDS[a->fd].file->name + FDS[a->fd].namelen + 1;
+		char * nextslash = strchr(start, '/');
+
+		if (nextslash != NULL) {
+			b->d_type = DT_DIR;
+			b->d_namlen = nextslash - start;
+			strlcpy(b->d_name, start, b->d_namlen + 1);
+			struct hardcoded_file * file = FDS[a->fd].file;
+			while (FDS[a->fd].file != NULL && strncmp(
+					FDS[a->fd].file->name + FDS[a->fd].namelen + 1,
+					file->name + FDS[a->fd].namelen + 1,
+					b->d_namlen + 1) == 0) {
+				file = FDS[a->fd].file;
+				FDS[a->fd].file = find_dir(file->name, FDS[a->fd].namelen, file + 1);
+			}
+		} else {
+			b->d_type = DT_REG;
+			strlcpy(b->d_name, start, sizeof(b->d_name));
+			b->d_namlen = strlen(b->d_name);
+			FDS[a->fd].file = find_dir(FDS[a->fd].file->name, FDS[a->fd].namelen, FDS[a->fd].file + 1);
+		}
+		b->d_off = (off_t) FDS[a->fd].file;
+		SYSCALL_SUCCESS(b->d_reclen);
+	}
+	ERROR_PRINTF("getdirentries (%d)\r\n", a->fd);
+	SYSCALL_FAILURE(EBADF);
+}
+int syscall_thr_new (struct thr_new_args *a, struct interrupt_frame *iframe) {
+	uintptr_t stack_page;
+	LOCK(&thread_st);
+
+	while (threads[next_thread].state != EMPTY && next_thread < MAX_THREADS) {
+		++next_thread;
+	}
+	size_t new_thread = next_thread;
+	if (new_thread >= MAX_THREADS) {
+		ERROR_PRINTF("thr_new (...) = EPROCLIM\r\n");
+		SYSCALL_FAILURE(EPROCLIM);
+	}
+	if (threads[new_thread].kern_stack_top != 0) {
+		stack_page = threads[new_thread].kern_stack_top - PAGE_SIZE;
+	} else if (!kern_mmap(&stack_page, NULL, PAGE_SIZE, PROT_READ | PROT_WRITE | PROT_KERNEL, 0)) {
+		ERROR_PRINTF("thr_new (...) = ENOMEM\r\n");
+		SYSCALL_FAILURE(ENOMEM);
+	}
+
+	explicit_bzero((void *)stack_page, PAGE_SIZE);
+	++next_thread;
+	threads[new_thread].state = INITING;
+	UNLOCK(&thread_st);
+	CPU_COPY(&threads[current_thread].cpus, &threads[new_thread].cpus);
+	threads[new_thread].flags = threads[current_thread].flags;
+	threads[new_thread].kern_stack_top = stack_page + PAGE_SIZE;
+	threads[new_thread].tls_base = (uintptr_t)a->param->tls_base;
+	bzero(&savearea[new_thread], sizeof(savearea[new_thread]));
+
+	uintptr_t new_stack_cur = setup_new_stack(threads[new_thread].kern_stack_top, threads[current_thread].kern_stack_top);
+	DEBUG_PRINTF("thr_new return (%d) on old thread (%d) cpu %d\r\n", new_thread, current_thread, current_cpu);
+	threads[new_thread].kern_stack_cur = new_stack_cur;
+	*a->param->child_tid = *a->param->parent_tid = THREAD_ID_OFFSET + new_thread;
+	struct interrupt_frame * new_frame = (struct interrupt_frame *) (threads[new_thread].kern_stack_top - sizeof(struct interrupt_frame));
+	new_frame->ip = (uint32_t) a->param->start_func;
+	new_frame->sp = (uint32_t) a->param->stack_base + a->param->stack_size - sizeof(a->param->arg);
+	*(void **)new_frame->sp = a->param->arg;
+	new_frame->sp -= sizeof(a->param->arg); //skip a spot for the return address from the initial function
+	new_frame->flags &= ~CARRY;
+	LOCK(&thread_st);
+	mark_thread_runnable(new_thread);
+	UNLOCK(&thread_st);
+	SYSCALL_SUCCESS(0);
+}
+int syscall_thr_exit (struct thr_exit_args *a, struct interrupt_frame *iframe) {
+	if (a->state != NULL) {
+		*(a->state) = 1;
+	}
+	umtx_wake(a->state, MAX_THREADS);
+	LOCK(&thread_st);
+
+	// TODO, check if there's any other non-empty thread
+	if (current_thread < next_thread) {
+		next_thread = current_thread;
+	}
+	switch_thread(EMPTY, 0, 1, NULL, NULL);
+	halt("not reached\r\n", 0);
+}
+int syscall_kqueue (struct kqueue_args *a, struct interrupt_frame *iframe) {
+	LOCK(&all_fds);
+	while (next_fd < BOGFD_MAX && FDS[next_fd].type != CLOSED) {
+		++next_fd;
+	}
+	if (next_fd >= BOGFD_MAX) {
+		ERROR_PRINTF("kqueue (...) = EMFILE\r\n");
+		UNLOCK(&all_fds);
+		SYSCALL_FAILURE(EMFILE);
+	}
+
+	size_t the_fd = next_fd;
+	++next_fd;
+	LOCK(&FDS[the_fd].lock);
+	FDS[the_fd].type = KQUEUE;
+	UNLOCK(&all_fds);
+	UNLOCK(&FDS[the_fd].lock);
+	SYSCALL_SUCCESS(the_fd);
+}
+int syscall_kevent (struct kevent_args *a, struct interrupt_frame *iframe) {
+	int ret = kern_kevent(a);
+	if (ret >= 0) {
+		SYSCALL_SUCCESS(ret);
+	} else {
+		SYSCALL_FAILURE(-ret);
+	}
+}
+int syscall_thr_set_name (struct thr_set_name_args *a, struct interrupt_frame *iframe) {
+	rtld_snprintf(threads[a->id - THREAD_ID_OFFSET].name, sizeof(threads[0].name), "%s", a->name);
+	SYSCALL_SUCCESS(0);
+}
+int syscall_getrandom (struct getrandom_args *a, struct interrupt_frame *iframe) {
+        rand_bytes(a->buf, a->buflen);
+        SYSCALL_SUCCESS(a->buflen);
+}
+
+int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
+{
+	void *argp = (void *)(iframe->sp + sizeof(iframe->sp));
+	switch(call) {
+	        case SYS_exit: return syscall_exit((struct sys_exit_args *) argp, iframe);
+		case SYS_fork: SYSCALL_FAILURE(EAGAIN);
+		case SYS_read: return syscall_read((struct read_args *) argp, iframe);
+		case SYS_readv: return syscall_readv((struct readv_args *) argp, iframe);
+		case SYS_pread: return syscall_pread((struct pread_args *) argp, iframe);
+		case SYS_sendto: return syscall_sendto((struct sendto_args *) argp, iframe);
+		case SYS_write: return syscall_write((struct write_args *) argp, iframe);
+		case SYS_writev: return syscall_writev((struct writev_args *) argp, iframe);
+
+		case SYS_openat: argp += sizeof(argp);
+		case SYS_open: return syscall_open((struct open_args *) argp, iframe);
+		case SYS_close: return syscall_close((struct close_args *) argp, iframe);
+		case SYS_getpid: SYSCALL_SUCCESS(2);
+		case SYS_geteuid: SYSCALL_SUCCESS(0);
+		case SYS_recvfrom: return syscall_recvfrom((struct recvfrom_args *) argp, iframe);
+		case SYS_getsockname: return syscall_getsockname((struct getsockname_args *) argp, iframe);
+		case SYS_access: return syscall_access((struct access_args *) argp, iframe);
+		case SYS_ioctl: return syscall_ioctl((struct ioctl_args *) argp, iframe);
+		case SYS_readlink: return syscall_readlink((struct readlink_args *) argp, iframe);
+		case SYS_munmap: return syscall_munmap((struct munmap_args *) argp, iframe);
+		case SYS_socket: return syscall_socket((struct socket_args *) argp, iframe);
+		case SYS_bind: return syscall_bind((struct bind_args *) argp, iframe);
+
+		case SYS_mprotect: SYSCALL_SUCCESS(0); //ignore
+		case SYS_madvise: SYSCALL_SUCCESS(0); //ignore
+
+		case SYS_fcntl: return syscall_fcntl((struct fcntl_args *) argp, iframe);
+		case SYS_select: return syscall_select((struct select_args *) argp, iframe);
+		case SYS_gettimeofday: return syscall_gettimeofday((struct gettimeofday_args *) argp, iframe);
+		case SYS_getsockopt: return syscall_getsockopt((struct getsockopt_args *) argp, iframe);
+		case SYS_settimeofday: return syscall_settimeofday((struct gettimeofday_args *) argp, iframe);
+		case SYS_sysarch: return syscall_sysarch((struct sysarch_args *) argp, iframe);
+		case SYS_ntp_adjtime: return syscall_ntp_adjtime((struct ntp_adjtime_args *) argp, iframe);
+		case SYS_getrlimit: return syscall_getrlimit((struct __getrlimit_args *) argp, iframe);
+		case SYS_setrlimit: return syscall_setrlimit((struct __setrlimit_args *) argp, iframe);
+		case SYS___sysctlbyname: return syscall___sysctlbyname((struct __sysctlbyname_args *) argp, iframe);
+		case SYS___sysctl: return syscall___sysctl((struct sysctl_args *) argp, iframe);
+		case SYS_clock_gettime: return syscall_clock_gettime((struct clock_gettime_args *) argp, iframe);
+		case SYS_issetugid: return syscall_issetugid((struct issetugid_args *) argp, iframe);
+		case SYS___getcwd: return syscall___getcwd((struct __getcwd_args *) argp, iframe);
+		case SYS_sched_yield: return syscall_sched_yield((struct sched_yield_args *) argp, iframe);
+		case SYS_sigprocmask: return syscall_sigprocmask((struct sigprocmask_args *) argp, iframe);
+		case SYS_sigaction: return syscall_sigaction((struct sigaction_args *) argp, iframe);
+		case SYS_getcontext:
+			ERROR_PRINTF("xxx sending back bogus success for getcontext\r\n");
+			SYSCALL_SUCCESS(0);
+		case SYS_thr_self: return syscall_thr_self((struct thr_self_args *) argp, iframe);
+		case SYS__umtx_op: return syscall__umtx_op((struct _umtx_op_args *) argp, iframe);
+		case SYS_rtprio_thread: return syscall_rtprio_thread((struct rtprio_thread_args *) argp, iframe);
+		case SYS_cpuset_getaffinity: return syscall_cpuset_getaffinity((struct cpuset_getaffinity_args *) argp, iframe);
+		case SYS_cpuset_setaffinity: return syscall_cpuset_setaffinity((struct cpuset_getaffinity_args *) argp, iframe);
+		case SYS_mmap: return syscall_mmap((struct mmap_args *) argp, iframe);
+		case SYS_socketpair: return syscall_socketpair((struct socketpair_args *) argp, iframe);
+		case SYS_pipe2: return syscall_pipe2((struct pipe2_args *) argp, iframe);
+		case SYS_ppoll: return syscall_ppoll((struct ppoll_args *) argp, iframe);
+		case SYS_fstat: return syscall_fstat((struct fstat_args *) argp, iframe);
+		case SYS_fstatfs: return syscall_fstatfs((struct fstatfs_args *) argp, iframe);
+		case SYS_fstatat: return syscall_fstatat((struct fstatat_args *) argp, iframe);
+		case SYS_getdirentries: return syscall_getdirentries((struct getdirentries_args *) argp, iframe);
+		case SYS_thr_new: return syscall_thr_new((struct thr_new_args *) argp, iframe);
+		case SYS_thr_exit: return syscall_thr_exit((struct thr_exit_args *) argp, iframe);
+		case SYS_clock_getres: SYSCALL_FAILURE(EINVAL); // TODO clock stuff
+		case SYS_kqueue: return syscall_kqueue((struct kqueue_args *) argp, iframe);
+		case SYS_kevent: return syscall_kevent((struct kevent_args *) argp, iframe);
+		case SYS_thr_set_name: return syscall_thr_set_name((struct thr_set_name_args *) argp, iframe);
+		case SYS_getrandom: return syscall_getrandom((struct getrandom_args *) argp, iframe);
 	}
 				
 	if (call < SYS_MAXSYSCALL) {
