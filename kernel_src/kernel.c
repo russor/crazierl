@@ -1182,6 +1182,8 @@ int kern_umtx_op(struct _umtx_op_args *a) {
 						}
 						break;
 					}
+				} else {
+					tp = TAILQ_NEXT(tp, waitq);
 				}
 			}
 			if (found) {
