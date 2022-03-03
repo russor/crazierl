@@ -217,10 +217,6 @@ __thread uint64_t scaled_time_per_tick;
 
 uintptr_t user_stack;
 
-DECLARE_LOCK(umtx_wait);
-DECLARE_LOCK(umtx_mutex);
-
-
 #define IOAPIC_PATH "/kern/ioapic/"
 #define IRQ_PATH "/kern/irq/"
 
@@ -605,6 +601,9 @@ void mark_thread_runnable(size_t thread) {
 	ASSERT_LOCK(&thread_st);
 	if (threads[thread].state == RUNNABLE) {
 		halt("remarking thread as runnable\r\n", 0);
+	}
+	if (threads[thread].state == RUNNING && thread != current_thread) {
+		halt("marking running thread as runnable\r\n", 0);
 	}
 	if (threads[thread].timeout) {
 		threads[thread].timeout = 0;
@@ -1074,28 +1073,20 @@ size_t kern_read(int fd, void * buf, size_t nbyte, int force_async) {
 
 void umtx_wake(void * obj, u_long count) {
 	uintptr_t phys = kern_mmap_physical((uintptr_t) obj);
-	int locked = 0;
-	LOCK(&umtx_wait);
+	LOCK(&thread_st);
 	struct crazierl_thread *tp;
 	tp = TAILQ_FIRST(&umtx_waitqueue);
 	while (count && tp != NULL) {
 		if (tp->wait_target == phys) {
 			size_t i = tp - threads;
 			tp = TAILQ_NEXT(tp, waitq);
-			if (!locked) {
-				LOCK(&thread_st);
-				locked = 1;
-			}
 			mark_thread_runnable(i);
 			--count;
 		} else {
 			tp = TAILQ_NEXT(tp, waitq);
 		}
 	}
-	if (locked) {
-		UNLOCK(&thread_st);
-	}
-	UNLOCK(&umtx_wait);
+	UNLOCK(&thread_st);
 }
 
 // separate function, because uint64_t breaks stack setup for thr_new otherwise
@@ -1114,7 +1105,7 @@ int kern_umtx_op(struct _umtx_op_args *a) {
 		case UMTX_OP_WAIT:
 		case UMTX_OP_WAIT_UINT:
 		case UMTX_OP_WAIT_UINT_PRIVATE: {
-			LOCK(&umtx_wait);
+			LOCK(&thread_st);
 			if ((a->op == UMTX_OP_WAIT && *(u_long *)a->obj == a->val) ||
 			    (a->op != UMTX_OP_WAIT && *(u_int *)a->obj == a->val)) {
 				uint64_t timeout = 0;
@@ -1128,11 +1119,11 @@ int kern_umtx_op(struct _umtx_op_args *a) {
 					halt("umtx wait_uint with timespec timeout\r\n", 0);
 				}
 				threads[current_thread].wait_target = kern_mmap_physical((uintptr_t) a->obj);
-				if (switch_thread(UMTX_WAIT, timeout, 0, &umtx_waitqueue, &umtx_wait)) {
+				if (switch_thread(UMTX_WAIT, timeout, 1, &umtx_waitqueue, NULL)) {
 					return -ETIMEDOUT;
 				}
 			} else {
-				UNLOCK(&umtx_wait);
+				UNLOCK(&thread_st);
 			}
 			return 0;
 		}
@@ -1141,17 +1132,17 @@ int kern_umtx_op(struct _umtx_op_args *a) {
 			if (a->uaddr1 != NULL || a->uaddr2 != NULL) {
 				halt("umtx mutex_wait with timeout\r\n", 0);
 			}
-			LOCK(&umtx_mutex);
+			LOCK(&thread_st);
 			while (1) {
 				uint32_t old = mutex->m_owner;
 				if ((old & ~UMUTEX_CONTESTED) == UMUTEX_UNOWNED) {
-					UNLOCK(&umtx_mutex);
+					UNLOCK(&thread_st);
 					break;
 				}
 				if (__sync_bool_compare_and_swap(&mutex->m_owner, old, old | UMUTEX_CONTESTED)) {
 					threads[current_thread].wait_target = (uintptr_t) a->obj;
-					switch_thread(UMTX_MUTEX_WAIT, 0, 0, &umtx_mutexqueue, &umtx_mutex);
-					LOCK(&umtx_mutex);
+					switch_thread(UMTX_MUTEX_WAIT, 0, 1, &umtx_mutexqueue, NULL);
+					LOCK(&thread_st);
 				}
 			}
 			return 0;
@@ -1159,7 +1150,7 @@ int kern_umtx_op(struct _umtx_op_args *a) {
 		case UMTX_OP_MUTEX_WAKE2: {
 			struct umutex *mutex = a->obj;
 			int found = 0;
-			LOCK(&umtx_mutex);
+			LOCK(&thread_st);
 			if ((mutex->m_owner & ~UMUTEX_CONTESTED) != UMUTEX_UNOWNED) {
 				found = 1;
 			}
@@ -1170,7 +1161,6 @@ int kern_umtx_op(struct _umtx_op_args *a) {
 					if (found == 0) {
 						size_t i = tp - threads;
 						tp = TAILQ_NEXT(tp, waitq);
-						LOCK(&thread_st);
 						mark_thread_runnable(i);
 						found = 1;
 					} else {
@@ -1186,10 +1176,7 @@ int kern_umtx_op(struct _umtx_op_args *a) {
 					tp = TAILQ_NEXT(tp, waitq);
 				}
 			}
-			if (found) {
-				UNLOCK(&thread_st);
-			}
-			UNLOCK(&umtx_mutex);
+			UNLOCK(&thread_st);
 			return 0;
 		}
 	}
