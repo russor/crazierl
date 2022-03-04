@@ -1089,105 +1089,116 @@ void umtx_wake(void * obj, u_long count) {
 	UNLOCK(&thread_st);
 }
 
-// separate function, because uint64_t breaks stack setup for thr_new otherwise
-int kern_umtx_op(struct _umtx_op_args *a) {
+#define CARRY 1
+#define SYSCALL_SUCCESS(ret) { iframe->flags &= ~CARRY; return ret; }
+#define SYSCALL_FAILURE(ret) { iframe->flags |= CARRY; return ret; }
+
+int umtx_wait(struct _umtx_op_args *a, struct interrupt_frame *iframe);
+int umtx_mutex_wait(struct _umtx_op_args *a, struct interrupt_frame *iframe);
+int umtx_mutex_wait2(struct _umtx_op_args *a, struct interrupt_frame *iframe);
+
+int syscall__umtx_op (struct _umtx_op_args *a, struct interrupt_frame *iframe) {
 	switch (a->op) {
 		case UMTX_OP_WAKE: {
 			umtx_wake(a->obj, a->val);
-			return 0;
+			SYSCALL_SUCCESS(0);
 		}
 		case UMTX_OP_NWAKE_PRIVATE: {
 			for (int i = 0; i < a->val; ++i) {
 				umtx_wake((((void **)a->obj)[i]), MAX_THREADS);
 			}
-			return 0;
+			SYSCALL_SUCCESS(0);
 		}
 		case UMTX_OP_WAIT:
 		case UMTX_OP_WAIT_UINT:
-		case UMTX_OP_WAIT_UINT_PRIVATE: {
-			LOCK(&thread_st);
-			if ((a->op == UMTX_OP_WAIT && *(u_long *)a->obj == a->val) ||
-			    (a->op != UMTX_OP_WAIT && *(u_int *)a->obj == a->val)) {
-				uint64_t timeout = 0;
-				if ((size_t) a->uaddr1 == sizeof(struct _umtx_time)) {
-					struct _umtx_time *utime = (struct _umtx_time *)a->uaddr2;
-					timeout = FIXED_POINT_TIME_NANOSECOND(utime->_timeout.tv_sec, utime->_timeout.tv_nsec);
-					if (!(utime->_flags & UMTX_ABSTIME)) {
-						timeout += fixed_point_time(0);
-					}
-				} else if ((ssize_t) a->uaddr1 == sizeof(struct timespec)) {
-					halt("umtx wait_uint with timespec timeout\r\n", 0);
-				}
-				threads[current_thread].wait_target = kern_mmap_physical((uintptr_t) a->obj);
-				if (switch_thread(UMTX_WAIT, timeout, 1, &umtx_waitqueue, NULL)) {
-					return -ETIMEDOUT;
-				}
-			} else {
-				UNLOCK(&thread_st);
-			}
-			return 0;
-		}
-		case UMTX_OP_MUTEX_WAIT: {
-			struct umutex *mutex = a->obj;
-			if (a->uaddr1 != NULL || a->uaddr2 != NULL) {
-				halt("umtx mutex_wait with timeout\r\n", 0);
-			}
-			LOCK(&thread_st);
-			while (1) {
-				uint32_t old = mutex->m_owner;
-				if ((old & ~UMUTEX_CONTESTED) == UMUTEX_UNOWNED) {
-					UNLOCK(&thread_st);
-					break;
-				}
-				if (__sync_bool_compare_and_swap(&mutex->m_owner, old, old | UMUTEX_CONTESTED)) {
-					threads[current_thread].wait_target = (uintptr_t) a->obj;
-					switch_thread(UMTX_MUTEX_WAIT, 0, 1, &umtx_mutexqueue, NULL);
-					LOCK(&thread_st);
-				}
-			}
-			return 0;
-		}
-		case UMTX_OP_MUTEX_WAKE2: {
-			struct umutex *mutex = a->obj;
-			int found = 0;
-			LOCK(&thread_st);
-			if ((mutex->m_owner & ~UMUTEX_CONTESTED) != UMUTEX_UNOWNED) {
-				found = 1;
-			}
-			struct crazierl_thread *tp;
-			tp = TAILQ_FIRST(&umtx_mutexqueue);
-			while (tp != NULL) {
-				if (tp->wait_target == (uintptr_t) a->obj) {
-					if (found == 0) {
-						size_t i = tp - threads;
-						tp = TAILQ_NEXT(tp, waitq);
-						mark_thread_runnable(i);
-						found = 1;
-					} else {
-						while (1) {
-							uint32_t old = mutex->m_owner;
-							if (__sync_bool_compare_and_swap(&mutex->m_owner, old, old | UMUTEX_CONTESTED)) {
-								break;
-							}
-						}
-						break;
-					}
-				} else {
-					tp = TAILQ_NEXT(tp, waitq);
-				}
-			}
-			UNLOCK(&thread_st);
-			return 0;
-		}
+		case UMTX_OP_WAIT_UINT_PRIVATE: return umtx_wait(a, iframe);
+		case UMTX_OP_MUTEX_WAIT: return umtx_mutex_wait(a, iframe);
+		case UMTX_OP_MUTEX_WAKE2: return umtx_mutex_wait2(a, iframe);
 	}
-
 	ERROR_PRINTF("_umtx_op(%08x, %d, %d, %08x, %08x)\r\n", a->obj, a->op, a->val, a->uaddr1, a->uaddr2);
 	halt("unknown umtx op\r\n", 0);
 }
 
-// separate function, because uint64_t breaks stack setup for thr_new otherwise
+int umtx_wait(struct _umtx_op_args *a, struct interrupt_frame *iframe) {
+	LOCK(&thread_st);
+	if ((a->op == UMTX_OP_WAIT && *(u_long *)a->obj == a->val) ||
+	    (a->op != UMTX_OP_WAIT && *(u_int *)a->obj == a->val)) {
+		uint64_t timeout = 0;
+		if ((size_t) a->uaddr1 == sizeof(struct _umtx_time)) {
+			struct _umtx_time *utime = (struct _umtx_time *)a->uaddr2;
+			timeout = FIXED_POINT_TIME_NANOSECOND(utime->_timeout.tv_sec, utime->_timeout.tv_nsec);
+			if (!(utime->_flags & UMTX_ABSTIME)) {
+				timeout += fixed_point_time(0);
+			}
+		} else if ((ssize_t) a->uaddr1 == sizeof(struct timespec)) {
+			halt("umtx wait_uint with timespec timeout\r\n", 0);
+		}
+		threads[current_thread].wait_target = kern_mmap_physical((uintptr_t) a->obj);
+		if (switch_thread(UMTX_WAIT, timeout, 1, &umtx_waitqueue, NULL)) {
+			SYSCALL_FAILURE(ETIMEDOUT);
+		}
+	} else {
+		UNLOCK(&thread_st);
+	}
+	SYSCALL_SUCCESS(0);
+}
+
+int umtx_mutex_wait(struct _umtx_op_args *a, struct interrupt_frame *iframe) {
+	struct umutex *mutex = a->obj;
+	if (a->uaddr1 != NULL || a->uaddr2 != NULL) {
+		halt("umtx mutex_wait with timeout\r\n", 0);
+	}
+	LOCK(&thread_st);
+	while (1) {
+		uint32_t old = mutex->m_owner;
+		if ((old & ~UMUTEX_CONTESTED) == UMUTEX_UNOWNED) {
+			UNLOCK(&thread_st);
+			break;
+		}
+		if (__sync_bool_compare_and_swap(&mutex->m_owner, old, old | UMUTEX_CONTESTED)) {
+			threads[current_thread].wait_target = (uintptr_t) a->obj;
+			switch_thread(UMTX_MUTEX_WAIT, 0, 1, &umtx_mutexqueue, NULL);
+			LOCK(&thread_st);
+		}
+	}
+	SYSCALL_SUCCESS(0);
+}
+
+int umtx_mutex_wait2(struct _umtx_op_args *a, struct interrupt_frame *iframe) {
+	struct umutex *mutex = a->obj;
+	int found = 0;
+	LOCK(&thread_st);
+	if ((mutex->m_owner & ~UMUTEX_CONTESTED) != UMUTEX_UNOWNED) {
+		found = 1;
+	}
+	struct crazierl_thread *tp;
+	tp = TAILQ_FIRST(&umtx_mutexqueue);
+	while (tp != NULL) {
+		if (tp->wait_target == (uintptr_t) a->obj) {
+			if (found == 0) {
+				size_t i = tp - threads;
+				tp = TAILQ_NEXT(tp, waitq);
+				mark_thread_runnable(i);
+				found = 1;
+			} else {
+				while (1) {
+					uint32_t old = mutex->m_owner;
+					if (__sync_bool_compare_and_swap(&mutex->m_owner, old, old | UMUTEX_CONTESTED)) {
+						break;
+					}
+				}
+				break;
+			}
+		} else {
+			tp = TAILQ_NEXT(tp, waitq);
+		}
+	}
+	UNLOCK(&thread_st);
+	SYSCALL_SUCCESS(0);
+}
+
 // TODO MAYBE\ rewrite to kqueue?
-int kern_ppoll(struct ppoll_args *a) {
+int syscall_ppoll(struct ppoll_args *a, struct interrupt_frame *iframe) {
 	//ERROR_PRINTF("ppoll nfds=%d!\r\n", a->nfds);
 	uint64_t timeout = 0;
 	if (a->ts != NULL) {
@@ -1226,10 +1237,10 @@ int kern_ppoll(struct ppoll_args *a) {
 		}
 		if (changedfds) {
 			UNLOCK(&thread_st);
-			return changedfds;
+			SYSCALL_SUCCESS(changedfds);
 		}
 		if (switch_thread(POLL, timeout, 1, &pollqueue, NULL)) {
-			return 0;
+			SYSCALL_SUCCESS(0);;
 		};
 	}
 }
@@ -1525,44 +1536,6 @@ int kern_kevent(struct kevent_args *a) {
 	return nevents;
 }
 
-
-// separate function, because uint64_t breaks stack setup for thr_new otherwise
-void kern_clock_gettimeofday (struct timeval *tp) {
-	uint64_t time = fixed_point_time(0);
-	time += time_offset;
-	tp->tv_sec = FIXED_POINT_SECONDS(time);
-	tp->tv_usec = FIXED_POINT_MICROSECONDS(time);
-}
-
-// separate function, because uint64_t breaks stack setup for thr_new otherwise
-void kern_clock_settimeofday (struct timeval *tp) {
-	while (1) {
-		uint64_t time = fixed_point_time(0);
-		LOCK(&time_lock);
-		if (global_tsc_generation == tsc_generation) {
-			global_time_offset = FIXED_POINT_TIME_NANOSECOND(tp->tv_sec, 1000 * tp->tv_usec) - time;
-			++global_tsc_generation;
-			UNLOCK(&time_lock);
-			break;
-		}
-		UNLOCK(&time_lock);
-	}
-}
-// separate function, because uint64_t breaks stack setup for thr_new otherwise
-void kern_clock_gettime (clockid_t clock_id, struct timespec *tp) {
-	uint64_t time = fixed_point_time(0);
-	if (clock_id == CLOCK_REALTIME || clock_id == CLOCK_SECOND) {
-		time += time_offset;
-	}
-	tp->tv_sec = FIXED_POINT_SECONDS(time);
-	if (clock_id != CLOCK_SECOND) {
-		tp->tv_nsec = FIXED_POINT_NANOSECONDS(time);
-	}
-}
-
-#define CARRY 1
-#define SYSCALL_SUCCESS(ret) { iframe->flags &= ~CARRY; return ret; }
-#define SYSCALL_FAILURE(ret) { iframe->flags |= CARRY; return ret; }
 
 int syscall_exit (struct sys_exit_args *a, struct interrupt_frame *iframe) {
 	ERROR_PRINTF("exit %d\r\n", a->rval);
@@ -2061,7 +2034,10 @@ int syscall_select (struct select_args *a, struct interrupt_frame *iframe) {
 }
 int syscall_gettimeofday (struct gettimeofday_args *a, struct interrupt_frame *iframe) {
 	if (a->tp != NULL) {
-		kern_clock_gettimeofday(a->tp);
+		uint64_t time = fixed_point_time(0);
+		time += time_offset;
+		a->tp->tv_sec = FIXED_POINT_SECONDS(time);
+		a->tp->tv_usec = FIXED_POINT_MICROSECONDS(time);
 	}
 	if (a->tzp != NULL) {
 		a->tzp->tz_minuteswest = 0;
@@ -2079,7 +2055,17 @@ int syscall_settimeofday (struct gettimeofday_args *a, struct interrupt_frame *i
 		}
 	}
 	if (a->tp != NULL) {
-		kern_clock_settimeofday(a->tp);
+		while (1) {
+			uint64_t time = fixed_point_time(0);
+			LOCK(&time_lock);
+			if (global_tsc_generation == tsc_generation) {
+				global_time_offset = FIXED_POINT_TIME_NANOSECOND(a->tp->tv_sec, 1000 * a->tp->tv_usec) - time;
+				++global_tsc_generation;
+				UNLOCK(&time_lock);
+				break;
+			}
+			UNLOCK(&time_lock);
+		}
 	}
 	SYSCALL_SUCCESS(0);
 }
@@ -2224,14 +2210,20 @@ int syscall_clock_gettime (struct clock_gettime_args *a, struct interrupt_frame 
 		case CLOCK_MONOTONIC: /*fall through*/
 		case CLOCK_UPTIME:
 		case CLOCK_REALTIME:
-		case CLOCK_SECOND:
-			kern_clock_gettime(a->clock_id, a->tp);
-			break;
-		default:
-			ERROR_PRINTF("clock gettime clock_id %d\r\n", a->clock_id);
-			halt("need to handle other clock mode?", 0);
+		case CLOCK_SECOND: {
+			uint64_t time = fixed_point_time(0);
+			if (a->clock_id == CLOCK_REALTIME || a->clock_id == CLOCK_SECOND) {
+				time += time_offset;
+			}
+			a->tp->tv_sec = FIXED_POINT_SECONDS(time);
+			if (a->clock_id != CLOCK_SECOND) {
+				a->tp->tv_nsec = FIXED_POINT_NANOSECONDS(time);
+			}
+			SYSCALL_SUCCESS(0);
+		}
 	}
-	SYSCALL_SUCCESS(0);
+	ERROR_PRINTF("clock gettime clock_id %d\r\n", a->clock_id);
+	halt("need to handle other clock mode?", 0);
 }
 int syscall_issetugid (struct issetugid_args *a, struct interrupt_frame *iframe) {
 	DEBUG_PRINTF("issetugid()\r\n");
@@ -2261,14 +2253,7 @@ int syscall_thr_self (struct thr_self_args *a, struct interrupt_frame *iframe) {
 	*a->id = THREAD_ID_OFFSET + current_thread;
 	SYSCALL_SUCCESS(0);
 }
-int syscall__umtx_op (struct _umtx_op_args *a, struct interrupt_frame *iframe) {
-	int ret = kern_umtx_op(a);
-	if (ret >= 0) {
-		SYSCALL_SUCCESS(0);
-	} else {
-		SYSCALL_FAILURE(-ret);
-	}
-}
+
 int syscall_rtprio_thread (struct rtprio_thread_args *a, struct interrupt_frame *iframe) {
 	if (a->function == RTP_LOOKUP) {
 		a->rtp->type = RTP_PRIO_NORMAL;
@@ -2395,15 +2380,6 @@ int syscall_socketpair (struct socketpair_args *a, struct interrupt_frame *ifram
 	return syscall_pipe2(&x, iframe);
 }
 
-
-int syscall_ppoll (struct ppoll_args *a, struct interrupt_frame *iframe) {
-	int ret = kern_ppoll(a);
-	if (ret >= 0) {
-		SYSCALL_SUCCESS(ret);
-	} else {
-		SYSCALL_FAILURE(ret);
-	};
-}
 int syscall_fstat (struct fstat_args *a, struct interrupt_frame *iframe) {
 	if (a->fd < 0 || a->fd >= BOGFD_MAX) {
 		ERROR_PRINTF("fstat () = EBADF\r\n");
