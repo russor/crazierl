@@ -513,10 +513,20 @@ uint8_t read_cmos(uint8_t reg)
 }
 
 uint64_t unix_time(uint8_t time[]) {
-	int years = (time[7] * 100 + time[6]) - 1970;
-	int days = years * 365 + (years >> 2) + time[4];
-	if (time[5] == 1 || (time[5] == 2 && time[4] <= 29)) {
-		--days;
+	int years = (time[7] * 100 + time[6]) - 2000;
+	if (years < 0) {
+		halt("can't run before the year 2000\r\n", 0);
+	}
+	uint64_t days = 10957; // Jan 1, 2000 is 10957 days after Jan 1, 1970, when time began
+	days += years * 365 + (years >> 2) + time[4];
+	if (years % 4 == 0) {
+		if (time[5] < 3 || (years % 100 == 0 && years % 400 != 0)) { --days; }
+	}
+	while (years > 0) {
+		if (years > 100) { --days; }
+		if (years > 200) { --days; }
+		if (years > 300) { --days; }
+		years -= 400;
 	}
 	switch (time[5]) {
 		case 12: days += 30;
@@ -537,6 +547,49 @@ uint64_t unix_time(uint8_t time[]) {
 void get_time()
 {
 	uint8_t timeA[9], timeB[9];
+	/* unix time test!
+	bzero(timeA, sizeof(timeA));
+	timeA[7] = 20;
+	timeA[4] = 1;
+	uint64_t last = 946684800 - 86400;
+	for (int century = 20; century <= 99; ++century) {
+		timeA[7] = century;
+		for (int year = 0; year <= 99; ++year) {
+			timeA[6] = year;
+			for (int month = 1; month <= 12; ++month) {
+				timeA[5] = month;
+				int max = 31;
+				switch (month) {
+					case 4:
+					case 6:
+					case 9:
+					case 11:
+						max = 30;
+						break;
+					case 2:
+						if (year % 4 == 0 && (year % 100 != 0 || century % 4 == 0)) {
+							max = 29;
+						} else {
+							max = 28;
+						}
+				}
+
+				for (int day = 1; day <= max; ++day) {
+					timeA[4] = day;
+
+					uint64_t next = unix_time(timeA);
+					if (next - last != 86400) {
+						EARLY_ERROR_PRINTF("%0d%02d-%02d-01 = %llu (last %llu)\r\n", century, year, month, unix_time(timeA), last);
+						halt("bad\r\n", 0);
+					}
+					last = next;
+				}
+			}
+		}
+	}
+	halt("done\r\n", 0);
+	*/
+
 	bzero(timeA, sizeof(timeA));
 	do {
 		memcpy(timeB, timeA, sizeof(timeB));
