@@ -2696,9 +2696,9 @@ int thr_new_new_thread()
 void handle_gp(struct interrupt_frame *frame, uint32_t error_code)
 {
 	if (frame) {
-		ERROR_PRINTF("Got #GP (%u) IP: %08x cpu %d\r\n", error_code, frame->ip, current_cpu);
+		EARLY_ERROR_PRINTF("Got #GP (%u) IP: %08x cpu %d\r\n", error_code, frame->ip, current_cpu);
 	} else {
-		ERROR_PRINTF("Got #GP, no stack frame cpu %d\r\n", current_cpu);
+		EARLY_ERROR_PRINTF("Got #GP, no stack frame cpu %d\r\n", current_cpu);
 	}
 	halt(NULL, 0);
 }
@@ -2709,10 +2709,10 @@ void handle_pf(struct interrupt_frame *frame, uint32_t error_code)
 	asm volatile("mov %%cr2, %0" : "=a" (addr));
 
 	if (frame) {
-		ERROR_PRINTF("Got #PF (%u) address %08x, IP: %08x cpu %d, thread %d\r\n", error_code, addr, frame->ip, current_cpu, current_thread);
+		EARLY_ERROR_PRINTF("Got #PF (%u) address %08x, IP: %08x cpu %d, thread %d\r\n", error_code, addr, frame->ip, current_cpu, current_thread);
 		kern_mmap_debug(addr);
 	} else {
-		ERROR_PRINTF("Got #PF, no stack frame, cpu %d\r\n", current_cpu);
+		EARLY_ERROR_PRINTF("Got #PF, no stack frame, cpu %d\r\n", current_cpu);
 	}
 	halt("page fault\r\n", 0);
 }
@@ -2720,18 +2720,18 @@ void handle_pf(struct interrupt_frame *frame, uint32_t error_code)
 __attribute__ ((interrupt))
 void handle_ud(struct interrupt_frame *frame)
 {
-	ERROR_PRINTF("Got #UD IP: %08x, cpu %d", frame->ip, current_cpu);
+	EARLY_ERROR_PRINTF("Got #UD IP: %08x, cpu %d", frame->ip, current_cpu);
 	halt(NULL, 0);
 }
 
 void handle_error(unsigned int vector, uint32_t error_code, struct interrupt_frame *frame)
 {
-	ERROR_PRINTF("error vector %d\r\n", vector);
+	EARLY_ERROR_PRINTF("error vector %d\r\n", vector);
 	switch (vector) {
 		case 0xd: handle_gp(frame, error_code); break;
 		case 0xe: handle_pf(frame, error_code); break;
 		default:
-			ERROR_PRINTF("unknown error (0x%x): 0x%x, IP %08x cpu %d, thread %d\r\n", vector, error_code, frame->ip, current_cpu, current_thread);
+			EARLY_ERROR_PRINTF("unknown error (0x%x): 0x%x, IP %08x cpu %d, thread %d\r\n", vector, error_code, frame->ip, current_cpu, current_thread);
 	}
 }
 
