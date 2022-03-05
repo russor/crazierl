@@ -213,12 +213,14 @@ struct page *buddy_alloc(uint8_t order) {
 	// split free areas until we reach the target order
 	while (order > target_order) {
 		struct page *free_area_first_page = LIST_FIRST(&freelists[order]);
-		struct page *free_area_buddy_page = get_area_buddy(free_area_first_page);
 		LIST_REMOVE(free_area_first_page, freelist);
 
 		// demote the order of the first page of the free area and its buddy
 		order -= 1;
                 free_area_first_page->order = order;
+                
+		// NB: get_area_buddy needs to be called AFTER demoting the area
+		struct page *free_area_buddy_page = get_area_buddy(free_area_first_page);
                 free_area_buddy_page->order = order;
 
 		// add the resultant areas of the split to the freelist
