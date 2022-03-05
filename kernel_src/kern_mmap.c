@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <strings.h>
 #include <errno.h>
+#include <sys/queue.h>
 
 #define ONE_MB 0x00100000
 #define PAGE_DIRECTORY_BITS 22
@@ -19,6 +20,9 @@
 #define PAGE_BOTH_UK 0x200
 #define PAGE_FORCE 0x400
 
+#define MAX_MEM_SEGMENTS 128
+#define MAX_PAGE_ORDER 12
+#define FREELIST_COUNT MAX_PAGE_ORDER
 
 uintptr_t PAGE_DIRECTORY;
 uintptr_t PAGE_TABLE_BASE;
@@ -26,6 +30,23 @@ uintptr_t LEAST_ADDR;
 uintptr_t MAX_ADDR;
 uintptr_t LOW_PAGE;
 int PAGE_SETUP_FINISHED;
+
+struct mem_segment {
+	uintptr_t addr;
+	size_t len;
+	struct page *pages;
+};
+
+struct page {
+	uint8_t order;
+	uint8_t in_use;
+	LIST_ENTRY(page) freelist;
+};
+
+struct mem_segment mem_segments[MAX_MEM_SEGMENTS];
+int mem_segment_count;
+
+LIST_HEAD(freelist, page) freelists[FREELIST_COUNT];
 
 uint32_t * pagetable_direntry (uintptr_t logical)
 {
@@ -125,6 +146,122 @@ void add_page_mappings (uint16_t mappingflags, uintptr_t addr, size_t len) {
 		add_page_mapping(mappingflags, addr, addr);
 		addr += PAGE_SIZE;
 		len -= PAGE_SIZE;
+	}
+}
+
+struct page *get_segment_page(struct mem_segment *segment, uintptr_t addr) {
+	if (segment == NULL) {
+		return NULL;
+	}
+	if (addr >= segment->addr && addr + PAGE_SIZE < segment->addr + segment->len) {
+		return segment->pages[(addr - segment->addr) / PAGE_SIZE];
+	}
+	return NULL;
+}
+
+uintptr_t get_page_addr(struct mem_segment *segment, struct page *page) {
+	return (page - segment->pages) * PAGE_SIZE;
+}
+
+struct mem_segment *get_page_segment(struct page *page) {
+	struct mem_segment *segment;
+	for (segment = &mem_segments[0]; segment < &mem_segments[mem_segment_count]; segment++) {
+		uintptr_t page_struct_addr = (uintptr_t) page;
+		uintptr_t segment_first_page_struct_addr = (uintptr_t) &segment->pages[0];
+		uintptr_t segment_last_page_struct_addr = segment_first_page_struct_addr + segment->len / PAGE_SIZE;
+		if (page_struct_addr >= segment_first_page_struct_addr && page_struct_addr < segment_last_page_struct_addr) {
+			return segment;
+		}
+	}
+	return NULL;
+}
+
+struct mem_segment *get_addr_mem_segment(uintptr_t addr) {
+	struct mem_segment *segment;
+	for (segment = &mem_segments[0]; segment < &mem_segments[mem_segment_count]; segment++) {
+		if (get_segment_page(segment, addr) != NULL) {
+                        return segment;
+		}
+	}
+	return NULL;
+}
+
+struct page *get_area_buddy(struct page *page) {
+	struct mem_segment *segment = get_page_segment(page);
+	uintptr_t page_addr = get_page_addr(segment, page);
+	uintptr_t buddy_addr = page_addr ^ (PAGE_SIZE << (page->order & PAGE_ORDER_MASK));
+        // page buddies can only live in the same memory segment
+	return get_segment_page(segment, buddy_addr);
+}
+
+struct page *buddy_alloc(uint8_t order) {
+	const uint8_t target_order = order;
+
+	if (target_order > MAX_PAGE_ORDER) {
+		// XXX this indicates a kernel bug; we should probably log here.
+		return NULL;
+	}
+
+	// find lowest order freelist with an available page
+	while (LIST_EMPTY(&freelists[order])) {
+		order += 1;
+		if (order > MAX_PAGE_ORDER) {
+			return NULL;
+		}
+	}
+
+	// split free areas until we reach the target order
+	while (order > target_order) {
+		struct page *free_area_first_page = LIST_FIRST(&freelists[order]);
+		struct page *free_area_buddy_page = get_area_buddy(free_area_first_page);
+		LIST_REMOVE(free_area_first_page, freelist);
+
+		// demote the order of the first page of the free area and its buddy
+		order -= 1;
+                free_area_first_page->order = order;
+                free_area_buddy_page->order = order;
+
+		// add the resultant areas of the split to the freelist
+		LIST_INSERT_HEAD(&freelists[order], free_area_first_page, freelist);
+		LIST_INSERT_HEAD(&freelists[order], free_area_buddy_page, freelist);
+	}
+
+	// we are guaranteed at least two free areas on the target freelist now, so remove one
+	struct page *free_area = LIST_FIRST(&freelists[target_order]);
+        LIST_REMOVE(free_area, freelist);
+
+	free_area->in_use = 1;
+	return free_area;
+}
+
+struct page *buddy_free(struct page *area) {
+	// mark the area as free and put on freelist
+	area->in_use = 0;
+	LIST_INSERT_HEAD(&freelists[area->order], area, freelist);
+
+	// merge with other areas as much as possible
+	while (area->order < MAX_PAGE_ORDER) {
+		struct page *buddy = get_area_buddy(area);
+		// only merge the buddy is free and of the same order
+		if (buddy == NULL || buddy->order != area->order || buddy->in_use) {
+			break;
+		}
+
+		// remove the two merging areas from their freelist
+		LIST_REMOVE(area, freelist);
+		LIST_REMOVE(buddy, freelist);
+
+		// promote the order of both merging areas
+		area->order += 1;
+		buddy->order += 1;
+
+		// mark the second area as in-use as it's being merged with the first
+		struct page *first_area = MIN(area, buddy);
+		struct page *second_area = MAX(area, buddy);
+		second_area->in_use = 1;
+
+		// add the new merged area to the right freelist
+		LIST_INSERT_HEAD(&freelists[area->order], first_area, freelist);
 	}
 }
 
