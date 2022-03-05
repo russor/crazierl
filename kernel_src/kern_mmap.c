@@ -34,12 +34,11 @@ int PAGE_SETUP_FINISHED;
 struct mem_segment {
 	uintptr_t addr;
 	size_t len;
-	struct page *pages;
 };
 
 struct page {
 	uint8_t order;
-	uint8_t in_use;
+	uint8_t free;
 	LIST_ENTRY(page) freelist;
 };
 
@@ -149,25 +148,31 @@ void add_page_mappings (uint16_t mappingflags, uintptr_t addr, size_t len) {
 	}
 }
 
+struct page *get_segment_pages(struct mem_segment *segment) {
+	return (struct page *) segment->addr;
+}
+
 struct page *get_segment_page(struct mem_segment *segment, uintptr_t addr) {
 	if (segment == NULL) {
 		return NULL;
 	}
 	if (addr >= segment->addr && addr + PAGE_SIZE < segment->addr + segment->len) {
-		return segment->pages[(addr - segment->addr) / PAGE_SIZE];
+		struct page *segment_pages = get_segment_pages(segment);
+		return segment_pages[(addr - segment->addr) / PAGE_SIZE];
 	}
 	return NULL;
 }
 
 uintptr_t get_page_addr(struct mem_segment *segment, struct page *page) {
-	return (page - segment->pages) * PAGE_SIZE;
+	struct page *segment_pages = get_segment_pages(segment);
+	return (page - segment_pages) * PAGE_SIZE;
 }
 
 struct mem_segment *get_page_segment(struct page *page) {
 	struct mem_segment *segment;
 	for (segment = &mem_segments[0]; segment < &mem_segments[mem_segment_count]; segment++) {
 		uintptr_t page_struct_addr = (uintptr_t) page;
-		uintptr_t segment_first_page_struct_addr = (uintptr_t) &segment->pages[0];
+		uintptr_t segment_first_page_struct_addr = (uintptr_t) get_segment_pages(segment);
 		uintptr_t segment_last_page_struct_addr = segment_first_page_struct_addr + segment->len / PAGE_SIZE;
 		if (page_struct_addr >= segment_first_page_struct_addr && page_struct_addr < segment_last_page_struct_addr) {
 			return segment;
@@ -232,20 +237,20 @@ struct page *buddy_alloc(uint8_t order) {
 	struct page *free_area = LIST_FIRST(&freelists[target_order]);
         LIST_REMOVE(free_area, freelist);
 
-	free_area->in_use = 1;
+	free_area->free = 0;
 	return free_area;
 }
 
 struct page *buddy_free(struct page *area) {
 	// mark the area as free and put on freelist
-	area->in_use = 0;
+	area->free = 1;
 	LIST_INSERT_HEAD(&freelists[area->order], area, freelist);
 
 	// merge with other areas as much as possible
 	while (area->order < MAX_PAGE_ORDER) {
 		struct page *buddy = get_area_buddy(area);
 		// only merge the buddy is free and of the same order
-		if (buddy == NULL || buddy->order != area->order || buddy->in_use) {
+		if (buddy == NULL || buddy->order != area->order || !buddy->free) {
 			break;
 		}
 
@@ -260,10 +265,33 @@ struct page *buddy_free(struct page *area) {
 		// mark the second area as in-use as it's being merged with the first
 		struct page *first_area = MIN(area, buddy);
 		struct page *second_area = MAX(area, buddy);
-		second_area->in_use = 1;
+		second_area->free = 0;
 
 		// add the new merged area to the right freelist
 		LIST_INSERT_HEAD(&freelists[area->order], first_area, freelist);
+	}
+}
+
+void add_mem_segment(uintptr_t addr, uintptr_t len) {
+	if (mem_segment_count >= MAX_MEM_SEGMENTS) {
+		halt("tried to add too many memory segments");
+	}
+
+	// initialize the beginning of the segment for struct pages
+	uintptr_t page_count = len / PAGE_SIZE;
+        size_t page_data_byte_size = sizeof(struct page) * page_count;
+	memset(addr, 0, page_data_byte_size);
+
+	struct mem_segment *segment = &mem_segments[mem_segment_count];
+	segment->addr = addr;
+	segment->len = len;
+
+	mem_segment_count += 1;
+
+	struct page *page;
+        size_t page_data_page_count = (page_data_byte_size + (PAGE_SIZE - 1)) / PAGE_SIZE;
+	for (page = get_segment_pages(segment) + page_data_page_count; page < page_count; page++) {
+		buddy_free(page);
 	}
 }
 
@@ -384,6 +412,12 @@ void kern_mmap_init (unsigned int length, unsigned int addr)
 				MAX_ADDR = addr + len;
 			}
 			add_page_mappings(0, addr, len);
+
+			if (mem_segment_count < MAX_MEM_SEGMENTS) {
+				add_mem_segment(addr + buddy_page_data_len, len);
+			} else {
+				EARLY_ERROR_PRINTF("error adding memory segment to allocator: too many segments\r\n");
+			}
 		} else {
 			uintptr_t addr = mmm->addr;
 			uintptr_t len = mmm->len;
