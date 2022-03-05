@@ -203,8 +203,8 @@ struct page *buddy_alloc(uint8_t order) {
 	const uint8_t target_order = order;
 
 	if (target_order > MAX_PAGE_ORDER) {
-		// XXX this indicates a kernel bug; we should probably log here.
-		return NULL;
+		EARLY_ERROR_PRINTF("attempted huge allocation of order %u", (unsigned int) order);
+		halt("attempted huge allocation", 0);
 	}
 
 	// find lowest order freelist with an available page
@@ -242,6 +242,18 @@ struct page *buddy_alloc(uint8_t order) {
 }
 
 struct page *buddy_free(struct page *area) {
+	struct mem_segment segment = get_page_segment(area);
+	if (segment == NULL) {
+		uintptr_t struct_page_addr = (uintptr_t) area;
+		EARLY_ERROR_PRINTF("invalid free of %08x outside memory segment", struct_page_addr);
+		halt("invalid free outside memory segment", 0);
+	}
+	if (area->free) {
+		uintptr_t addr = get_page_addr(segment, page);
+		EARLY_ERROR_PRINTF("double free of %08x", addr);
+		halt("double free", 0);
+        }
+
 	// mark the area as free and put on freelist
 	area->free = 1;
 	LIST_INSERT_HEAD(&freelists[area->order], area, freelist);
@@ -274,7 +286,7 @@ struct page *buddy_free(struct page *area) {
 
 void add_mem_segment(uintptr_t addr, uintptr_t len) {
 	if (mem_segment_count >= MAX_MEM_SEGMENTS) {
-		halt("tried to add too many memory segments");
+		halt("tried to add too many memory segments", 0);
 	}
 
 	// initialize the beginning of the segment for struct pages
