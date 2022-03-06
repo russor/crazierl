@@ -1250,7 +1250,7 @@ int umtx_mutex_wait2(struct _umtx_op_args *a, struct interrupt_frame *iframe) {
 	SYSCALL_SUCCESS(0);
 }
 
-// TODO MAYBE\ rewrite to kqueue?
+// TODO rewrite to kqueue to fix race condition with concurrent write to polled fd!
 int syscall_ppoll(struct ppoll_args *a, struct interrupt_frame *iframe) {
 	//ERROR_PRINTF("ppoll nfds=%d!\r\n", a->nfds);
 	uint64_t timeout = 0;
@@ -1275,17 +1275,17 @@ int syscall_ppoll(struct ppoll_args *a, struct interrupt_frame *iframe) {
 			if (a->fds[i].events && fd->type == PIPE && fd->pipe == NULL) {
 				a->fds[i].revents = a->fds[i].events;
 				++changedfds;
-				continue;
-			}
-			if ((a->fds[i].events & POLLIN && fd->type == IRQ && fd->status[1] != 0) ||
-			    (a->fds[i].events & POLLIN && fd->type == PIPE && fd->pb->length != 0)
-			   ) {
-				a->fds[i].revents |= POLLIN;
-				++changedfds;
-			}
-			if (a->fds[i].events & POLLOUT && fd->type == PIPE && fd->pipe->pb->length < BOGFD_PB_LEN) {
-				a->fds[i].revents |= POLLOUT;
-				++changedfds;
+			} else {
+				if ((a->fds[i].events & POLLIN && fd->type == IRQ && fd->status[1] != 0) ||
+				    (a->fds[i].events & POLLIN && fd->type == PIPE && fd->pb->length != 0)
+				   ) {
+					a->fds[i].revents |= POLLIN;
+					++changedfds;
+				}
+				if (a->fds[i].events & POLLOUT && fd->type == PIPE && fd->pipe->pb->length < BOGFD_PB_LEN) {
+					a->fds[i].revents |= POLLOUT;
+					++changedfds;
+				}
 			}
 		}
 		if (changedfds) {
