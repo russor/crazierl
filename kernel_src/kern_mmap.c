@@ -22,6 +22,7 @@
 
 #define MAX_MEM_SEGMENTS 128
 #define MAX_PAGE_ORDER 12
+#define PAGE_ORDER_MASK 0x7F
 #define FREELIST_COUNT MAX_PAGE_ORDER
 
 uintptr_t PAGE_DIRECTORY;
@@ -158,7 +159,7 @@ struct page *get_segment_page(struct mem_segment *segment, uintptr_t addr) {
 	}
 	if (addr >= segment->addr && addr + PAGE_SIZE < segment->addr + segment->len) {
 		struct page *segment_pages = get_segment_pages(segment);
-		return segment_pages[(addr - segment->addr) / PAGE_SIZE];
+		return &segment_pages[(addr - segment->addr) / PAGE_SIZE];
 	}
 	return NULL;
 }
@@ -241,15 +242,15 @@ struct page *buddy_alloc(uint8_t order) {
 	return free_area;
 }
 
-struct page *buddy_free(struct page *area) {
-	struct mem_segment segment = get_page_segment(area);
+void buddy_free(struct page *area) {
+	struct mem_segment *segment = get_page_segment(area);
 	if (segment == NULL) {
 		uintptr_t struct_page_addr = (uintptr_t) area;
 		EARLY_ERROR_PRINTF("invalid free of %08x outside memory segment", struct_page_addr);
 		halt("invalid free outside memory segment", 0);
 	}
 	if (area->free) {
-		uintptr_t addr = get_page_addr(segment, page);
+		uintptr_t addr = get_page_addr(segment, area);
 		EARLY_ERROR_PRINTF("double free of %08x", addr);
 		halt("double free", 0);
         }
@@ -292,7 +293,7 @@ void add_mem_segment(uintptr_t addr, uintptr_t len) {
 	// initialize the beginning of the segment for struct pages
 	uintptr_t page_count = len / PAGE_SIZE;
         size_t page_data_byte_size = sizeof(struct page) * page_count;
-	memset(addr, 0, page_data_byte_size);
+	bzero((void *)addr, page_data_byte_size);
 
 	struct mem_segment *segment = &mem_segments[mem_segment_count];
 	segment->addr = addr;
