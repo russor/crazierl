@@ -3400,7 +3400,15 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 
 	uintptr_t scratch;
 	
-	kern_mmap_init(mb->mmap_length, mb->mmap_addr);
+	uintptr_t max_addr = (uintptr_t) &__edata;
+	size_t mods_count = mb->mods_count;
+	multiboot_module_t *mods = (void *)mb->mods_addr;
+	max_addr = max(max_addr, (uintptr_t) (mods + mods_count));
+	for (int mod = 0; mod < mods_count; ++mod) {
+		max_addr = max(max_addr, mods[mod].mod_end - 1);
+	}
+
+	kern_mmap_init(mb->mmap_length, mb->mmap_addr, max_addr);
 	if (!kern_mmap(&scratch, (void *)local_apic, PAGE_SIZE, PROT_KERNEL | PROT_READ | PROT_WRITE | PROT_FORCE, MAP_EARLY)) {
 		halt("couldn't map space for Local APIC\r\n", 1);
 	}
@@ -3443,9 +3451,6 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 	char filename [256];
 	strncpy(filename, filestart, fileend - filestart);
 	DEBUG_PRINTF("file to load %s\r\n", filename);
-
-	size_t mods_count = mb->mods_count;
-	multiboot_module_t *mods = (void *)mb->mods_addr;
 
 	kern_mmap_enable_paging();
 

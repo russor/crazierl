@@ -285,7 +285,7 @@ void buddy_free(struct page *area) {
 	}
 }
 
-void add_mem_segment(uintptr_t addr, uintptr_t len) {
+void add_mem_segment(uintptr_t addr, uintptr_t len, uintptr_t max_used) {
 	if (mem_segment_count >= MAX_MEM_SEGMENTS) {
 		halt("tried to add too many memory segments", 0);
 	}
@@ -293,6 +293,10 @@ void add_mem_segment(uintptr_t addr, uintptr_t len) {
 	// initialize the beginning of the segment for struct pages
 	uintptr_t page_count = len / PAGE_SIZE;
         size_t page_data_byte_size = sizeof(struct page) * page_count;
+        if (addr <= max_used) {
+	        EARLY_ERROR_PRINTF("can't use address %p for page info, is already used (%p)\r\n", addr, max_used);
+	        return;
+	}
 	bzero((void *)addr, page_data_byte_size);
 
 	struct mem_segment *segment = &mem_segments[mem_segment_count];
@@ -301,9 +305,11 @@ void add_mem_segment(uintptr_t addr, uintptr_t len) {
 
 	mem_segment_count += 1;
 
-	struct page *page;
+	struct page *page, *start;
         size_t page_data_page_count = (page_data_byte_size + (PAGE_SIZE - 1)) / PAGE_SIZE;
-	for (page = get_segment_pages(segment) + page_data_page_count; page < page_count; page++) {
+        start = get_segment_pages(segment);
+	for (page = start + page_data_page_count; page < start + page_count; page++) {
+		EARLY_ERROR_PRINTF("buddy free %p\r\n", page);
 		buddy_free(page);
 	}
 }
@@ -364,7 +370,7 @@ void kern_munmap (uint16_t mode, uintptr_t addr, size_t size)
 	UNLOCK(&mmap_lock);
 }
 
-void kern_mmap_init (unsigned int length, unsigned int addr)
+void kern_mmap_init (unsigned int length, unsigned int addr, uintptr_t max_used_addr)
 {
 	uintptr_t mmap;
 	DEBUG_PRINTF ("memory map at 0x%08x, length %d\r\n", addr, length);
@@ -413,10 +419,14 @@ void kern_mmap_init (unsigned int length, unsigned int addr)
 				PAGE_DIRECTORY = addr + (len - PAGE_SIZE);
 				PAGE_TABLE_BASE = PAGE_DIRECTORY - (PAGE_SIZE * PAGE_SIZE);
 				uintptr_t base = PAGE_TABLE_BASE;
-				explicit_bzero((void *)base, PAGE_SIZE * PAGE_SIZE + PAGE_SIZE); // zero the whole structure
-				add_page_mapping(PAGE_PRESENT | PAGE_READWRITE, PAGE_DIRECTORY, PAGE_DIRECTORY);
-				add_page_mappings(PAGE_PRESENT | PAGE_READWRITE, base, PAGE_SIZE * PAGE_SIZE);
-				len -= (PAGE_SIZE * PAGE_SIZE) + PAGE_SIZE;
+				if (base > max_used_addr) {
+					explicit_bzero((void *)base, PAGE_SIZE * PAGE_SIZE + PAGE_SIZE); // zero the whole structure
+					add_page_mapping(PAGE_PRESENT | PAGE_READWRITE, PAGE_DIRECTORY, PAGE_DIRECTORY);
+					add_page_mappings(PAGE_PRESENT | PAGE_READWRITE, base, PAGE_SIZE * PAGE_SIZE);
+					len -= (PAGE_SIZE * PAGE_SIZE) + PAGE_SIZE;
+				} else {
+					PAGE_DIRECTORY = PAGE_TABLE_BASE = 0;
+				}
 			}
 			if (!LEAST_ADDR || addr < LEAST_ADDR) {
 				LEAST_ADDR = addr;
@@ -427,7 +437,7 @@ void kern_mmap_init (unsigned int length, unsigned int addr)
 			add_page_mappings(0, addr, len);
 
 			if (mem_segment_count < MAX_MEM_SEGMENTS) {
-				add_mem_segment(addr + buddy_page_data_len, len);
+				add_mem_segment(addr, len, max_used_addr);
 			} else {
 				EARLY_ERROR_PRINTF("error adding memory segment to allocator: too many segments\r\n");
 			}
@@ -436,6 +446,9 @@ void kern_mmap_init (unsigned int length, unsigned int addr)
 			uintptr_t len = mmm->len;
 			DEBUG_PRINTF("unavailable memory (%d) at 0x%08x; 0x%08x (%u) bytes\r\n", mmm->type, addr, len, len);
 		}
+	}
+	if (PAGE_DIRECTORY == 0) {
+		halt("couldn't find room for page table\r\n", 0);
 	}
 	EARLY_ERROR_PRINTF("finished setting up pages\r\n");
 	PAGE_SETUP_FINISHED = 1;
