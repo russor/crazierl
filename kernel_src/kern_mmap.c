@@ -59,7 +59,7 @@ uint32_t * pagetable_direntry (uintptr_t logical)
 
 uint32_t * pagetable_entry (uint32_t direntry, uintptr_t logical)
 {
-	uintptr_t lookup = ((direntry & ~(PAGE_SIZE -1)) | (((logical >> PAGE_LEVEL_BITS) & PAGE_LEVEL_MASK) * sizeof(uint32_t)));
+	uintptr_t lookup = PAGE_FLOOR(direntry) | (((logical >> PAGE_LEVEL_BITS) & PAGE_LEVEL_MASK) * sizeof(uint32_t));
 	return (uint32_t *) lookup;
 }
 
@@ -117,7 +117,7 @@ void add_page_mapping (uint16_t flags, uintptr_t logical, uintptr_t physical) {
 	
 	if (*table_entry == 0) {
 		if (unlikely(!PAGE_SETUP_FINISHED || (flags & PAGE_FORCE))){
-			*table_entry = (physical & ~(PAGE_SIZE -1)) | (flags & (PAGE_SIZE - 1));
+			*table_entry = PAGE_FLOOR(physical) | (flags & (PAGE_SIZE - 1));
 		} else {
 			DEBUG_PRINTF("table_entry %p (%x), directory_entry %p (%x), logical %p\r\n",
 				table_entry, *table_entry, directory_entry, *directory_entry, logical);
@@ -298,10 +298,8 @@ DECLARE_LOCK(mmap_lock);
 
 void kern_munmap (uint16_t mode, uintptr_t addr, size_t size)
 {
-	addr = addr & ~(PAGE_SIZE - 1);
-	if (size & (PAGE_SIZE -1)) {
-		size = (size & ~(PAGE_SIZE -1)) + PAGE_SIZE;
-	}
+	addr = PAGE_FLOOR(addr);
+	size = PAGE_CEIL(size);
 	DEBUG_PRINTF("unmapping %08x bytes at %08x (mode %x)\r\n", size, addr, mode);
 	LOCK(&mmap_lock);
 	for (; size; addr += PAGE_SIZE, size -= PAGE_SIZE) {
@@ -369,7 +367,7 @@ void kern_mmap_init (unsigned int length, unsigned int addr, uintptr_t max_used_
 				if (addr < PAGE_SIZE && addr + len >= 2 * PAGE_SIZE) {
 					LOW_PAGE = PAGE_SIZE;
 				} else if (addr < LOW_PAGE) {
-					uintptr_t base = addr & ~(PAGE_SIZE - 1);
+					uintptr_t base = PAGE_FLOOR(addr);
 					if (base == addr && len >= PAGE_SIZE) {
 						LOW_PAGE = base;
 					} else if (addr + len >= base + 2 * PAGE_SIZE) {
@@ -385,19 +383,14 @@ void kern_mmap_init (unsigned int length, unsigned int addr, uintptr_t max_used_
 					DEBUG_PRINTF(" treating as 0x%08x, 0x%08x (%d) bytes; to avoid memory under 1 MB\r\n", addr, len, len);
 				}
 			}
-			if (addr & (PAGE_SIZE -1)) {
-				addr = (addr & ~(PAGE_SIZE -1)) + PAGE_SIZE;
-				if (len >= (addr - mmm->addr)) {
-					len -= (addr - mmm->addr);
-				} else {
-					len = 0;
-				}
-				DEBUG_PRINTF ("  adjusting address to page boundary, 0x%08x, 0x%08x (%d) bytes\r\n", addr, len, len);
+			addr = PAGE_FLOOR(addr);
+			if (len >= (addr - mmm->addr)) {
+				len -= (addr - mmm->addr);
+			} else {
+				len = 0;
 			}
-			if (len & (PAGE_SIZE -1)) {
-				len &= ~(PAGE_SIZE -1);
-				DEBUG_PRINTF ("  adjusting length to page boundary, 0x%08x, 0x%08x (%d) bytes\r\n", addr, len, len);
-			}
+
+			len = PAGE_CEIL(len);
 
 			if (mem_segment_count < MAX_MEM_SEGMENTS) {
 				struct mem_segment *segment = &mem_segments[mem_segment_count];
@@ -450,11 +443,7 @@ void kern_mmap_init (unsigned int length, unsigned int addr, uintptr_t max_used_
 		halt("couldn't find room for page table\r\n", 0);
 	}
 
-        size_t page_data_byte_size = sizeof(struct page) * pages;
-        // round up to the nearest page
-        if (page_data_byte_size & (PAGE_SIZE - 1)) {
-	        page_data_byte_size = (page_data_byte_size & ~(PAGE_SIZE - 1)) + PAGE_SIZE;
-        }
+        size_t page_data_byte_size = PAGE_CEIL(sizeof(struct page) * pages);
 	for (int i = mem_segment_count - 1; i >= 0; --i) {
 		struct mem_segment *segment = &mem_segments[i];
 		if (segment->len >= page_data_byte_size) {
@@ -519,10 +508,8 @@ int kern_mmap (uintptr_t *ret, void * addr, size_t len, int prot, int flags)
 	if (! ((prot & PROT_KERNEL) && (flags & MAP_EARLY))) {
 		LOCK(&mmap_lock);
 	}
-	if (len & (PAGE_SIZE -1)) {
-		len = (len & ~(PAGE_SIZE - 1)) + PAGE_SIZE;
-	}
-	addr = (void*)((uintptr_t)addr & ~(PAGE_SIZE -1)); // align to page, just in case
+	len = PAGE_CEIL(len);
+	addr = (void*)PAGE_FLOOR(addr);
 	if (addr != NULL && !((prot & PROT_FORCE) || (prot & PROT_KERNEL)) && !mem_available((uintptr_t)addr, len)) {
 		ERROR_PRINTF("range %08x, %08x not available; looking for anything!\r\n", addr, len);
 		addr = NULL;

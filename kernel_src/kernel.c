@@ -1009,6 +1009,9 @@ ssize_t write(int fd, const void * buf, size_t nbyte) {
 		} else {
 			if (&FDS[fd] > FDS[fd].pipe) {
 				// lock smallest FD first, so we have to relock
+				// FIXME -- relock has race conditions!
+				// a: no guarantee that FDS[fd].pipe is stable while unlocked!
+				// b: no guarantee that FDS[fd] is still a PIPE once relocked!
 				UNLOCK(&FDS[fd].lock);
 				LOCK(&FDS[fd].pipe->lock);
 				LOCK(&FDS[fd].lock);
@@ -1808,7 +1811,7 @@ int syscall_close (struct close_args *a, struct interrupt_frame *iframe) {
 			FDS[2].buffer = NULL;
 		} else {
 			if (FDS[a->fd].pipe == NULL) {
-				kern_munmap(PROT_KERNEL, (uintptr_t) FDS[a->fd].pb & ~(PAGE_SIZE -1), PAGE_SIZE);
+				kern_munmap(PROT_KERNEL, (uintptr_t) PAGE_FLOOR(FDS[a->fd].pb), PAGE_SIZE);
 			} else {
 				FDS[a->fd].pipe->pipe = NULL;
 			}
@@ -2948,15 +2951,13 @@ void load_file(void *start, char *name, size_t size)
 			last_vaddr = phead->p_vaddr + phead->p_filesz;
 			uint32_t scratch;
 			// TODO match permissions to load flags
-			if (!kern_mmap(&scratch, (void *)(load_addr + phead->p_vaddr), phead->p_memsz + ((load_addr + phead->p_vaddr) & (PAGE_SIZE -1)), PROT_READ|PROT_WRITE|PROT_FORCE, 0)) {
+			if (!kern_mmap(&scratch, (void *)(load_addr + phead->p_vaddr), phead->p_memsz + PAGE_FLOOR(load_addr + phead->p_vaddr), PROT_READ|PROT_WRITE|PROT_FORCE, 0)) {
 				ERROR_PRINTF("couldn't map ELF load section %08x\r\n", load_addr + phead->p_vaddr);
 			}
 		}
 		++phead;
 	}
-	if (virtual_space & (PAGE_SIZE - 1)) {
-		virtual_space = (virtual_space & ~(PAGE_SIZE - 1)) + PAGE_SIZE;
-	}
+	virtual_space = PAGE_CEIL(virtual_space);
 	size_t count = virtual_space - last_vaddr;
 	if (count) {
 		ERROR_PRINTF("zeroing final %d bytes from %08x to %08x\r\n", count, load_addr + last_vaddr, load_addr + last_vaddr + count);
@@ -3028,7 +3029,7 @@ void setup_cpus()
 	if (!kern_mmap(&kernel_tls, NULL, numcpu * padded_tls_size, PROT_READ | PROT_WRITE | PROT_KERNEL, MAP_STACK | MAP_EARLY)) {
 		halt("couldn't allocate Kernel TLS memory\r\n", 1);
 	}
-	explicit_bzero((void *)kernel_tls, (numcpu * padded_tls_size + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1));
+	explicit_bzero((void *)kernel_tls, PAGE_CEIL(numcpu * padded_tls_size));
 	EARLY_ERROR_PRINTF("kernel_tls at %p\r\n", kernel_tls);
 
 	strncpy(threads[0].name, "main", sizeof(threads[0].name));
