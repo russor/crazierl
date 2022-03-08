@@ -24,7 +24,7 @@
 #define MAX_MEM_SEGMENTS 128
 #define MAX_PAGE_ORDER 12
 #define PAGE_ORDER_MASK 0x7F
-#define FREELIST_COUNT MAX_PAGE_ORDER
+#define FREELIST_COUNT MAX_PAGE_ORDER + 1
 
 uintptr_t PAGE_DIRECTORY;
 uintptr_t PAGE_TABLE_BASE;
@@ -271,6 +271,7 @@ void buddy_free(struct page *area) {
 		struct page *first_area = MIN(area, buddy);
 		struct page *second_area = MAX(area, buddy);
 		second_area->free = 0;
+		area = first_area;
 
 		// add the new merged area to the right freelist
 		LIST_INSERT_HEAD(&freelists[area->order], first_area, freelist);
@@ -555,7 +556,9 @@ int kern_mmap (uintptr_t *ret, void * addr, size_t len, int prot, int flags)
 			*ret = ENOMEM;
 			ERROR_PRINTF("unable to allocate\r\n");
 			ERROR_PRINTF("kern_mmap (%08x (%08x), %08x, %08x, %x, %x)\r\n", *ret, ret, addr, len, prot, flags);
-			UNLOCK(&mmap_lock);
+			if (! ((prot & PROT_KERNEL) && (flags & MAP_EARLY))) {
+				UNLOCK(&mmap_lock);
+			}
 			return 0;
 		}
 	} else {
