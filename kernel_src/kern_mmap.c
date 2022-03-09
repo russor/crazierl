@@ -74,18 +74,6 @@ void kern_mmap_debug(uintptr_t addr) {
 }
 
 
-int mem_available (uintptr_t addr, size_t len)
-{
-	while (len) {
-		uint32_t * page_table_entry = pagetable_entry(*(pagetable_direntry(addr)), addr);
-		if (*page_table_entry == 0 || (*page_table_entry & PAGE_PRESENT)) {
-			return 0;
-		}
-		addr += PAGE_SIZE;
-		len -= PAGE_SIZE;
-	}
-	return 1;
-}
 
 void add_page_mapping (uint16_t flags, uintptr_t logical, uintptr_t physical) {
 	uint32_t * directory_entry = pagetable_direntry(logical);
@@ -157,7 +145,7 @@ struct page *get_segment_page(struct mem_segment *segment, uintptr_t addr) {
 	if (segment == NULL) {
 		return NULL;
 	}
-	if (addr >= segment->addr && addr + PAGE_SIZE < segment->addr + segment->len) {
+	if (addr >= segment->addr && addr + PAGE_SIZE <= segment->addr + segment->len) {
 		return &PAGE_DATA[segment->start_page + (addr - segment->addr) / PAGE_SIZE];
 	}
 	return NULL;
@@ -184,10 +172,10 @@ struct mem_segment *get_addr_mem_segment(uintptr_t addr) {
 	return NULL;
 }
 
-struct page *get_area_buddy(struct page *page) {
+struct page *get_area_buddy(struct page *page, uint8_t order) {
 	struct mem_segment *segment = get_page_segment(page);
 	uintptr_t page_addr = get_page_addr(segment, page);
-	uintptr_t buddy_addr = page_addr ^ (PAGE_SIZE << (page->order & PAGE_ORDER_MASK));
+	uintptr_t buddy_addr = page_addr ^ (PAGE_SIZE << (order & PAGE_ORDER_MASK));
         // page buddies can only live in the same memory segment
 	return get_segment_page(segment, buddy_addr);
 }
@@ -215,10 +203,9 @@ struct page *buddy_alloc(uint8_t order) {
 
 		// demote the order of the first page of the free area and its buddy
 		order -= 1;
+		struct page *free_area_buddy_page = get_area_buddy(free_area_first_page, order);
+
                 free_area_first_page->order = order;
-                
-		// NB: get_area_buddy needs to be called AFTER demoting the area
-		struct page *free_area_buddy_page = get_area_buddy(free_area_first_page);
                 free_area_buddy_page->order = order;
 
 		// add the resultant areas of the split to the freelist
@@ -253,7 +240,7 @@ void buddy_free(struct page *area) {
 
 	// merge with other areas as much as possible
 	while (area->order < MAX_PAGE_ORDER) {
-		struct page *buddy = get_area_buddy(area);
+		struct page *buddy = get_area_buddy(area, area->order);
 		// only merge the buddy is free and of the same order
 		if (buddy == NULL || buddy->order != area->order || !buddy->free) {
 			break;
@@ -479,6 +466,52 @@ void kern_mmap_init (unsigned int length, unsigned int addr, uintptr_t max_used_
 	PAGE_SETUP_FINISHED = 1;
 }
 
+int mem_available (uintptr_t addr, size_t len)
+{
+	uintptr_t a = addr;
+	size_t l = len;
+	while (len) {
+		uint32_t * page_table_entry = pagetable_entry(*(pagetable_direntry(addr)), addr);
+		if (*page_table_entry == 0 || (*page_table_entry & PAGE_PRESENT)) {
+			return 0;
+		}
+		addr += PAGE_SIZE;
+		len -= PAGE_SIZE;
+	}
+	addr = a;
+	len = l;
+	while (len > 0) {
+		struct mem_segment *s = get_addr_mem_segment(addr);
+		if (s == NULL) {
+			halt("no segment\r\n", 0);
+			return 0;
+		}
+		struct page *p = get_segment_page(s, addr);
+		if (p == NULL) {
+			halt("no page\r\n", 0);
+			return 0;
+		}
+		uint8_t order = 0;
+		while (p->free != 1 && p->order != order) {
+			order = p->order;
+			p = get_area_buddy(p, p->order - 1); // note p->order can't be zero
+		}
+		if (p->free == 1) {
+			uintptr_t endaddr = get_page_addr(s, p) + (PAGE_SIZE << (p->order));
+			if (endaddr > addr) {
+				len = 0;
+			} else {
+				len -= (endaddr - addr);
+			}
+			addr = endaddr;
+		} else {
+			halt("not free\r\n", 0);
+			return 0;
+		}
+	}
+	return 1;
+}
+
 
 int kern_mmap (uintptr_t *ret, void * addr, size_t len, int prot, int flags)
 {
@@ -513,6 +546,7 @@ int kern_mmap (uintptr_t *ret, void * addr, size_t len, int prot, int flags)
 	addr = (void*)PAGE_FLOOR(addr);
 	if (addr != NULL && !((prot & PROT_FORCE) || (prot & PROT_KERNEL)) && !mem_available((uintptr_t)addr, len)) {
 		ERROR_PRINTF("range %08x, %08x not available; looking for anything!\r\n", addr, len);
+		halt("couldn't satisfy range\r\n", 0);
 		addr = NULL;
 	} else if (addr != NULL && ((uintptr_t)addr & (alignsize - 1))) {
 		ERROR_PRINTF("range %08x, %08x doesn't meet alignment size %08x; looking for anything!\r\n", addr, len, alignsize);
