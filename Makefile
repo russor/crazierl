@@ -99,8 +99,12 @@ debugger:
 clean:
 	rm -f obj/initrd obj/mykernel.elf obj/*.o obj/*.beam obj/*.so obj/initrd.tmp obj/.deps/*.d obj/*.app
 
-$(OTPDIR)/bin/erl:
-	mkdir -p ../erlang-runtime$(ERLANG_VERSION)
+../erlang-runtime$(ERLANG_VERSION)/usr/share/keys/pkg/trusted/.setup:
+	mkdir -p ../erlang-runtime$(ERLANG_VERSION)/usr/share/keys/pkg
+	cp -a /usr/share/keys/pkg/trusted ../erlang-runtime$(ERLANG_VERSION)/usr/share/keys/pkg
+	touch ../erlang-runtime$(ERLANG_VERSION)/usr/share/keys/pkg/.setup
+
+$(OTPDIR)/bin/erl: ../erlang-runtime$(ERLANG_VERSION)/usr/share/keys/pkg/trusted/.setup
 	INSTALL_AS_USER=1 pkg -R ../tut/cfg --root ../erlang-runtime$(ERLANG_VERSION) -o ABI=FreeBSD:13:i386 install -r latest -y erlang-runtime$(ERLANG_VERSION)
 
 
