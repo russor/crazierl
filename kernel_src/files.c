@@ -19,13 +19,12 @@ uint32_t unpack_network(uintptr_t start) {
 
 void init_files(multiboot_module_t *mod) {
 	uintptr_t scratch;
-	kern_mmap(&scratch, mod, sizeof (*mod), PROT_READ | PROT_KERNEL | PROT_FORCE, 0);
 	uintptr_t start = mod->mod_start;
 	if (mod->mod_end - start < 8) {
 		ERROR_PRINTF("initrd is too small to be useful %d\r\n", mod->mod_end - start);
 		return;
 	}
-	kern_mmap(&scratch, (void *)start, mod->mod_end - start, PROT_READ | PROT_KERNEL | PROT_FORCE, 0);
+	kern_mmap(&scratch, (void *)start, mod->mod_end - start, PROT_READ | PROT_KERNEL, 0);
 	uint32_t files = unpack_network(start);
 	start += sizeof(uint32_t);
 

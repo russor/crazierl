@@ -2951,7 +2951,7 @@ void load_file(void *start, char *name, size_t size)
 			last_vaddr = phead->p_vaddr + phead->p_filesz;
 			uint32_t scratch;
 			// TODO match permissions to load flags
-			if (!kern_mmap(&scratch, (void *)(load_addr + phead->p_vaddr), phead->p_memsz + PAGE_FLOOR(load_addr + phead->p_vaddr), PROT_READ|PROT_WRITE|PROT_FORCE, 0)) {
+			if (!kern_mmap(&scratch, (void *)(load_addr + phead->p_vaddr), phead->p_memsz + PAGE_FLOOR(load_addr + phead->p_vaddr), PROT_READ|PROT_WRITE, MAP_FIXED)) {
 				ERROR_PRINTF("couldn't map ELF load section %08x\r\n", load_addr + phead->p_vaddr);
 			}
 		}
@@ -3455,7 +3455,7 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 
 	kern_mmap_enable_paging();
 
-	kern_mmap(&scratch, (void *) mods, mods_count * sizeof(mods), PROT_KERNEL | PROT_READ | PROT_FORCE, 0);
+	kern_mmap(&scratch, (void *) mods, mods_count * sizeof(mods), PROT_KERNEL | PROT_READ, 0);
 	for (int mod = 0; mod < mods_count; ++mod) {
 		DEBUG_PRINTF("Module %d (%s):\r\n 0x%08x-0x%08x\r\n", mod, mods[mod].cmdline, mods[mod].mod_start, mods[mod].mod_end);
 		init_files(&mods[mod]);
