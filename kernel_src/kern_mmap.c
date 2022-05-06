@@ -73,7 +73,7 @@ void kern_mmap_debug(uintptr_t addr) {
 	ERROR_PRINTF("logical %08x; dir %08x -> %08x; page %08x -> %08x\r\n", addr, direntry, *direntry, table_entry, *table_entry);
 }
 
-
+void buddy_unfree(uintptr_t);
 
 void add_page_mapping (uint16_t flags, uintptr_t logical, uintptr_t physical) {
 	uint32_t * directory_entry = pagetable_direntry(logical);
@@ -99,6 +99,9 @@ void add_page_mapping (uint16_t flags, uintptr_t logical, uintptr_t physical) {
 	}
 	if ((flags & PAGE_PRESENT) && !(*directory_entry & PAGE_PRESENT)) {
 		*directory_entry |= PAGE_PRESENT;
+		if (!(flags & PAGE_FORCE)) {
+			buddy_unfree(physical);
+		}
 	}
 	
 	uint32_t *table_entry = pagetable_entry(*directory_entry, logical);
@@ -221,17 +224,18 @@ struct page *buddy_alloc(uint8_t order) {
 	return free_area;
 }
 
+
 void buddy_free(struct page *area) {
 	struct mem_segment *segment = get_page_segment(area);
 	if (segment == NULL) {
 		uintptr_t struct_page_addr = (uintptr_t) area;
-		EARLY_ERROR_PRINTF("invalid free of %08x outside memory segment", struct_page_addr);
-		halt("invalid free outside memory segment", 0);
+		EARLY_ERROR_PRINTF("invalid free of %08x outside memory segment\r\n", struct_page_addr);
+		halt("invalid free outside memory segment\r\n", 0);
 	}
 	if (area->free) {
 		uintptr_t addr = get_page_addr(segment, area);
-		EARLY_ERROR_PRINTF("double free of %08x", addr);
-		halt("double free", 0);
+		EARLY_ERROR_PRINTF("double free of %08x\r\n", addr);
+		halt("double free\r\n", 0);
         }
 
 	// mark the area as free and put on freelist
@@ -262,6 +266,57 @@ void buddy_free(struct page *area) {
 
 		// add the new merged area to the right freelist
 		LIST_INSERT_HEAD(&freelists[area->order], first_area, freelist);
+	}
+}
+
+void buddy_free_addr(uintptr_t addr) {
+	EARLY_ERROR_PRINTF("buddy_free_addr %x\r\n", addr);
+	struct mem_segment *s = get_addr_mem_segment(addr);
+	if (s == NULL) {
+		halt("no segment\r\n", 0);
+	}
+	struct page *p = get_segment_page(s, addr);
+	if (p == NULL) {
+		halt("no page\r\n", 0);
+	}
+	buddy_free(p);
+}
+
+void buddy_unfree(uintptr_t addr) {
+	struct mem_segment *s = get_addr_mem_segment(addr);
+	if (s == NULL) {
+		halt("no segment\r\n", 0);
+	}
+	struct page *p = get_segment_page(s, addr);
+	if (p == NULL) {
+		halt("no page\r\n", 0);
+	}
+	uint8_t order = 0;
+	while (p->free != 1 && p->order != order) {
+		order = p->order;
+		p = get_area_buddy(p, p->order - 1); // note p->order can't be zero
+	}
+	if (p->free == 1) {
+		order = p->order;
+		LIST_REMOVE(p, freelist);
+		while (order) {
+			order -= 1;
+			struct page *b = get_area_buddy(p, order);
+			p->order = order;
+			b->order = order;
+			b->free = 1;
+
+			if (addr >= get_page_addr(s, b)) {
+				LIST_INSERT_HEAD(&freelists[order], p, freelist);
+				p = b;
+			} else {
+				LIST_INSERT_HEAD(&freelists[order], b, freelist);
+			}
+		}
+		EARLY_ERROR_PRINTF("unfree %x (%x)\r\n", addr, get_page_addr(s, p));
+		p->free = 0;
+	} else {
+		halt("not free in buddy_unfree\r\n", 0);
 	}
 }
 
@@ -324,6 +379,7 @@ void kern_munmap (uint16_t mode, uintptr_t addr, size_t size)
 			if (*table_entry & PAGE_FORCE) {
 				*table_entry = 0;
 			} else {
+				buddy_free_addr(addr);
 				if (addr < LEAST_ADDR) {
 					LEAST_ADDR = addr;
 				}
@@ -458,6 +514,7 @@ void kern_mmap_init (unsigned int length, unsigned int addr, uintptr_t max_used_
 		if (segment->addr + segment->len > MAX_ADDR) {
 			MAX_ADDR = segment->addr + segment->len;
 		}
+		EARLY_ERROR_PRINTF("add mem segment %x %x (%d)\r\n", segment->addr, segment->len, segment->len);
 		add_page_mappings(0, segment->addr, segment->len);
 		add_mem_segment(i);
 	}
@@ -478,6 +535,7 @@ int mem_available (uintptr_t addr, size_t len)
 		addr += PAGE_SIZE;
 		len -= PAGE_SIZE;
 	}
+	// REDO check with buddy allocator
 	addr = a;
 	len = l;
 	while (len > 0) {
@@ -505,7 +563,9 @@ int mem_available (uintptr_t addr, size_t len)
 			}
 			addr = endaddr;
 		} else {
-			halt("not free\r\n", 0);
+			ERROR_PRINTF("addr %x, len %x (%d)\r\n", addr, len, len);
+			ERROR_PRINTF("p addr %x, free %d, order %d\r\n", get_page_addr(s, p), p->free, p->order);
+			halt("not free in mem_available\r\n", 0);
 			return 0;
 		}
 	}
