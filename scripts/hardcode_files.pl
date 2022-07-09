@@ -39,7 +39,7 @@ open my $erl, '<', "$OTP_DIR/bin/erl" or die "can't open erl: $!";
 
 my $bindir;
 while (<$erl>) {
-	if (m@BINDIR=\$ROOTDIR/(.*)$@) {
+	if (m@BINDIR="\$ROOTDIR/(.*)"$@) {
 		$bindir = $1;
 		last;
 	}

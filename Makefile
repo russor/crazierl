@@ -1,4 +1,4 @@
-ERLANG_VERSION=24
+ERLANG_VERSION=25
 
 OBJDIR := obj
 DEPDIR := $(OBJDIR)/.deps
@@ -106,6 +106,7 @@ clean:
 
 $(OTPDIR)/bin/erl: ../erlang-runtime$(ERLANG_VERSION)/usr/share/keys/pkg/trusted/.setup
 	INSTALL_AS_USER=1 pkg -R ../tut/cfg --root ../erlang-runtime$(ERLANG_VERSION) -o ABI=FreeBSD:13:i386 install -r latest -y erlang-runtime$(ERLANG_VERSION)
+	touch $(OTPDIR)/bin/erl
 
 
 $(OTPDIR)/bin/erl.patched: $(OTPDIR)/bin/erl
