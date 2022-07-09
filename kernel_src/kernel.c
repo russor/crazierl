@@ -991,50 +991,64 @@ void handle_unknown_error(struct interrupt_frame *frame, uint32_t irq, uint32_t 
 }
 
 ssize_t write(int fd, const void * buf, size_t nbyte) {
-	struct BogusFD *wait_target = NULL;
+	struct BogusFD *wait_target = NULL, *locked_pipe = NULL;
 	int written;
 	if (fd < 0 || fd >= BOGFD_MAX) {
 		return -EBADF;
 	}
-	LOCK(&FDS[fd].lock);
-	if (FDS[fd].type == TERMOUT || FDS[fd].type == TERMIN) {
-		term_printn(buf, nbyte);
-		written = nbyte;
-		UNLOCK(&FDS[fd].lock);
-		return written; // bail out early, don't try to notify
-	} else if (FDS[fd].type == PIPE) {
-		if (FDS[fd].pipe == NULL) {
-			UNLOCK(&FDS[fd].lock);
-			return -EPIPE;
-		} else {
-			if (&FDS[fd] > FDS[fd].pipe) {
-				// lock smallest FD first, so we have to relock
-				// FIXME -- relock has race conditions!
-				// a: no guarantee that FDS[fd].pipe is stable while unlocked!
-				// b: no guarantee that FDS[fd] is still a PIPE once relocked!
-				UNLOCK(&FDS[fd].lock);
-				LOCK(&FDS[fd].pipe->lock);
-				LOCK(&FDS[fd].lock);
-			} else {
-				LOCK(&FDS[fd].pipe->lock);
-			}
 
-			written = min(nbyte, BOGFD_PB_LEN - FDS[fd].pipe->pb->length);
-			//ERROR_PRINTF("write (%d, \"%s\", %d) = %d\r\n", fd, buf, nbyte, written);
-			memcpy(&FDS[fd].pipe->pb->data[FDS[fd].pipe->pb->length], buf, written);
-			FDS[fd].pipe->pb->length += written;
-			wait_target = FDS[fd].pipe;
-			check_bnotes_fd(FDS[fd].pipe);
-			UNLOCK(&FDS[fd].pipe->lock);
+	while (1) {
+		LOCK(&FDS[fd].lock);
+		if (locked_pipe != NULL && FDS[fd].type != PIPE) {
+			UNLOCK(&locked_pipe->lock);
 		}
-	} else if (FDS[fd].type == IRQ) {
-		FDS[fd].status[1] = 1;
-		written = 1;
-		wait_target = &FDS[fd];
-	} else {
-		ERROR_PRINTF("write (%d, %08x, %d) = EBADF\r\n", fd, buf, nbyte);
-		UNLOCK(&FDS[fd].lock);
-		return -EBADF;
+
+		if (FDS[fd].type == TERMOUT || FDS[fd].type == TERMIN) {
+			term_printn(buf, nbyte);
+			written = nbyte;
+			UNLOCK(&FDS[fd].lock);
+			return written; // bail out early, don't try to notify
+		} else if (FDS[fd].type == PIPE) {
+			if (FDS[fd].pipe == NULL) {
+				if (locked_pipe) {
+					UNLOCK(&locked_pipe->lock);
+				}
+				UNLOCK(&FDS[fd].lock);
+				return -EPIPE;
+			} else {
+				if (locked_pipe != NULL && locked_pipe != FDS[fd].pipe) {
+					UNLOCK(&locked_pipe->lock);
+				}
+				if (locked_pipe != NULL) {
+					// we're locked
+				} else if (&FDS[fd] > FDS[fd].pipe) {
+					// lock smallest FD first, so we have to relock
+					locked_pipe = FDS[fd].pipe;
+					UNLOCK(&FDS[fd].lock);
+					LOCK(&locked_pipe->lock);
+					continue;
+				} else {
+					LOCK(&FDS[fd].pipe->lock);
+				}
+
+				written = min(nbyte, BOGFD_PB_LEN - FDS[fd].pipe->pb->length);
+				//ERROR_PRINTF("write (%d, \"%s\", %d) = %d\r\n", fd, buf, nbyte, written);
+				memcpy(&FDS[fd].pipe->pb->data[FDS[fd].pipe->pb->length], buf, written);
+				FDS[fd].pipe->pb->length += written;
+				wait_target = FDS[fd].pipe;
+				check_bnotes_fd(FDS[fd].pipe);
+				UNLOCK(&FDS[fd].pipe->lock);
+			}
+		} else if (FDS[fd].type == IRQ) {
+			FDS[fd].status[1] = 1;
+			written = 1;
+			wait_target = &FDS[fd];
+		} else {
+			ERROR_PRINTF("write (%d, %08x, %d) = EBADF\r\n", fd, buf, nbyte);
+			UNLOCK(&FDS[fd].lock);
+			return -EBADF;
+		}
+		break;
 	}
 	check_bnotes_fd(&FDS[fd]);
 	UNLOCK(&FDS[fd].lock);
@@ -1057,14 +1071,37 @@ ssize_t write(int fd, const void * buf, size_t nbyte) {
 }
 
 size_t kern_read(int fd, void * buf, size_t nbyte, int force_async) {
+	struct BogusFD *locked_pipe = NULL;
 	if (fd < 0 || fd >= BOGFD_MAX) {
 		return -EBADF;
 	}
 	while (1) {
 		LOCK(&FDS[fd].lock);
 		size_t read = 0;
+		if (locked_pipe != NULL && FDS[fd].type != PIPE) {
+			UNLOCK(&locked_pipe->lock);
+		}
 		if (FDS[fd].type == PIPE) {
 			if (FDS[fd].pb->length) {
+				if (FDS[fd].pipe != NULL) {
+					if (locked_pipe != NULL && locked_pipe != FDS[fd].pipe) {
+						UNLOCK(&locked_pipe->lock);
+					}
+					if (locked_pipe != NULL) {
+						// we're locked
+					} else if (&FDS[fd] > FDS[fd].pipe) {
+						// lock smallest FD first, so we have to relock
+						locked_pipe = FDS[fd].pipe;
+						UNLOCK(&FDS[fd].lock);
+						LOCK(&locked_pipe->lock);
+						continue;
+					} else {
+						LOCK(&FDS[fd].pipe->lock);
+					}
+				} else if (locked_pipe != NULL) {
+					UNLOCK(&locked_pipe->lock);
+				}
+
 				read = min(nbyte, FDS[fd].pb->length);
 				memcpy(buf, FDS[fd].pb->data, read);
 				FDS[fd].pb->length -= read;
@@ -1073,18 +1110,13 @@ size_t kern_read(int fd, void * buf, size_t nbyte, int force_async) {
 				}
 				FDS[fd].pb->data[FDS[fd].pb->length] = '\0'; // zero terminate to help with debugging
 				if (FDS[fd].pipe != NULL) {
-					if (&FDS[fd] > FDS[fd].pipe) {
-						// lock smallest FD first, so we have to relock
-						UNLOCK(&FDS[fd].lock);
-						LOCK(&FDS[fd].pipe->lock);
-						LOCK(&FDS[fd].lock);
-					} else {
-						LOCK(&FDS[fd].pipe->lock);
-					}
 					check_bnotes_fd(FDS[fd].pipe);
 					UNLOCK(&FDS[fd].pipe->lock);
 				}
 			} else if (FDS[fd].pipe == NULL) {
+				if (locked_pipe != NULL) {
+					UNLOCK(&locked_pipe->lock);
+				}
 				UNLOCK(&FDS[fd].lock);
 				return 0;
 			}
