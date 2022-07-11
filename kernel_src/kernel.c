@@ -3325,7 +3325,7 @@ void start_cpus() {
 	}
 
 	uintptr_t scratch;
-	if (!kern_mmap(&scratch, (void *)LOW_PAGE, PAGE_SIZE, PROT_WRITE | PROT_READ | PROT_KERNEL | PROT_FORCE, 0)) {
+	if (!kern_mmap(&scratch, (void *)LOW_PAGE, PAGE_SIZE, PROT_WRITE | PROT_READ | PROT_KERNEL | PROT_FORCE, MAP_FIXED)) {
 		halt("couldn't map LOW_PAGE", 0);
 	}
 	memcpy((void *)LOW_PAGE, &ap_trampoline, (uintptr_t)&ap_trampoline2 - (uintptr_t)&ap_trampoline);
@@ -3442,11 +3442,11 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 	}
 
 	kern_mmap_init(mb->mmap_length, mb->mmap_addr, max_addr);
-	if (!kern_mmap(&scratch, (void *)local_apic, PAGE_SIZE, PROT_KERNEL | PROT_READ | PROT_WRITE | PROT_FORCE, MAP_EARLY)) {
+	if (!kern_mmap(&scratch, (void *)local_apic, PAGE_SIZE, PROT_KERNEL | PROT_READ | PROT_WRITE | PROT_FORCE, MAP_EARLY | MAP_FIXED)) {
 		halt("couldn't map space for Local APIC\r\n", 1);
 	}
 	for (size_t i = 0; i < io_apic_count; ++i) {
-		if (!kern_mmap(&scratch, (void *)io_apics[i].address, PAGE_SIZE, PROT_KERNEL | PROT_READ | PROT_WRITE | PROT_FORCE, MAP_EARLY)) {
+		if (!kern_mmap(&scratch, (void *)io_apics[i].address, PAGE_SIZE, PROT_KERNEL | PROT_READ | PROT_WRITE | PROT_FORCE, MAP_EARLY | MAP_FIXED)) {
 			halt("couldn't map space for IO-APIC\r\n", 1);
 		}
 	}
@@ -3458,16 +3458,16 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 	
 	ERROR_PRINTF("kernel read-only %08x - %08x\r\n", &__executable_start, &__etext);
 
-	if (!kern_mmap(&scratch, &__executable_start, &__etext - &__executable_start, PROT_KERNEL | PROT_READ, 0)) {
+	if (!kern_mmap(&scratch, &__executable_start, &__etext - &__executable_start, PROT_KERNEL | PROT_READ, MAP_FIXED)) {
 		halt("couldn't map read only kernel section\r\n", 1);
 	}
 
 	ERROR_PRINTF("kernel read-write %08x - %08x\r\n", &__data_start, &__edata);
-	if (!kern_mmap(&scratch, &__data_start, &__edata - &__data_start, PROT_KERNEL | PROT_READ | PROT_WRITE, 0)) {
+	if (!kern_mmap(&scratch, &__data_start, &__edata - &__data_start, PROT_KERNEL | PROT_READ | PROT_WRITE, MAP_FIXED)) {
 		halt("couldn't map read/write kernel section\r\n", 1);
 	}
 	
-	if (!kern_mmap(&scratch, (void *)vga_buffer, VGA_BUFFER_SIZE, PROT_KERNEL | PROT_FORCE | PROT_READ | PROT_WRITE, 0)) {
+	if (!kern_mmap(&scratch, (void *)vga_buffer, VGA_BUFFER_SIZE, PROT_KERNEL | PROT_FORCE | PROT_READ | PROT_WRITE, MAP_FIXED)) {
 		ERROR_PRINTF("couldn't map vga buffer\r\n");
 	}
 	
@@ -3487,7 +3487,7 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 
 	kern_mmap_enable_paging();
 
-	kern_mmap(&scratch, (void *) mods, mods_count * sizeof(mods), PROT_KERNEL | PROT_READ, 0);
+	kern_mmap(&scratch, (void *) mods, mods_count * sizeof(mods), PROT_KERNEL | PROT_READ, MAP_FIXED);
 	for (int mod = 0; mod < mods_count; ++mod) {
 		DEBUG_PRINTF("Module %d (%s):\r\n 0x%08x-0x%08x\r\n", mod, mods[mod].cmdline, mods[mod].mod_start, mods[mod].mod_end);
 		init_files(&mods[mod]);

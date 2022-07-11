@@ -24,7 +24,7 @@ void init_files(multiboot_module_t *mod) {
 		ERROR_PRINTF("initrd is too small to be useful %d\r\n", mod->mod_end - start);
 		return;
 	}
-	kern_mmap(&scratch, (void *)start, mod->mod_end - start, PROT_READ | PROT_KERNEL, 0);
+	kern_mmap(&scratch, (void *)start, mod->mod_end - start, PROT_READ | PROT_KERNEL, MAP_FIXED);
 	uint32_t files = unpack_network(start);
 	start += sizeof(uint32_t);
 
