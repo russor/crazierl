@@ -2981,9 +2981,11 @@ void load_file(void *start, char *name, size_t size)
 				memcpy(dst, src, phead->p_filesz);
 			}
 			last_vaddr = phead->p_vaddr + phead->p_filesz;
-			uint32_t scratch;
+			uintptr_t scratch;
 			// TODO match permissions to load flags
-			if (!kern_mmap(&scratch, (void *)(load_addr + phead->p_vaddr), phead->p_memsz + PAGE_FLOOR(load_addr + phead->p_vaddr), PROT_READ|PROT_WRITE, MAP_FIXED)) {
+			uintptr_t mmap_addr = (load_addr + phead->p_vaddr);
+			size_t mmap_size = phead->p_memsz + mmap_addr - PAGE_FLOOR(mmap_addr);
+			if (!kern_mmap(&scratch, (void *)PAGE_FLOOR(mmap_addr), mmap_size, PROT_READ|PROT_WRITE, MAP_FIXED)) {
 				ERROR_PRINTF("couldn't map ELF load section %08x\r\n", load_addr + phead->p_vaddr);
 			}
 		}
