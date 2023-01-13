@@ -22,7 +22,8 @@ REAL_FBSD_KERNEL_SRCS = lib/libc/quad/qdivrem.c lib/libc/quad/udivdi3.c \
                    lib/libc/quad/umoddi3.c lib/libc/quad/divdi3.c \
                    lib/libc/stdlib/llabs.c lib/libc/stdlib/qsort.c \
                    lib/libc/string/bcmp.c lib/libc/string/bzero.c \
-                   lib/libc/string/ffsl.c lib/libc/string/memcpy.c \
+                   lib/libc/string/ffsl.c lib/libc/string/flsl.c \
+                   lib/libc/string/memcpy.c \
                    lib/libc/string/memmove.c lib/libc/string/memset.c \
                    lib/libc/string/strchr.c lib/libc/string/strchrnul.c \
                    lib/libc/string/strcmp.c lib/libc/string/strcpy.c \
@@ -63,7 +64,7 @@ netboot: obj/mykernel.elf obj/initrd
 	cp $^ /usr/local/www/apache24/data/tftpboot/crazierl/
 
 debug: obj/mykernel.elf obj/initrd
-	qemu-system-i386 -display none -d cpu_reset,guest_errors -smp 2 -S -s  -m 256 -serial mon:stdio -kernel obj/mykernel.elf -append $(RTLD) -initrd obj/initrd
+	qemu-system-i386 -display none -d cpu_reset,guest_errors -smp 1 -S -s  -m 512 -serial mon:stdio -kernel obj/mykernel.elf -append $(RTLD) -initrd obj/initrd
 
 noisy: obj/mykernel.elf obj/initrd
 	qemu-system-i386 -display none -smp 2 -d nochain,exec,cpu_reset,guest_errors -s  -m 256 -serial mon:stdio -kernel obj/mykernel.elf -append $(RTLD) -initrd obj/initrd

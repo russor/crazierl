@@ -7,6 +7,7 @@
 #include <errno.h>
 #include <sys/queue.h>
 #include <stdlib.h>
+#include <strings.h>
 
 #define ONE_MB 0x00100000
 #define PAGE_DIRECTORY_BITS 22
@@ -20,6 +21,7 @@
 // 0x200, 0x400, 0x800 flags are available for use by software
 #define PAGE_BOTH_UK 0x200
 #define PAGE_FORCE 0x400
+#define PAGE_BUDDY 0x800
 
 #define MAX_MEM_SEGMENTS 128
 #define MAX_PAGE_ORDER 12
@@ -130,7 +132,7 @@ void add_page_mapping (uint16_t flags, uintptr_t logical, uintptr_t physical) {
 	}
 	if ((flags & PAGE_PRESENT) && !(*table_entry & PAGE_PRESENT)) {
 		*table_entry |= PAGE_PRESENT;
-		if (!(flags & PAGE_FORCE)) {
+		if (!(flags & PAGE_FORCE) && !(flags & PAGE_BUDDY)) {
 			buddy_unfree(physical);
 		}
 	}
@@ -175,6 +177,15 @@ struct mem_segment *get_addr_mem_segment(uintptr_t addr) {
 	return NULL;
 }
 
+uint8_t buddy_order(size_t len) {
+	uint8_t order = flsl(len);
+	if (ffsl(len) == order) {
+		order -=1;
+	}
+	order -= 12;
+	return order;
+}
+
 struct page *get_area_buddy(struct page *page, uint8_t order) {
 	struct mem_segment *segment = get_page_segment(page);
 	uintptr_t page_addr = get_page_addr(segment, page);
@@ -210,17 +221,15 @@ struct page *buddy_alloc(uint8_t order) {
 
                 free_area_first_page->order = order;
                 free_area_buddy_page->order = order;
+                free_area_buddy_page->free = 1;
 
 		// add the resultant areas of the split to the freelist
 		LIST_INSERT_HEAD(&freelists[order], free_area_first_page, freelist);
 		LIST_INSERT_HEAD(&freelists[order], free_area_buddy_page, freelist);
 	}
 
-	// we are guaranteed at least two free areas on the target freelist now, so remove one
+	// we are guaranteed at least two free areas on the target freelist now
 	struct page *free_area = LIST_FIRST(&freelists[target_order]);
-        LIST_REMOVE(free_area, freelist);
-
-	free_area->free = 0;
 	return free_area;
 }
 
@@ -247,6 +256,7 @@ void buddy_free(struct page *area) {
         } else if (p->order > 0) {
 		uintptr_t addr = get_page_addr(segment, area);
 		uintptr_t addr2 = get_page_addr(segment, p);
+
 		EARLY_ERROR_PRINTF("buddy free of %p (%p order %d)\r\n", addr, addr2, p->order);
 		halt("fixme\r\n", 0);
         }
@@ -291,6 +301,7 @@ void buddy_free_addr(uintptr_t addr) {
 	if (p == NULL) {
 		halt("no page\r\n", 0);
 	}
+	//ERROR_PRINTF("buddy free %p\r\n", addr);
 	buddy_free(p);
 }
 
@@ -320,16 +331,18 @@ void buddy_unfree(uintptr_t addr) {
 			//EARLY_ERROR_PRINTF("free %x (%x) order %d\r\n", addr, get_page_addr(s, b), b->order);
 
 			if (addr >= get_page_addr(s, b)) {
+				//EARLY_ERROR_PRINTF("unfree split order %d, %p\r\n", order, get_page_addr(get_page_segment(p), p));
 				LIST_INSERT_HEAD(&freelists[order], p, freelist);
 				p = b;
 			} else {
+				//EARLY_ERROR_PRINTF("unfree split order %d, %p\r\n", order, get_page_addr(get_page_segment(b), b));
 				LIST_INSERT_HEAD(&freelists[order], b, freelist);
 			}
 		}
-		//EARLY_ERROR_PRINTF("unfree %x (%x)\r\n", addr, get_page_addr(s, p));
+		//EARLY_ERROR_PRINTF("unfree %p (%p)\r\n", addr, get_page_addr(s, p));
 		p->free = 0;
 	} else {
-		EARLY_ERROR_PRINTF("unfree %x (%x)\r\n", addr, get_page_addr(s, p));
+		EARLY_ERROR_PRINTF("unfree %p %p (%p)\r\n", addr, p, get_page_addr(s, p));
 		halt("not free in buddy_unfree\r\n", 0);
 	}
 }
@@ -420,7 +433,7 @@ void kern_mmap_init (unsigned int length, unsigned int addr, uintptr_t max_used_
 		if (mmm->type == 1 && (mmm->addr + mmm->len - 1) <= SIZE_MAX) {
 			uintptr_t addr = mmm->addr;
 			uintptr_t len = mmm->len;
-			DEBUG_PRINTF("Available memory at 0x%08x; 0x%08x (%u) bytes\r\n", addr, len, len);
+			DEBUG_PRINTF("Available memory at 0x%08x-0x%08x; 0x%08x (%u) bytes\r\n", addr, addr + len - 1, len, len);
 			if (addr < ONE_MB) {
 				if (addr < PAGE_SIZE && addr + len >= 2 * PAGE_SIZE) {
 					LOW_PAGE = PAGE_SIZE;
@@ -620,7 +633,7 @@ int kern_mmap (uintptr_t *ret, void * addr, size_t len, int prot, int flags)
 	addr = (void*)PAGE_FLOOR(addr);
 	if (addr != NULL && !((prot & PROT_FORCE) || (flags & MAP_FIXED)) && !mem_available((uintptr_t)addr, len)) {
 		ERROR_PRINTF("range %08x, %08x not available; looking for anything!\r\n", addr, len);
-		halt("couldn't satisfy range\r\n", 0);
+		//halt("couldn't satisfy range\r\n", 0);
 		addr = NULL;
 	} else if (addr != NULL && ((uintptr_t)addr & (alignsize - 1))) {
 		ERROR_PRINTF("range %08x, %08x doesn't meet alignment size %08x; looking for anything!\r\n", addr, len, alignsize);
@@ -646,18 +659,12 @@ int kern_mmap (uintptr_t *ret, void * addr, size_t len, int prot, int flags)
 				*ret -= alignsize;
 			}
 		} else {
-			*ret = LEAST_ADDR & ~(alignsize - 1);
-			while (*ret + len < MAX_ADDR) {
-				if (mem_available(*ret, len)) {
-					if (*ret == LEAST_ADDR) {
-						LEAST_ADDR += len;
-					}
-					found = 1;
-					break;
-				} else if (*ret == LEAST_ADDR && mem_available(*ret, PAGE_SIZE)) {
-					LEAST_ADDR += PAGE_SIZE;
-				}
-				*ret += alignsize;
+			uint8_t order = buddy_order(len);
+			struct page *page = buddy_alloc(order);
+			if (page != NULL) {
+				struct mem_segment *segment = get_page_segment(page);
+				*ret = get_page_addr(segment, page);
+				found = 1;
 			}
 		}
 		if (!found) {
@@ -672,8 +679,8 @@ int kern_mmap (uintptr_t *ret, void * addr, size_t len, int prot, int flags)
 	} else {
 		*ret = (uintptr_t) addr;
 	}
+	DEBUG_PRINTF("kern_mmap (%08x-%08x, %08x, %08x, %x, %x)\r\n", *ret, (*ret + len -1), addr, len, prot, flags);
 	add_page_mappings(mappingflags, *ret, len);
-	DEBUG_PRINTF("kern_mmap (%08x (%08x), %08x, %08x, %x, %x)\r\n", *ret, ret, addr, len, prot, flags);
 	if (! ((prot & PROT_KERNEL) && (flags & MAP_EARLY))) {
 		UNLOCK(&mmap_lock);
 	}

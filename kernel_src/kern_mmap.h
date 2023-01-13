@@ -7,6 +7,9 @@
 #define PROT_FORCE  0x2000
 #define MAP_EARLY MAP_RESERVED0020 /* reuse reserved flag to skip locking */
 
+
+//#define MAP_BUDDY MAP_RESERVED0040 /* reuse reserved flag to note page was already allocated from buddy system */
+
 #define PAGE_FLOOR(a) ((uintptr_t)(a) & ~(PAGE_SIZE - 1))
 #define PAGE_CEIL(a) (((uintptr_t)(a) & (PAGE_SIZE - 1)) ? PAGE_FLOOR((uintptr_t)(a) + PAGE_SIZE - 1): (uintptr_t)(a))
 
