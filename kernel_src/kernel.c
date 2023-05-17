@@ -2354,13 +2354,13 @@ int syscall_cpuset_getaffinity (struct cpuset_getaffinity_args *a, struct interr
 		ERROR_PRINTF("cpuset size %d, expecting %d\r\n", a->cpusetsize, sizeof(cpuset_t)) ;
 		SYSCALL_FAILURE(ERANGE);
 	}
-	if (a->level == CPU_LEVEL_WHICH && a->which == CPU_WHICH_PID && a->id == -1) {
+	if (a->level == CPU_LEVEL_WHICH && a->which == CPU_WHICH_PID && a->id == PID) {
 		CPU_ZERO(a->mask);
 		for (int i = 0; i < numcpu; ++i) {
 			CPU_SET(i, a->mask);
 		}
 		SYSCALL_SUCCESS(0);
-	} else if (a->level == CPU_LEVEL_WHICH && a->which == CPU_WHICH_TID && a->id == -1) {
+	} else if (a->level == CPU_LEVEL_WHICH && a->which == CPU_WHICH_TID && a->id == CPUSET_INVALID) {
 		CPU_COPY(&threads[current_thread].cpus, a->mask);
 		SYSCALL_SUCCESS(0);
 	}
@@ -2372,7 +2372,7 @@ int syscall_cpuset_setaffinity (struct cpuset_getaffinity_args *a, struct interr
 		ERROR_PRINTF("cpuset size %d, expecting %d\r\n", a->cpusetsize, sizeof(cpuset_t)) ;
 		SYSCALL_FAILURE(ERANGE);
 	}
-	if (a->level == CPU_LEVEL_WHICH && a->which == CPU_WHICH_TID && a->id == -1) {
+	if (a->level == CPU_LEVEL_WHICH && a->which == CPU_WHICH_TID && a->id == CPUSET_INVALID) {
 		CPU_COPY(a->mask, &threads[current_thread].cpus);
 		if (CPU_COUNT(&threads[current_thread].cpus) == 1) {
 			threads[current_thread].flags |= THREAD_PINNED;
@@ -2382,6 +2382,11 @@ int syscall_cpuset_setaffinity (struct cpuset_getaffinity_args *a, struct interr
 		if (!CPU_ISSET(current_cpu, &threads[current_thread].cpus)) {
 			switch_thread(RUNNABLE, 0, 0, NULL, NULL);
 		}
+		SYSCALL_SUCCESS(0);
+	} else if (a->level == CPU_LEVEL_WHICH && a->which == CPU_WHICH_PID && a->id == CPUSET_INVALID) {
+		cpuset_t x = {0};
+		CPU_COPY(a->mask, &x);
+		ERROR_PRINTF("process cpumask %x\n", x.__bits[0]);
 		SYSCALL_SUCCESS(0);
 	}
 	ERROR_PRINTF("cpuset_setaffinity(%d, %d, %llx, %d, %08x)\r\n", a->level, a->which, a->id, a->cpusetsize, a->mask);
@@ -2682,7 +2687,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 		case SYS_openat: argp += sizeof(argp);
 		case SYS_open: return syscall_open((struct open_args *) argp, iframe);
 		case SYS_close: return syscall_close((struct close_args *) argp, iframe);
-		case SYS_getpid: SYSCALL_SUCCESS(2);
+		case SYS_getpid: SYSCALL_SUCCESS(PID);
 		case SYS_geteuid: SYSCALL_SUCCESS(0);
 		case SYS_recvfrom: return syscall_recvfrom((struct recvfrom_args *) argp, iframe);
 		case SYS_getsockname: return syscall_getsockname((struct getsockname_args *) argp, iframe);
