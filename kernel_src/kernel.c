@@ -3193,6 +3193,7 @@ void setup_entrypoint()
 	char *argv[] = {"/beam",
 			"-sct", topology,
 			"-sbt", "ns",
+			"-Mut", "false",
 			"--", "-root", "", "-bindir", "/",
 			"-progname", "erl", "--", "-home", "/",
 			"-pz", "/obj/",
