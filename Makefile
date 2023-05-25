@@ -131,7 +131,7 @@ INITRD_FILES := .erlang.cookie cfg/inetrc obj/etcpip.app /usr/share/misc/termcap
 	mv .erlang.cookie.tmp .erlang.cookie
 
 obj/initrd: hardcode_files.pl extract_start.escript $(OTPDIR)/bin/escript $(INITRD_FILES) Makefile
-	./hardcode_files.pl $(RTLD) $(OTPDIR) \
+	./hardcode_files.pl beam.smp $(RTLD) $(OTPDIR) \
 		OTPDIR/lib/crypto-*/ebin/crypto.beam OTPDIR/lib/crypto-*/priv/lib/crypto.so OTPDIR/lib/crypto-*/priv/lib/crypto_callback.so \
 		OTPDIR/lib/runtime_tools-*/ebin/dbg.beam \
 		$(INITRD_FILES) > obj/initrd.tmp

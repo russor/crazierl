@@ -3159,9 +3159,9 @@ void setup_cpus()
 
 void setup_entrypoint()
 {
-	struct hardcoded_file * file = find_file("/beam");
+	struct hardcoded_file * file = find_file("/target");
 	if (!file) {
-		ERROR_PRINTF("couldn't find /beam\r\n");
+		ERROR_PRINTF("couldn't find /target\r\n");
 	}
 	FDS[next_fd].type = BOGFD_FILE;
 	FDS[next_fd].file = file;
@@ -3190,7 +3190,7 @@ void setup_entrypoint()
 	// set up arguments
 	char topology[100];
 	rtld_snprintf(topology, sizeof(topology), "L0-%dc0-%d", numcpu, numcpu);
-	char *argv[] = {"/beam",
+	char *argv[] = {"/target",
 			"-sct", topology,
 			"-sbt", "ns",
 			"-Mut", "false",

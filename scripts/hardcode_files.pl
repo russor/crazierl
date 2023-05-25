@@ -29,7 +29,7 @@ sub slurp
 	return $data;
 }
 
-my ($RTLD, $OTP_DIR, @LOCAL_FILES) = @ARGV;
+my ($TARGET, $RTLD, $OTP_DIR, @LOCAL_FILES) = @ARGV;
 
 my %FILES;
 
@@ -48,16 +48,8 @@ if (!$bindir) {
 	die "couldn't find BINDIR\n";
 }
 
-#$OTP_DIR .= '/lib/erlang';
-my $BEAM = "$OTP_DIR/$bindir/beam.smp";
-my @LDD = `/usr/bin/ldd $BEAM`;
-foreach my $l (@LDD) {
-	if ($l =~ m@ => (.*) \(@) {
-		push @LOCAL_FILES, $1;
-	}
-}
+push @LOCAL_FILES, "OTPDIR/$bindir/beam.smp";
 
-$FILES{'beam'} = slurp ("$BEAM");
 $FILES{'bin/start.boot'} = slurp("$OTP_DIR/bin/start.boot");
 
 my @start_script = `$OTP_DIR/bin/escript ./extract_start.escript $OTP_DIR/bin/start.script`;
@@ -65,7 +57,7 @@ die "couldn't run extract_start.escript" unless $? == 0;
 
 chomp (@start_script);
 my @path = ();
-my %basenames = ();
+my %basenames = ($TARGET => "target");
 foreach my $line (@start_script) {
 	my ($type, @rest) = split /\t/, $line;
 	if ($type eq 'path') {
@@ -120,7 +112,7 @@ foreach my $f (@LOCAL_FILES) {
 		local $/ = undef;
 		$FILES{$f} = <$file>;
 	}
-	if ($path =~ /\.so$/) {
+	if ($f eq 'target' || $f =~ /\.so$/) {
 		my @LDD = `/usr/bin/ldd $path`;
 		foreach my $l (@LDD) {
 			if ($l =~ m@ => (.*) \(@) {
