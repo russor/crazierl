@@ -39,9 +39,11 @@ void rand_update(const void * seed, size_t len);
 
 extern __thread size_t current_thread;
 extern __thread size_t current_cpu;
+__attribute__ ((no_caller_saved_registers))
 _Noreturn void halt(char * message, int dontpropagate);
 void move_cursor();
 void term_printf(const char *, ...);
+__attribute__ ((no_caller_saved_registers))
 void early_term_printf(const char *, ...);
 
 #endif
