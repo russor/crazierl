@@ -102,7 +102,8 @@ output_decode(State = #s{in_buffer = <<$\n, IB/binary>>}) ->
 	output_decode(newline(State#s{in_buffer = IB, cursor_updated = true}));
 
 % ignore bell
-output_decode(State = #s{in_buffer = <<$\^g, IB/binary>>}) -> State#s{in_buffer = IB};
+output_decode(State = #s{in_buffer = <<$\^g, IB/binary>>}) ->
+	output_decode(State#s{in_buffer = IB});
 
 output_decode(State = #s{in_buffer = <<$\e, $[, $C, IB/binary>>, current_index = CI}) ->
 	output_decode(State#s{in_buffer = IB, cursor_updated = true, current_index = CI + 1});
@@ -111,8 +112,12 @@ output_decode(State = #s{in_buffer = <<$\e, $[, $A, IB/binary>>, current_index =
 	NewCI = (CI - ?VGA_MEM_COLS) band (?VGA_ELEMENTS - 1),
 	output_decode(State#s{in_buffer = IB, cursor_updated = true, current_index = NewCI});
 
+% ignore erase until end of screen?
+output_decode(State = #s{in_buffer = <<$\e, $[, $J, IB/binary>>}) ->
+	output_decode(State#s{in_buffer = IB});
+
 output_decode(State = #s{in_buffer = <<$\e, A, B, C, IB/binary>>}) ->
-	io:format("vgakb ignoring ESC + 16#~2.16.0B~2.16.0B~2.16.0B~n", [A, B, C]),
+%	io:format("vgakb ignoring ESC + 16#~2.16.0B~2.16.0B~2.16.0B (~s)~n", [A, B, C, [A,B,C]]),
 	output_decode(State#s{in_buffer = IB});
 
 output_decode(State = #s{in_buffer = <<$\e, _/binary>>}) ->
