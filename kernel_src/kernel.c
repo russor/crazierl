@@ -2231,11 +2231,14 @@ int syscall___sysctl (struct sysctl_args *a, struct interrupt_frame *iframe) { /
 					strlcpy(a->old, "FreeBSD", *a->oldlenp);
 					SYSCALL_SUCCESS(0);
 				case KERN_OSRELEASE:
-					strlcpy(a->old, "13.0-RELEASE", *a->oldlenp);
+					strlcpy(a->old, "13.2-RELEASE", *a->oldlenp);
 					SYSCALL_SUCCESS(0);
 				case KERN_VERSION:
-					strlcpy(a->old, "FreeBSD 13.0-RELEASE #0 releng/13.0-n244733-ea31abc261f: Fri Apr  9 04:24:09 UTC 2021\
-.nyi.freebsd.org:/usr/obj/usr/src/amd64.amd64/sys/GENERIC", *a->oldlenp);
+					strlcpy(a->old, "FreeBSD 13.2-RELEASE releng/13.2-n254617-525ecfdad597 GENERIC", *a->oldlenp);
+					SYSCALL_SUCCESS(0);
+				case KERN_OSRELDATE:
+					*(u_int *)a->old = 1302001; // pretend to be freebsd 13.2 for now
+					*a->oldlenp = sizeof(uint);
 					SYSCALL_SUCCESS(0);
 				case KERN_HOSTNAME:
 					strlcpy(a->old, "node0.crazierl.org", *a->oldlenp);
@@ -2244,10 +2247,6 @@ int syscall___sysctl (struct sysctl_args *a, struct interrupt_frame *iframe) { /
 					rand_bytes((uint8_t *)a->old, *a->oldlenp);
 					SYSCALL_SUCCESS(0);
 				}
-				case KERN_OSRELDATE:
-					*(u_int *)a->old = 1300139; // pretend to be freebsd 13.0 for now
-					*a->oldlenp = sizeof(uint);
-					SYSCALL_SUCCESS(0);
 				case KERN_USRSTACK:
 					*(uintptr_t *)a->old = user_stack;
 					SYSCALL_SUCCESS(0);
