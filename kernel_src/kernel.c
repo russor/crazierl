@@ -2356,13 +2356,13 @@ int syscall_cpuset_getaffinity (struct cpuset_getaffinity_args *a, struct interr
 		ERROR_PRINTF("cpuset size %d, expecting %d\r\n", a->cpusetsize, sizeof(cpuset_t)) ;
 		SYSCALL_FAILURE(ERANGE);
 	}
-	if (a->level == CPU_LEVEL_WHICH && a->which == CPU_WHICH_PID && a->id == PID) {
+	if (a->level == CPU_LEVEL_WHICH && (a->which == CPU_WHICH_PID || a->which == CPU_WHICH_TIDPID) && a->id == PID) {
 		CPU_ZERO(a->mask);
 		for (int i = 0; i < numcpu; ++i) {
 			CPU_SET(i, a->mask);
 		}
 		SYSCALL_SUCCESS(0);
-	} else if (a->level == CPU_LEVEL_WHICH && a->which == CPU_WHICH_TID && a->id == CPUSET_INVALID) {
+	} else if (a->level == CPU_LEVEL_WHICH && (a->which == CPU_WHICH_TID || a->which == CPU_WHICH_TIDPID) && a->id == CPUSET_INVALID) {
 		CPU_COPY(&threads[current_thread].cpus, a->mask);
 		SYSCALL_SUCCESS(0);
 	}
