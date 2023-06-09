@@ -2387,7 +2387,7 @@ int syscall_cpuset_setaffinity (struct cpuset_getaffinity_args *a, struct interr
 	} else if (a->level == CPU_LEVEL_WHICH && a->which == CPU_WHICH_PID && a->id == CPUSET_INVALID) {
 		cpuset_t x = {0};
 		CPU_COPY(a->mask, &x);
-		ERROR_PRINTF("process cpumask %x\n", x.__bits[0]);
+		ERROR_PRINTF("process cpumask %x\r\n", x.__bits[0]);
 		SYSCALL_SUCCESS(0);
 	}
 	ERROR_PRINTF("cpuset_setaffinity(%d, %d, %llx, %d, %08x)\r\n", a->level, a->which, a->id, a->cpusetsize, a->mask);
@@ -3583,7 +3583,7 @@ void LOCK(struct lock * lock)
 	size_t lock_token = current_thread + 1;
 
 	if (lock->locked == lock_token) {
-		term_print("!recursive lock!\rn\n");
+		term_print("!recursive lock!\r\n");
 		while (1) { }
 	}
 	while (!__sync_bool_compare_and_swap(& lock->locked, 0, lock_token)) {
