@@ -659,7 +659,7 @@ int kern_mmap (uintptr_t *ret, void * addr, size_t len, int prot, int flags)
 				*ret -= alignsize;
 			}
 		} else {
-			uint8_t order = buddy_order(len);
+			uint8_t order = buddy_order(max(len, alignsize));
 			struct page *page = buddy_alloc(order);
 			if (page != NULL) {
 				struct mem_segment *segment = get_page_segment(page);
@@ -679,6 +679,10 @@ int kern_mmap (uintptr_t *ret, void * addr, size_t len, int prot, int flags)
 	} else {
 		*ret = (uintptr_t) addr;
 	}
+	if ((*ret & (alignsize - 1)) != 0) {
+		halt("bad alignment\r\n", 0);
+	}
+
 	DEBUG_PRINTF("kern_mmap (%08x-%08x, %08x, %08x, %x, %x)\r\n", *ret, (*ret + len -1), addr, len, prot, flags);
 	add_page_mappings(mappingflags, *ret, len);
 	if (! ((prot & PROT_KERNEL) && (flags & MAP_EARLY))) {
