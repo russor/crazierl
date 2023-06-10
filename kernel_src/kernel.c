@@ -2220,6 +2220,11 @@ int syscall___sysctlbyname (struct __sysctlbyname_args *a, struct interrupt_fram
 		*a->oldlenp = sizeof(u_int);
 		SYSCALL_SUCCESS(0);
 	}
+	if (strncmp("kern.smp.maxid", a->name, a->namelen) == 0) {
+		*(u_int *)a->old = numcpu - 1;
+		*a->oldlenp = sizeof(u_int);
+		SYSCALL_SUCCESS(0);
+	}
 	ERROR_PRINTF("sysctlbyname (\"%s\" ...)\r\n", a->name);
 	SYSCALL_FAILURE(ENOENT);
 }
@@ -2373,7 +2378,7 @@ int syscall_cpuset_setaffinity (struct cpuset_getaffinity_args *a, struct interr
 		ERROR_PRINTF("cpuset size %d, expecting %d\r\n", a->cpusetsize, sizeof(cpuset_t)) ;
 		SYSCALL_FAILURE(ERANGE);
 	}
-	if (a->level == CPU_LEVEL_WHICH && a->which == CPU_WHICH_TID && a->id == CPUSET_INVALID) {
+	if (a->level == CPU_LEVEL_WHICH && (a->which == CPU_WHICH_TID || a->which == CPU_WHICH_TIDPID) && a->id == CPUSET_INVALID) {
 		CPU_COPY(a->mask, &threads[current_thread].cpus);
 		if (CPU_COUNT(&threads[current_thread].cpus) == 1) {
 			threads[current_thread].flags |= THREAD_PINNED;
