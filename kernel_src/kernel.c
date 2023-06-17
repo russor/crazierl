@@ -3198,7 +3198,7 @@ void setup_entrypoint()
 	rtld_snprintf(topology, sizeof(topology), "L0-%dc0-%d", numcpu, numcpu);
 	char *argv[] = {"/target",
 			"-sct", topology,
-			"-sbt", "ns",
+			"-sbt", "db",
 			"--", "-root", "", "-bindir", "/",
 			"-progname", "erl", "--", "-home", "/",
 			"-pz", "/obj/",
