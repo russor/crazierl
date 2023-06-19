@@ -32,7 +32,7 @@ uintptr_t PAGE_DIRECTORY;
 uintptr_t PAGE_TABLE_BASE;
 uintptr_t LEAST_ADDR;
 uintptr_t MAX_ADDR;
-uintptr_t LOW_PAGE;
+uintptr_t LOW_PAGE = 0;
 int PAGE_SETUP_FINISHED;
 
 struct mem_segment {
@@ -83,7 +83,8 @@ void add_page_mapping (uint16_t flags, uintptr_t logical, uintptr_t physical) {
 		if (unlikely(!PAGE_SETUP_FINISHED || (flags & PAGE_FORCE))) {
 			*directory_entry = (PAGE_TABLE_BASE + ((logical >> PAGE_DIRECTORY_BITS) * PAGE_SIZE)) | (flags & (PAGE_SIZE -1));
 		} else {
-			halt("Trying to setup a mapping without a directory entry\r\n", 0);
+			EARLY_ERROR_PRINTF("add_page_mapping (0x%x, %p, %p)\r\n", flags, logical, physical);
+			halt("Trying to setup a mapping without a directory entry 1\r\n", 0);
 		}
 	}
 	
@@ -109,9 +110,10 @@ void add_page_mapping (uint16_t flags, uintptr_t logical, uintptr_t physical) {
 		if (unlikely(!PAGE_SETUP_FINISHED || (flags & PAGE_FORCE))){
 			*table_entry = PAGE_FLOOR(physical) | (flags & (PAGE_SIZE - 1));
 		} else {
-			DEBUG_PRINTF("table_entry %p (%x), directory_entry %p (%x), logical %p\r\n",
+			EARLY_ERROR_PRINTF("add_page_mapping (0x%x, %p, %p)\r\n", flags, logical, physical);
+			EARLY_ERROR_PRINTF("table_entry %p (%x), directory_entry %p (%x), logical %p\r\n",
 				table_entry, *table_entry, directory_entry, *directory_entry, logical);
-			halt("Trying to setup a mapping without a page table entry\r\n", 0);
+			halt("Trying to setup a mapping without a page table entry 2\r\n", 0);
 		}
 	}
 	// update flags
@@ -434,26 +436,6 @@ void kern_mmap_init (unsigned int length, unsigned int addr, uintptr_t max_used_
 			uintptr_t addr = mmm->addr;
 			uintptr_t len = mmm->len;
 			DEBUG_PRINTF("Available memory at 0x%08x-0x%08x; 0x%08x (%u) bytes\r\n", addr, addr + len - 1, len, len);
-			if (addr < ONE_MB) {
-				if (addr < PAGE_SIZE && addr + len >= 2 * PAGE_SIZE) {
-					LOW_PAGE = PAGE_SIZE;
-				} else if (addr < LOW_PAGE) {
-					uintptr_t base = PAGE_FLOOR(addr);
-					if (base == addr && len >= PAGE_SIZE) {
-						LOW_PAGE = base;
-					} else if (addr + len >= base + 2 * PAGE_SIZE) {
-						LOW_PAGE = base + PAGE_SIZE;
-					}
-				}
-				if (addr + len <= ONE_MB) {
-					DEBUG_PRINTF(" ignoring, because whole range is under 1 MB\r\n");
-					continue;
-				} else {
-					len -= (ONE_MB - addr);
-					addr = ONE_MB;
-					DEBUG_PRINTF(" treating as 0x%08x, 0x%08x (%d) bytes; to avoid memory under 1 MB\r\n", addr, len, len);
-				}
-			}
 			addr = PAGE_FLOOR(addr);
 			if (len >= (addr - mmm->addr)) {
 				len -= (addr - mmm->addr);
@@ -462,6 +444,20 @@ void kern_mmap_init (unsigned int length, unsigned int addr, uintptr_t max_used_
 			}
 
 			len = PAGE_CEIL(len);
+
+			if (addr == 0) {
+				len -= PAGE_SIZE;
+				addr = PAGE_SIZE;
+			}
+
+			if (addr < ONE_MB && LOW_PAGE == 0 && len >= PAGE_SIZE) {
+				LOW_PAGE = addr;
+				addr += PAGE_SIZE;
+				len -= PAGE_SIZE;
+			}
+			if (len == 0) {
+				continue;
+			}
 
 			if (mem_segment_count < MAX_MEM_SEGMENTS) {
 				struct mem_segment *segment = &mem_segments[mem_segment_count];
@@ -541,7 +537,7 @@ void kern_mmap_init (unsigned int length, unsigned int addr, uintptr_t max_used_
 		if (segment->addr + segment->len > MAX_ADDR) {
 			MAX_ADDR = segment->addr + segment->len;
 		}
-		EARLY_ERROR_PRINTF("add mem segment %x %x (%d)\r\n", segment->addr, segment->len, segment->len);
+		EARLY_ERROR_PRINTF("add mem segment %x %x (%u)\r\n", segment->addr, segment->len, segment->len);
 		add_page_mappings(0, segment->addr, segment->len);
 		add_mem_segment(i);
 	}
