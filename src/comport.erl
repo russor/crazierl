@@ -25,11 +25,7 @@ loop(State = #s{buffer = B, irq = Irq}) ->
 	NewState = receive
 		{udp, Irq, _, _, _} ->
 			port_loop(State);
-		{stdin, Data} ->
-			port_loop(State#s{buffer = <<B/binary, Data/binary>>});
-		{stdout, Data} ->
-			port_loop(State#s{buffer = <<B/binary, Data/binary>>});
-		{stderr, Data} ->
+		Data when is_binary(Data) ->
 			port_loop(State#s{buffer = <<B/binary, Data/binary>>})
 	end,
 	loop(NewState).

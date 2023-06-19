@@ -2,9 +2,7 @@
 -export ([start/1, init/1]).
 -record (s, {
 	ports,
-	stdin,
-	stderr,
-	stdout
+	fd
 }).
 
 start(Ports) ->
@@ -20,37 +18,20 @@ init ([{M, F, A} | Ports], #s{ports = P}) ->
 open_console(#s{ ports = []}) ->
 	error_logger:error_msg("no ports for console");
 open_console(State) ->
-	{ok, STDIN} = gen_udp:open(0, [
+	{ok, FD} = gen_udp:open(0, [
 	        {inet_backend, inet},
-		{ifaddr, {local, "/kern/fd/0"}},
+		{ifaddr, {local, "/kern/fd/std"}},
 		{active, true},
 		binary
 	]),
-	{ok, STDOUT} = gen_udp:open(0, [
-	        {inet_backend, inet},
-		{ifaddr, {local, "/kern/fd/1"}},
-		{active, true},
-		binary
-	]),
-	{ok, STDERR} = gen_udp:open(0, [
-	        {inet_backend, inet},
-		{ifaddr, {local, "/kern/fd/2"}},
-		{active, true},
-		binary
-	]),
-%	STDOUT = STDERR = {},
-	loop(State#s{stdin = STDIN, stdout = STDOUT, stderr = STDERR}).
+	loop(State#s{fd = FD}).
 
-loop (State = #s{ports = Ports, stdin = IN, stdout = OUT, stderr = ERR}) ->
+loop (State = #s{ports = Ports, fd = FD}) ->
 	receive
-		{udp, IN, _, _, Data} -> % it's weird to get a write to STDIN, but it happens
-			lists:foreach (fun (P) -> P ! {stdin, Data} end, Ports);
-		{udp, OUT, _, _, Data} ->
-			lists:foreach (fun (P) -> P ! {stdout, Data} end, Ports);
-		{udp, ERR, _, _, Data} ->
-			lists:foreach (fun (P) -> P ! {stderr, Data} end, Ports);
+		{udp, FD, _, _, Data} ->
+			lists:foreach (fun (P) -> P ! Data end, Ports);
 		{_Port, Data} ->
-			gen_udp:send(IN, Data);
+			gen_udp:send(FD, Data);
 		Other ->
 			io:format("console unexpected input ~p~n", [Other])
 	end,

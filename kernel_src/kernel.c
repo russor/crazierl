@@ -1004,6 +1004,11 @@ ssize_t write(int fd, const void * buf, size_t nbyte) {
 		if (locked_pipe != NULL && FDS[fd].type != PIPE) {
 			UNLOCK(&locked_pipe->lock);
 		}
+		if (FDS[fd].type == TERMPIPED) {
+			locked_pipe = &FDS[fd];
+			LOCK(&FDS[0].lock);
+			fd = 0;
+		}
 
 		if (FDS[fd].type == TERMOUT || FDS[fd].type == TERMIN) {
 			term_printn(buf, nbyte);
@@ -1020,6 +1025,7 @@ ssize_t write(int fd, const void * buf, size_t nbyte) {
 			} else {
 				if (locked_pipe != NULL && locked_pipe != FDS[fd].pipe) {
 					UNLOCK(&locked_pipe->lock);
+					locked_pipe = NULL;
 				}
 				if (locked_pipe != NULL) {
 					// we're locked
@@ -1817,32 +1823,22 @@ int syscall_close (struct close_args *a, struct interrupt_frame *iframe) {
 	LOCK(&FDS[a->fd].lock);
 	if (FDS[a->fd].type == PIPE) {
 		if (FDS[a->fd].pipe == &FDS[0]) {
+			LOCK(&FDS[0].lock);
+			LOCK(&FDS[1].lock);
+			LOCK(&FDS[2].lock);
 			find_cursor();
-			term_print("unpiping STDIN\r\n");
+			term_print("unpiping STD\r\n");
 			term_printn(FDS[a->fd].pb->data, FDS[a->fd].pb->length);
 
 			kern_munmap(PROT_KERNEL, (uintptr_t) FDS[a->fd].pb, PAGE_SIZE);
 			FDS[0].type = TERMIN;
 			FDS[0].buffer = NULL;
 			FDS[0].file = NULL;
-		} else if (FDS[a->fd].pipe == &FDS[1]) {
-			find_cursor();
-			term_print("unpiping STDOUT\r\n");
-			term_printn(FDS[a->fd].pb->data, FDS[a->fd].pb->length);
-
-			kern_munmap(PROT_KERNEL, (uintptr_t) FDS[a->fd].pb, PAGE_SIZE);
 			FDS[1].type = TERMOUT;
-			FDS[1].file = NULL;
-			FDS[1].buffer = NULL;
-		} else if (FDS[a->fd].pipe == &FDS[2]) {
-			find_cursor();
-			term_print("unpiping STDERR\r\n");
-			term_printn(FDS[a->fd].pb->data, FDS[a->fd].pb->length);
-
-			kern_munmap(PROT_KERNEL, (uintptr_t) FDS[a->fd].pb, PAGE_SIZE);
 			FDS[2].type = TERMOUT;
-			FDS[2].file = NULL;
-			FDS[2].buffer = NULL;
+			UNLOCK(&FDS[0].lock);
+			UNLOCK(&FDS[1].lock);
+			UNLOCK(&FDS[2].lock);
 		} else {
 			if (FDS[a->fd].pipe == NULL) {
 				kern_munmap(PROT_KERNEL, (uintptr_t) PAGE_FLOOR(FDS[a->fd].pb), PAGE_SIZE);
@@ -2055,34 +2051,40 @@ int syscall_bind (struct bind_args *a, struct interrupt_frame *iframe) {
 			check_bnotes_fd(&FDS[a->s]);
 			UNLOCK(&FDS[a->s].lock);
 			SYSCALL_SUCCESS(0);
-		} else if (strncmp("/kern/fd/", name, 9) == 0) {
-			int fd = name[9] - '0';
-			if (fd >= 0 && fd <= 2) {
-				ERROR_PRINTF("fd %d requested by %d\r\n", fd, a->s);
-				LOCK(&FDS[fd].lock);
-				if (FDS[fd].type == TERMIN || FDS[fd].type == TERMOUT) {
-					FDS[a->s].type = PIPE;
-					FDS[a->s].pipe = &FDS[fd];
-					if (!kern_mmap((uintptr_t*)&FDS[a->s].pb, NULL, PAGE_SIZE, PROT_READ | PROT_WRITE | PROT_KERNEL, 0)) {
-						halt ("couldn't allocate buffer for /kern/fd/", 0);
-					}
-					FDS[a->s].pb->length = 0;
-
-					FDS[fd].type = PIPE;
-					FDS[fd].pipe = &FDS[a->s];
-					FDS[fd].pb = (struct pipe_buffer *)((uintptr_t)FDS[a->s].pb + (PAGE_SIZE >> 1));
-					FDS[fd].pb->length = 0;
-					check_bnotes_fd(&FDS[a->s]);
-					check_bnotes_fd(&FDS[fd]);
-					UNLOCK(&FDS[fd].lock);
-					UNLOCK(&FDS[a->s].lock);
-					SYSCALL_SUCCESS(0);
+		} else if (strncmp("/kern/fd/std", name, 13) == 0) {
+			ERROR_PRINTF("STD requested by %d\r\n", a->s);
+			LOCK(&FDS[0].lock);
+			LOCK(&FDS[1].lock);
+			LOCK(&FDS[2].lock);
+			if (FDS[0].type == TERMIN && FDS[1].type == TERMOUT && FDS[2].type == TERMOUT) {
+				FDS[a->s].type = PIPE;
+				FDS[a->s].pipe = &FDS[0];
+				if (!kern_mmap((uintptr_t*)&FDS[a->s].pb, NULL, PAGE_SIZE, PROT_READ | PROT_WRITE | PROT_KERNEL, 0)) {
+					halt ("couldn't allocate buffer for /kern/fd/", 0);
 				}
-				UNLOCK(&FDS[fd].lock);
-			}
-			UNLOCK(&FDS[a->s].lock);
+				FDS[a->s].pb->length = 0;
 
+				FDS[0].type = PIPE;
+				FDS[0].pipe = &FDS[a->s];
+				FDS[0].pb = (struct pipe_buffer *)((uintptr_t)FDS[a->s].pb + (PAGE_SIZE >> 1));
+				FDS[0].pb->length = 0;
+				FDS[1].type = TERMPIPED;
+				FDS[2].type = TERMPIPED;
+				check_bnotes_fd(&FDS[a->s]);
+				check_bnotes_fd(&FDS[0]);
+				check_bnotes_fd(&FDS[1]);
+				check_bnotes_fd(&FDS[2]);
+				UNLOCK(&FDS[0].lock);
+				UNLOCK(&FDS[1].lock);
+				UNLOCK(&FDS[2].lock);
+				UNLOCK(&FDS[a->s].lock);
+				SYSCALL_SUCCESS(0);
+			}
+			UNLOCK(&FDS[0].lock);
+			UNLOCK(&FDS[1].lock);
+			UNLOCK(&FDS[2].lock);
 		}
+		UNLOCK(&FDS[a->s].lock);
 		SYSCALL_FAILURE(EACCES);
 	}
 	SYSCALL_FAILURE(ENOTSOCK);
@@ -3615,8 +3617,13 @@ void UNLOCK(struct lock * lock)
 	lock->lock_time += end - lock->start;
 	lock->start = 0;
 	__sync_synchronize();
-	if (lock_token != lock->locked) {
-		ERROR_PRINTF("lock %s(%p) unlocked by wrong thread %d != %d\r\n", lock->name, &(lock->locked), current_thread, lock->locked - 1);
+	size_t locked = lock->locked;
+	if (lock_token != locked) {
+		if (locked) {
+			ERROR_PRINTF("lock %s(%p) unlocked by wrong thread %d != %d\r\n", lock->name, &(lock->locked), current_thread, lock->locked - 1);
+		} else {
+			ERROR_PRINTF("lock %s(%p) not locked, while unlocking %d != %d\r\n", lock->name, &(lock->locked), current_thread, lock->locked - 1);
+		}
 		halt("halting\r\n", 0);
 	}
 	lock->locked = 0;

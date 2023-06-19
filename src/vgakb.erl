@@ -73,11 +73,7 @@ loop(State = #s{irq = Irq, io_port = Port, in_buffer = IB}) ->
 		{udp, Irq, _, _, _} ->
 			Key = crazierl:inb(Port),
 			key_decode(State, Key);
-		{stdin, Data} ->
-			output_decode(State#s{in_buffer = <<IB/binary, Data/binary>>});
-		{stdout, Data} ->
-			output_decode(State#s{in_buffer = <<IB/binary, Data/binary>>});
-		{stderr, Data} ->
+		Data when is_binary(Data) ->
 			output_decode(State#s{in_buffer = <<IB/binary, Data/binary>>})
 	after Timeout ->
 		flush(State)
