@@ -60,6 +60,14 @@ run: obj/mykernel.elf obj/initrd
 build: obj/mykernel.elf obj/initrd
 	echo "Built"
 
+obj/mykernel.elf.gz: obj/mykernel.elf
+	gzip -f -9 -k $^
+
+obj/initrd.gz: obj/initrd
+	gzip -f -9 -k $^
+
+# if I can figure out how to get iPXE to use gz files...
+#netboot: obj/mykernel.elf.gz obj/initrd.gz
 netboot: obj/mykernel.elf obj/initrd
 	cp $^ /usr/local/www/apache24/data/tftpboot/crazierl/
 
@@ -98,7 +106,7 @@ debugger:
 
 .PHONY: clean $(OTPDIR)/bin/erlc
 clean:
-	rm -f obj/initrd obj/mykernel.elf obj/*.o obj/*.beam obj/*.so obj/initrd.tmp obj/.deps/*.d obj/*.app
+	rm -f obj/initrd obj/mykernel.elf obj/*.gz obj/*.o obj/*.beam obj/*.so obj/initrd.tmp obj/.deps/*.d obj/*.app
 
 ../erlang-runtime$(ERLANG_VERSION)/usr/share/keys/pkg/trusted/.setup:
 	mkdir -p ../erlang-runtime$(ERLANG_VERSION)/usr/share/keys/pkg
