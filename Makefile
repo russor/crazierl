@@ -66,10 +66,20 @@ obj/mykernel.elf.gz: obj/mykernel.elf
 obj/initrd.gz: obj/initrd
 	gzip -f -9 -k $^
 
+obj/crazierl.iso: obj/initrd.gz obj/mykernel.elf.gz cfg/grub.cfg
+	mkdir -p obj/iso/boot/grub
+	cp obj/initrd.gz obj/mykernel.elf.gz obj/iso
+	cp cfg/grub.cfg obj/iso/boot/grub
+	grub-mkrescue -o obj/crazierl.iso obj/iso/
+
 # if I can figure out how to get iPXE to use gz files...
 #netboot: obj/mykernel.elf.gz obj/initrd.gz
 netboot: obj/mykernel.elf obj/initrd
 	cp $^ /usr/local/www/apache24/data/tftpboot/crazierl/
+
+iso: obj/crazierl.iso
+	cp $^ /usr/local/www/apache24/data/tftpboot/crazierl/
+	rsync $^ dh1.ruka.org:crazierl/
 
 debug: obj/mykernel.elf obj/initrd
 	qemu-system-i386 -display none -d cpu_reset,guest_errors -smp 1 -S -s  -m 512 -serial mon:stdio -kernel obj/mykernel.elf -append $(RTLD) -initrd obj/initrd
@@ -106,7 +116,7 @@ debugger:
 
 .PHONY: clean $(OTPDIR)/bin/erlc
 clean:
-	rm -f obj/initrd obj/mykernel.elf obj/*.gz obj/*.o obj/*.beam obj/*.so obj/initrd.tmp obj/.deps/*.d obj/*.app
+	rm -f obj/initrd obj/mykernel.elf obj/*.gz obj/*.o obj/*.beam obj/*.so obj/initrd.tmp obj/.deps/*.d obj/*.app obj/*.iso obj/iso/initrd obj/iso/mykernel.elf obj/iso/boot/grub/grub.cfg
 
 ../erlang-runtime$(ERLANG_VERSION)/usr/share/keys/pkg/trusted/.setup:
 	mkdir -p ../erlang-runtime$(ERLANG_VERSION)/usr/share/keys/pkg

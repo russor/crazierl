@@ -38,7 +38,7 @@ start() ->
 	end,
 	example_host:start(),
 	example_host2:start(),
-	dhcpc:go().
+	catch dhcpc:go().
 
 open_interrupt(Irq) ->
         Path = io_lib:format("/kern/irq/~B", [Irq]),

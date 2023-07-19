@@ -296,8 +296,8 @@ void term_init()
 //	outb(PORT_COM1 + 1, 0x00);    //                0x00 (hi byte)
 	outb(PORT_COM1 + 0, 0x0C);    // Set divisor to 0x0C (lo byte) 9600 baud
 	outb(PORT_COM1 + 1, 0x00);    //                0x00 (hi byte)
-	outb(PORT_COM1 + 0, 0x18);    // Set divisor to 0x0C (lo byte) 4800 baud
-	outb(PORT_COM1 + 1, 0x00);    //                0x00 (hi byte)
+//	outb(PORT_COM1 + 0, 0x18);    // Set divisor to 0x0C (lo byte) 4800 baud
+//	outb(PORT_COM1 + 1, 0x00);    //                0x00 (hi byte)
 
 	outb(PORT_COM1 + 3, 0x03);    // 8 bits, no parity, one stop bit
 	outb(PORT_COM1 + 2, 0xC7);    // Enable FIFO, clear them, with 14-byte threshold
@@ -726,7 +726,7 @@ uint64_t fixed_point_time(long scaledppm) {
 			break;
 		}
 	}
-	if (fpt > cpus[current_cpu].last_time) {
+	if (fpt >= cpus[current_cpu].last_time) {
 		cpus[current_cpu].last_time = fpt;
 		return fpt;
 	} else {
@@ -2844,7 +2844,7 @@ void interrupt_setup()
 	uint64_t base_msr = readmsr(0x1b);
 	
 	if (!(base_msr & 0x800)) {
-		halt("an enabled local APIC is required\r\n", 1);
+		EARLY_ERROR_PRINTF("an enabled local APIC is required; just going to assume it's present\r\n", 1);
 	}
 	if (local_apic != (base_msr & (~((1 << 12) - 1)))) {
 		ERROR_PRINTF("local_apic from APIC %08x does not match value from MSR %08x\r\n", local_apic, base_msr & (~((1 << 12) - 1)));
