@@ -149,7 +149,7 @@ void * acpi_find_rsdt (void *hint) {
 		if (ret) { return ret; }
 	}
 	void * search_start = (void *) 0xE0000;
-	void * search_end   = (void *) 0xFFFFF;
+	void * search_end   = (void *) 0x100000;
 	
 	void * ebda_segment = (void *) ( *(uint16_t *)0x40E << 4);
 	if (ebda_segment <= search_start && ebda_segment + 1024 >= search_start) {

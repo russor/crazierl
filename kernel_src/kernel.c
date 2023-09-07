@@ -2830,7 +2830,7 @@ void interrupt_setup()
 
 	char * rsdt = acpi_find_rsdt(NULL);
 	if (rsdt == NULL) {
-		halt("ACPI is required, but could not find RSDP", 1);
+		halt("ACPI is required, but could not find RSDP\r\n", 1);
 	}
 	EARLY_ERROR_PRINTF("RSDT is at %p\r\n", rsdt);
 	if (! acpi_check_table(rsdt)) {
