@@ -437,13 +437,12 @@ void kern_mmap_init (unsigned int length, unsigned int addr, uintptr_t max_used_
 			uintptr_t len = mmm->len;
 			DEBUG_PRINTF("Available memory at 0x%08x-0x%08x; 0x%08x (%u) bytes\r\n", addr, addr + len - 1, len, len);
 			addr = PAGE_FLOOR(addr);
-			if (len >= (addr - mmm->addr)) {
+			if (addr != mmm->addr) {
+				addr += PAGE_SIZE;
 				len -= (addr - mmm->addr);
-			} else {
-				len = 0;
 			}
 
-			len = PAGE_CEIL(len);
+			len = PAGE_FLOOR(len);
 
 			if (addr == 0) {
 				len -= PAGE_SIZE;
