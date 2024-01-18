@@ -3438,7 +3438,7 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 	setup_fds();
  
 	// Display some messages
-	EARLY_ERROR_PRINTF("Hello, World!\r\n");
+	EARLY_ERROR_PRINTF("Hello, World! %x\r\n", mb_magic);
 	check_cpuid();
 	enable_sse();
 	interrupt_setup();
@@ -3490,21 +3490,21 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 	DEBUG_PRINTF("Multiboot magic: %08x (%s)\r\n", mb_magic, (char *) mb->boot_loader_name);
 	DEBUG_PRINTF("Multiboot info at %08x (%08x)\r\n", mb, &mb);
 	DEBUG_PRINTF("mem range: %08x-%08x\r\n", mb->mem_lower, mb->mem_upper);
-	DEBUG_PRINTF("modules: %d @ %08x\r\n", mb->mods_count, mb->mods_addr);
+	ERROR_PRINTF("modules: %d @ %08x\r\n", mb->mods_count, mb->mods_addr);
 	
-	DEBUG_PRINTF("command line: %s\r\n", mb->cmdline);
+	ERROR_PRINTF("command line: %s\r\n", mb->cmdline);
 	char * filestart = strchrnul((char *)mb->cmdline, ' ');
 	while (*filestart == ' ') { ++filestart; }
 	char * fileend = strchrnul(filestart, ' ');
 	char filename [256];
 	strncpy(filename, filestart, fileend - filestart);
-	DEBUG_PRINTF("file to load %s\r\n", filename);
+	ERROR_PRINTF("file to load: %s\r\n", filename);
 
 	kern_mmap_enable_paging();
 
 	kern_mmap(&scratch, (void *) mods, mods_count * sizeof(mods), PROT_KERNEL | PROT_READ, MAP_FIXED);
 	for (int mod = 0; mod < mods_count; ++mod) {
-		DEBUG_PRINTF("Module %d (%s):\r\n 0x%08x-0x%08x\r\n", mod, mods[mod].cmdline, mods[mod].mod_start, mods[mod].mod_end);
+		ERROR_PRINTF("Module %d (%s):\r\n 0x%08x-0x%08x\r\n", mod, mods[mod].cmdline, mods[mod].mod_start, mods[mod].mod_end);
 		init_files(&mods[mod]);
 	}
 	
@@ -3527,7 +3527,7 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 	if (entrypoint) {
 		setup_entrypoint();
 	}
-	halt("end of kernel!", 0);
+	halt("end of kernel!\r\n", 0);
 }
 
 #define THREAD_STATE_ENUM_STRING(NAME) case NAME: return #NAME;

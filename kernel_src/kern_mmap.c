@@ -429,13 +429,13 @@ void kern_mmap_init (unsigned int length, unsigned int addr, uintptr_t max_used_
 {
 	uintptr_t mmap;
 	size_t pages = 0;
-	DEBUG_PRINTF ("memory map at 0x%08x, length %d\r\n", addr, length);
+	EARLY_ERROR_PRINTF ("memory map at 0x%08x, length %d\r\n", addr, length);
 	for (mmap = addr; mmap < (addr + length); mmap += ((multiboot_memory_map_t *)mmap)->size + sizeof (((multiboot_memory_map_t *)mmap)->size)) {
 		multiboot_memory_map_t * mmm = (multiboot_memory_map_t *) mmap;
 		if (mmm->type == 1 && (mmm->addr + mmm->len - 1) <= SIZE_MAX) {
 			uintptr_t addr = mmm->addr;
 			uintptr_t len = mmm->len;
-			DEBUG_PRINTF("Available memory at 0x%08x-0x%08x; 0x%08x (%u) bytes\r\n", addr, addr + len - 1, len, len);
+			EARLY_ERROR_PRINTF("Available memory at 0x%08x-0x%08x; 0x%08x (%u) bytes\r\n", addr, addr + len - 1, len, len);
 			addr = PAGE_FLOOR(addr);
 			if (addr != mmm->addr) {
 				addr += PAGE_SIZE;
@@ -471,7 +471,7 @@ void kern_mmap_init (unsigned int length, unsigned int addr, uintptr_t max_used_
 		} else {
 			uintptr_t addr = mmm->addr;
 			uintptr_t len = mmm->len;
-			DEBUG_PRINTF("unavailable memory (%d) at 0x%08x; 0x%08x (%u) bytes\r\n", mmm->type, addr, len, len);
+			EARLY_ERROR_PRINTF("unavailable memory (%d) at 0x%08x; 0x%08x (%u) bytes\r\n", mmm->type, addr, len, len);
 		}
 	}
 
@@ -506,7 +506,7 @@ void kern_mmap_init (unsigned int length, unsigned int addr, uintptr_t max_used_
 		}
 	}
 	if (PAGE_DIRECTORY == 0) {
-		halt("couldn't find room for page table\r\n", 0);
+		halt("couldn't find room for page table\r\n", 1);
 	}
 
         size_t page_data_byte_size = PAGE_CEIL(sizeof(struct page) * pages);
