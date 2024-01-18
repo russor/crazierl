@@ -52,7 +52,7 @@ push @LOCAL_FILES, "OTPDIR/$bindir/beam.smp";
 
 $FILES{'bin/start.boot'} = slurp("$OTP_DIR/bin/start.boot");
 
-my @start_script = `$OTP_DIR/bin/escript ./extract_start.escript $OTP_DIR/bin/start.script`;
+my @start_script = `$OTP_DIR/bin/escript ./scripts/extract_start.escript $OTP_DIR/bin/start.script`;
 die "couldn't run extract_start.escript" unless $? == 0;
 
 chomp (@start_script);

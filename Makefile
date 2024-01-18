@@ -8,14 +8,14 @@ ROOTDIR :=
 
 ERLANG_OVERRIDES = $(wildcard overrides/*.erl)
 
-ERLANG_SRCS = $(wildcard *.erl)
-ERLANG_OBJS = $(ERLANG_SRCS:%.erl=$(OBJDIR)/%.beam)
+ERLANG_SRCS = $(wildcard src/*.erl)
+ERLANG_OBJS = $(ERLANG_SRCS:src/%.erl=$(OBJDIR)/%.beam)
 ERLANG_OVERRIDE_OBJS = $(ERLANG_OVERRIDES:overrides/%.erl=$(OBJDIR)/%.beam)
 INITRD_ERLANG_OBJS = $(filter-out $(OBJDIR)/hook_module.beam,$(ERLANG_OBJS)) $(ERLANG_OVERRIDE_OBJS)
-KERNEL_SRCS = kernel.c files.c kern_mmap.c acpi.c strtol.c rand.c apic.c
-KERNEL_OBJS = $(KERNEL_SRCS:%.c=$(OBJDIR)/%.o)
-NIF_SRCS = $(wildcard *_nif.c)
-NIF_OBJS = $(NIF_SRCS:%.c=$(OBJDIR)/%.so)
+KERNEL_SRCS = $(wildcard kernel_src/*.c)
+KERNEL_OBJS = $(KERNEL_SRCS:kernel_src/%.c=$(OBJDIR)/%.o)
+NIF_SRCS = $(wildcard c_src/*_nif.c)
+NIF_OBJS = $(NIF_SRCS:c_src/%.c=$(OBJDIR)/%.so)
 
 
 REAL_FBSD_KERNEL_SRCS = lib/libc/quad/qdivrem.c lib/libc/quad/udivdi3.c \
@@ -39,8 +39,8 @@ REAL_BEARSSL_SRCS = rand/hmac_drbg.c mac/hmac.c hash/sha2small.c codec/dec32be.c
 BEARSSL_SRCS = $(foreach file, $(REAL_BEARSSL_SRCS), $(subst /,__,$(file)))
 BEARSSL_OBJS = $(BEARSSL_SRCS:%.c=$(OBJDIR)/%.o)
 
-TCPIP_SRCS = $(filter-out %eth_port.erl,$(wildcard ../erlang-tcpip/src/*.erl))
-TCPIP_OBJS = $(TCPIP_SRCS:../erlang-tcpip/src/%.erl=$(OBJDIR)/%.beam)
+TCPIP_SRCS = $(filter-out %eth_port.erl,$(wildcard erlang-tcpip/src/*.erl))
+TCPIP_OBJS = $(TCPIP_SRCS:erlang-tcpip/src/%.erl=$(OBJDIR)/%.beam)
 
 ifeq ($(wildcard $(ROOTDIR)/libexec/ld-elf32.so.1),)
 	RTLD=$(ROOTDIR)/libexec/ld-elf.so.1
@@ -48,10 +48,10 @@ else
 	RTLD=$(ROOTDIR)/libexec/ld-elf32.so.1
 endif
 #OTPDIR=../installed/lib/erlang
-OTPDIR=../erlang-runtime$(ERLANG_VERSION)/usr/local/lib/erlang$(ERLANG_VERSION)
+OTPDIR=erlang-runtime$(ERLANG_VERSION)/usr/local/lib/erlang$(ERLANG_VERSION)
 
 KERNEL_COMPILER=clang -m32 -mno-sse -g -ffreestanding -gdwarf-2 -c -DCRAZIERL_KERNEL
-NIF_COMPILER=clang -m32 -fpic -g -gdwarf-2 -shared -I$(OTPDIR)/usr/include/
+NIF_COMPILER=clang -m32 -fpic -g -gdwarf-2 -shared -I$(OTPDIR)/usr/include/ -I kernel_src/
 
 run: obj/mykernel.elf obj/initrd
 	qemu-system-i386 -cpu max --no-reboot -display none -smp 16 -s -m 512 -serial mon:stdio -kernel obj/mykernel.elf -append $(RTLD) -initrd obj/initrd \
@@ -118,13 +118,13 @@ debugger:
 clean:
 	rm -f obj/initrd obj/mykernel.elf obj/*.gz obj/*.o obj/*.beam obj/*.so obj/initrd.tmp obj/.deps/*.d obj/*.app obj/*.iso obj/iso/initrd obj/iso/mykernel.elf obj/iso/boot/grub/grub.cfg
 
-../erlang-runtime$(ERLANG_VERSION)/usr/share/keys/pkg/trusted/.setup:
-	mkdir -p ../erlang-runtime$(ERLANG_VERSION)/usr/share/keys/pkg
-	cp -a /usr/share/keys/pkg/trusted ../erlang-runtime$(ERLANG_VERSION)/usr/share/keys/pkg
-	touch ../erlang-runtime$(ERLANG_VERSION)/usr/share/keys/pkg/trusted/.setup
+erlang-runtime$(ERLANG_VERSION)/usr/share/keys/pkg/trusted/.setup:
+	mkdir -p erlang-runtime$(ERLANG_VERSION)/usr/share/keys/pkg
+	cp -a /usr/share/keys/pkg/trusted erlang-runtime$(ERLANG_VERSION)/usr/share/keys/pkg
+	touch erlang-runtime$(ERLANG_VERSION)/usr/share/keys/pkg/trusted/.setup
 
-$(OTPDIR)/bin/erl: ../erlang-runtime$(ERLANG_VERSION)/usr/share/keys/pkg/trusted/.setup
-	INSTALL_AS_USER=1 pkg -R ../tut/cfg --root ../erlang-runtime$(ERLANG_VERSION) -o ABI=FreeBSD:13:i386 install -r latest -y erlang-runtime$(ERLANG_VERSION)
+$(OTPDIR)/bin/erl: erlang-runtime$(ERLANG_VERSION)/usr/share/keys/pkg/trusted/.setup
+	INSTALL_AS_USER=1 pkg -R ../cfg --root erlang-runtime$(ERLANG_VERSION) -o ABI=FreeBSD:13:i386 install -r latest -y erlang-runtime$(ERLANG_VERSION)
 	touch $(OTPDIR)/bin/erl
 
 
@@ -136,58 +136,66 @@ $(OTPDIR)/bin/erlc: $(OTPDIR)/bin/erl.patched
 $(OTPDIR)/bin/escript: $(OTPDIR)/bin/erlc
 
 ALL_KERNEL_OBJS = $(KERNEL_OBJS) $(FBSD_KERNEL_OBJS) $(BEARSSL_OBJS) obj/start.o
-$(OBJDIR)/mykernel.elf: $(ALL_KERNEL_OBJS) linker.ld
-	clang -m32 -g -static -ffreestanding -nostdlib -Xlinker -Tlinker.ld -Xlinker $(ALL_KERNEL_OBJS)  -o obj/mykernel.elf -gdwarf-2
+$(OBJDIR)/mykernel.elf: $(ALL_KERNEL_OBJS) kernel_src/linker.ld
+	clang -m32 -g -static -ffreestanding -nostdlib -Xlinker -Tkernel_src/linker.ld -Xlinker $(ALL_KERNEL_OBJS)  -o obj/mykernel.elf -gdwarf-2
 
-obj/start.o: start.s | $(DEPDIR)
+obj/start.o: kernel_src/start.s | $(DEPDIR)
 	clang -m32 -g -gdwarf-2 -c $^ -o $@
 
 INITRD_FILES := .erlang.cookie cfg/inetrc obj/etcpip.app /usr/share/misc/termcap.db $(NIF_OBJS) obj/checksum.so $(TCPIP_OBJS) $(INITRD_ERLANG_OBJS)
 
-.erlang.cookie: gen_cookie.escript $(OTPDIR)/bin/escript
-	$(OTPDIR)/bin/escript gen_cookie.escript > .erlang.cookie.tmp
+.erlang.cookie: scripts/gen_cookie.escript $(OTPDIR)/bin/escript
+	$(OTPDIR)/bin/escript scripts/gen_cookie.escript > .erlang.cookie.tmp
 	mv .erlang.cookie.tmp .erlang.cookie
 
-obj/initrd: hardcode_files.pl extract_start.escript $(OTPDIR)/bin/escript $(INITRD_FILES) Makefile
-	./hardcode_files.pl beam.smp $(RTLD) $(OTPDIR) \
+obj/initrd: scripts/hardcode_files.pl scripts/extract_start.escript $(OTPDIR)/bin/escript $(INITRD_FILES) Makefile
+	./scripts/hardcode_files.pl beam.smp $(RTLD) $(OTPDIR) \
 		OTPDIR/lib/crypto-*/ebin/crypto.beam OTPDIR/lib/crypto-*/priv/lib/crypto.so OTPDIR/lib/crypto-*/priv/lib/crypto_callback.so \
 		OTPDIR/lib/runtime_tools-*/ebin/dbg.beam \
 		$(INITRD_FILES) > obj/initrd.tmp
 	mv obj/initrd.tmp obj/initrd
 
 
-obj/etcpip.app: etcpip.app
+obj/etcpip.app: cfg/etcpip.app
 	cp $< $@
 
-$(TCPIP_OBJS): $(OBJDIR)/%.beam : ../erlang-tcpip/src/%.erl $(DEPDIR)/%.d | $(DEPDIR) $(OTPDIR)/bin/erlc
+erlang-tcpip/src:
+	@echo "erlang-tcp submodule isn't checked out; you must run the following command:"
+	@echo "git submodule init && git submodule update "
+	@exit 1
+
+$(TCPIP_SRCS): erlang-tcpip/src
+$(TCPIP_OBJS): $(OBJDIR)/%.beam : erlang-tcpip/src/%.erl $(DEPDIR)/%.d | $(DEPDIR) $(OTPDIR)/bin/erlc
 	$(OTPDIR)/bin/erlc -o $(OBJDIR)/ -MMD -MF $(DEPDIR)/$*.d $<
 
-$(ERLANG_OBJS): $(OBJDIR)/%.beam : %.erl $(DEPDIR)/%.d | $(DEPDIR) $(OTPDIR)/bin/erlc
+$(ERLANG_OBJS): $(OBJDIR)/%.beam : src/%.erl $(DEPDIR)/%.d | $(DEPDIR) $(OTPDIR)/bin/erlc
 	$(OTPDIR)/bin/erlc -o $(OBJDIR)/ -MMD -MF $(DEPDIR)/$*.d $<
 
 $(ERLANG_OVERRIDE_OBJS): $(OBJDIR)/%.beam : overrides/%.erl $(DEPDIR)/%.d $(OBJDIR)/hook_module.beam | $(DEPDIR) $(OTPDIR)/bin/erlc
 	$(OTPDIR)/bin/erlc -I $(OTPDIR)/lib/kernel-*/include -pz $(shell pwd)/$(OBJDIR)/ -o $(OBJDIR)/ -MMD -MF $(DEPDIR)/$*.d '+{parse_transform,hook_module}' $<
 
-$(KERNEL_OBJS): $(OBJDIR)/%.o: %.c $(DEPDIR)/%.c.d | $(DEPDIR)
+$(KERNEL_OBJS): $(OBJDIR)/%.o: kernel_src/%.c $(DEPDIR)/%.c.d | $(DEPDIR)
 	$(KERNEL_COMPILER) $(DEPFLAGS) -MF $(DEPDIR)/$*.c.d.T $< -I /usr/src/libexec/rtld-elf/ -I /usr/src/sys/ -I /usr/src/contrib/bearssl/inc/ -o $@
 	mv -f $(DEPDIR)/$*.c.d.T $(DEPDIR)/$*.c.d && touch $@
 
 $(FBSD_KERNEL_OBJS): $(OBJDIR)/%.o: $(DEPDIR)/%.c.d | $(DEPDIR)
-	$(KERNEL_COMPILER) -I. $(DEPFLAGS) -MF $(DEPDIR)/$*.c.d.T $(subst __,/,/usr/src/$*.c) -o $@
+	$(KERNEL_COMPILER) -I kernel_src/ $(DEPFLAGS) -MF $(DEPDIR)/$*.c.d.T $(subst __,/,/usr/src/$*.c) -o $@
 	mv -f $(DEPDIR)/$*.c.d.T $(DEPDIR)/$*.c.d && touch $@
 
 $(BEARSSL_OBJS): $(OBJDIR)/%.o: $(DEPDIR)/%.c.d | $(DEPDIR)
 	$(KERNEL_COMPILER) -I /usr/src/contrib/bearssl/src/ -I /usr/src/contrib/bearssl/inc/ $(DEPFLAGS) -MF $(DEPDIR)/$*.c.d.T $(subst __,/,/usr/src/contrib/bearssl/src/$*.c) -o $@
 	mv -f $(DEPDIR)/$*.c.d.T $(DEPDIR)/$*.c.d && touch $@
 
-$(NIF_OBJS): $(OBJDIR)/%.so: %.c $(OTPDIR)/bin/erl $(DEPDIR)/%.c.d | $(DEPDIR)
+$(NIF_OBJS): $(OBJDIR)/%.so: c_src/%.c $(OTPDIR)/bin/erl $(DEPDIR)/%.c.d | $(DEPDIR)
 	$(NIF_COMPILER) $(DEPFLAGS) -MF $(DEPDIR)/$*.c.d.T $< -o $@
 	mv -f $(DEPDIR)/$*.c.d.T $(DEPDIR)/$*.c.d && touch $@
 
-obj/checksum.so: ../erlang-tcpip/c_src/checksum.c
+erlang-tcpip/c_src/checksum.c: erlang-tcpip/src
+
+obj/checksum.so: erlang-tcpip/c_src/checksum.c
 	$(NIF_COMPILER) $< -o $@
 
 $(DEPDIR): ; @mkdir -p $@
-DEPFILES := $(ERLANG_OBJS:$(OBJDIR)/%.beam=$(DEPDIR)/%.d) $(ERLANG_OVERRIDE_OBJS:$(OBJDIR)/%.beam=$(DEPDIR)/%.d) $(TCPIP_OBJS:$(OBJDIR)/%.beam=$(DEPDIR)/%.d) $(KERNEL_SRCS:%.c=$(DEPDIR)/%.c.d) $(FBSD_KERNEL_SRCS:%.c=$(DEPDIR)/%.c.d) $(BEARSSL_SRCS:%.c=$(DEPDIR)/%.c.d) $(NIF_SRCS:%.c=$(DEPDIR)/%.c.d)
+DEPFILES := $(ERLANG_OBJS:$(OBJDIR)/%.beam=$(DEPDIR)/%.d) $(ERLANG_OVERRIDE_OBJS:$(OBJDIR)/%.beam=$(DEPDIR)/%.d) $(TCPIP_OBJS:$(OBJDIR)/%.beam=$(DEPDIR)/%.d) $(KERNEL_SRCS:kernel_src/%.c=$(DEPDIR)/%.c.d) $(FBSD_KERNEL_SRCS:%.c=$(DEPDIR)/%.c.d) $(BEARSSL_SRCS:%.c=$(DEPDIR)/%.c.d) $(NIF_SRCS:c_src/%.c=$(DEPDIR)/%.c.d)
 $(DEPFILES):
 include $(wildcard $(DEPFILES))
