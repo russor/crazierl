@@ -136,6 +136,14 @@ int vga_current_index = 0;
 // We start displaying text in the top-left of the screen (column = 0, row = 0)
 uint8_t term_color = 0x0F; // Black background, White foreground
 
+// "fix" an abort in OTP 26.2 added while addressing OTP GitHub Issue 7832
+// Could not write tty mode to domain socket in spawn_init
+// this worked before, because although fork() fails, BEAM never checked
+// after the OTP fix, there's a checked write to the child, which fails
+// We will let the write silently fail instead, if it comes after a close, after a fork.
+
+int TERRIBLE_HACK_PHASE = 1;
+
 struct GDTDescr {
    uint16_t limit_1;
    uint16_t base_1;
@@ -1017,11 +1025,18 @@ ssize_t write(int fd, const void * buf, size_t nbyte) {
 			return written; // bail out early, don't try to notify
 		} else if (FDS[fd].type == PIPE) {
 			if (FDS[fd].pipe == NULL) {
+				ssize_t ret = -EPIPE;
+				if (TERRIBLE_HACK_PHASE == 3) {
+					ERROR_PRINTF("write to closed pipe after close pipe; TERRIBLE HACK sequence activated\r\n");
+					TERRIBLE_HACK_PHASE = 0;
+					ret = nbyte;
+				}
+
 				if (locked_pipe) {
 					UNLOCK(&locked_pipe->lock);
 				}
 				UNLOCK(&FDS[fd].lock);
-				return -EPIPE;
+				return ret;
 			} else {
 				if (locked_pipe != NULL && locked_pipe != FDS[fd].pipe) {
 					UNLOCK(&locked_pipe->lock);
@@ -1844,6 +1859,13 @@ int syscall_close (struct close_args *a, struct interrupt_frame *iframe) {
 				kern_munmap(PROT_KERNEL, (uintptr_t) PAGE_FLOOR(FDS[a->fd].pb), PAGE_SIZE);
 			} else {
 				FDS[a->fd].pipe->pipe = NULL;
+				if (TERRIBLE_HACK_PHASE == 2) {
+					ERROR_PRINTF("close end of open pipe after fork; continue TERRIBLE HACK\r\n");
+					TERRIBLE_HACK_PHASE = 3;
+				} else if (TERRIBLE_HACK_PHASE == 3) {
+					ERROR_PRINTF("close end of open pipe after close pipe; abort TERRIBLE HACK\r\n");
+					TERRIBLE_HACK_PHASE = 0;
+				}
 			}
 		}
 	}
@@ -2684,7 +2706,15 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 	void *argp = (void *)(iframe->sp + sizeof(iframe->sp));
 	switch(call) {
 	        case SYS_exit: return syscall_exit((struct sys_exit_args *) argp, iframe);
-		case SYS_fork: SYSCALL_FAILURE(EAGAIN);
+		case SYS_fork: {
+			if (TERRIBLE_HACK_PHASE == 1) {
+				TERRIBLE_HACK_PHASE = 2;
+				ERROR_PRINTF("first fork attempt; begin TERRIBLE HACK\r\n");
+			} else {
+				TERRIBLE_HACK_PHASE = 0;
+			}
+			SYSCALL_FAILURE(EAGAIN);
+		}
 		case SYS_read: return syscall_read((struct read_args *) argp, iframe);
 		case SYS_readv: return syscall_readv((struct readv_args *) argp, iframe);
 		case SYS_pread: return syscall_pread((struct pread_args *) argp, iframe);
