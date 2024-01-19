@@ -3528,7 +3528,6 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 	char * fileend = strchrnul(filestart, ' ');
 	char filename [256];
 	strncpy(filename, filestart, fileend - filestart);
-	ERROR_PRINTF("file to load: %s\r\n", filename);
 
 	kern_mmap_enable_paging();
 
@@ -3537,24 +3536,25 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 		ERROR_PRINTF("Module %d (%s):\r\n 0x%08x-0x%08x\r\n", mod, mods[mod].cmdline, mods[mod].mod_start, mods[mod].mod_end);
 		init_files(&mods[mod]);
 	}
-	
-	struct hardcoded_file * file = find_file(filename);
-	if (file) {
-		DEBUG_PRINTF("loading %s at %08x\r\n", filename, file->start);
-		load_file(file->start, file->name, file->size);
+	if (filename[0]) {
+		ERROR_PRINTF("file to load: %s\r\n", filename);
+		struct hardcoded_file * file = find_file(filename);
+		if (file) {
+			DEBUG_PRINTF("loading %s at %08x\r\n", filename, file->start);
+			load_file(file->start, file->name, file->size);
+		}
 	}
-	TAILQ_INIT(&runqueue);
-	TAILQ_INIT(&timequeue);
-	TAILQ_INIT(&pollqueue);
-	TAILQ_INIT(&umtx_waitqueue);
-	TAILQ_INIT(&umtx_mutexqueue);
-
-	while (TIMER_COUNT == cpus_inited) {
-		asm volatile ("hlt" ::); // wait for at least one timer interrupt
-	}
-	start_cpus();
-
 	if (entrypoint) {
+		TAILQ_INIT(&runqueue);
+		TAILQ_INIT(&timequeue);
+		TAILQ_INIT(&pollqueue);
+		TAILQ_INIT(&umtx_waitqueue);
+		TAILQ_INIT(&umtx_mutexqueue);
+
+		while (TIMER_COUNT == cpus_inited) {
+			asm volatile ("hlt" ::); // wait for at least one timer interrupt
+		}
+		start_cpus();
 		setup_entrypoint();
 	}
 	halt("end of kernel!\r\n", 0);
