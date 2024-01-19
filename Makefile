@@ -53,39 +53,42 @@ OTPDIR=erlang-runtime$(ERLANG_VERSION)/usr/local/lib/erlang$(ERLANG_VERSION)
 KERNEL_COMPILER=clang -m32 -mno-sse -g -ffreestanding -gdwarf-2 -c -DCRAZIERL_KERNEL
 NIF_COMPILER=clang -m32 -fpic -g -gdwarf-2 -shared -I$(OTPDIR)/usr/include/ -I kernel_src/
 
-run: obj/mykernel.elf obj/initrd
-	qemu-system-i386 -cpu max --no-reboot -display none -smp 16 -s -m 512 -serial mon:stdio -kernel obj/mykernel.elf -append $(RTLD) -initrd obj/initrd \
+run: obj/crazierl.elf obj/initrd
+	qemu-system-i386 -cpu max --no-reboot -display none -smp 16 -s -m 512 -serial mon:stdio -kernel obj/crazierl.elf -append $(RTLD) -initrd obj/initrd \
 		-netdev user,hostname=localhost,id=mynet0,hostfwd=tcp:127.0.0.1:7780-:80,hostfwd=tcp:127.0.0.1:7781-:8080,hostfwd=tcp:127.0.0.1:4370-:4370 -device ne2k_pci,netdev=mynet0 -object filter-dump,id=mynet0,netdev=mynet0,file=/tmp/crazierl.pcap
 
-build: obj/mykernel.elf obj/initrd
+build: obj/crazierl.elf obj/initrd
 	echo "Built"
 
-obj/mykernel.elf.gz: obj/mykernel.elf
+obj/crazierl.elf.gz: obj/crazierl.elf
 	gzip -f -9 -k $^
 
 obj/initrd.gz: obj/initrd
 	gzip -f -9 -k $^
 
-obj/crazierl.iso: obj/initrd.gz obj/mykernel.elf.gz cfg/grub.cfg
+obj/crazierl.iso: obj/initrd.gz obj/crazierl.elf.gz cfg/grub.cfg
 	mkdir -p obj/iso/boot/grub
-	cp obj/initrd.gz obj/mykernel.elf.gz obj/iso
+	cp obj/initrd.gz obj/crazierl.elf.gz obj/iso
 	cp cfg/grub.cfg obj/iso/boot/grub
 	grub-mkrescue -o obj/crazierl.iso obj/iso/
 
 # if I can figure out how to get iPXE to use gz files...
-#netboot: obj/mykernel.elf.gz obj/initrd.gz
-netboot: obj/mykernel.elf obj/initrd
+#netboot: obj/crazierl.elf.gz obj/initrd.gz
+netboot: obj/crazierl.elf obj/initrd
 	cp $^ /usr/local/www/apache24/data/tftpboot/crazierl/
+
+push-to-demo: obj/crazierl.elf obj/initrd
+	rsync $^ dh1.ruka.org:crazierl/
 
 iso: obj/crazierl.iso
 	cp $^ /usr/local/www/apache24/data/tftpboot/crazierl/
 	rsync $^ dh1.ruka.org:crazierl/
 
-debug: obj/mykernel.elf obj/initrd
-	qemu-system-i386 -display none -d cpu_reset,guest_errors -smp 1 -S -s  -m 512 -serial mon:stdio -kernel obj/mykernel.elf -append $(RTLD) -initrd obj/initrd
+debug: obj/crazierl.elf obj/initrd
+	qemu-system-i386 -display none -d cpu_reset,guest_errors -smp 1 -S -s  -m 512 -serial mon:stdio -kernel obj/crazierl.elf -append $(RTLD) -initrd obj/initrd
 
-noisy: obj/mykernel.elf obj/initrd
-	qemu-system-i386 -display none -smp 2 -d nochain,exec,cpu_reset,guest_errors -s  -m 256 -serial mon:stdio -kernel obj/mykernel.elf -append $(RTLD) -initrd obj/initrd
+noisy: obj/crazierl.elf obj/initrd
+	qemu-system-i386 -display none -smp 2 -d nochain,exec,cpu_reset,guest_errors -s  -m 256 -serial mon:stdio -kernel obj/crazierl.elf -append $(RTLD) -initrd obj/initrd
 
 dist: .erlang.cookie obj/crazierl_epmd.beam $(OTPDIR)/bin/erl obj/gen_tcp_dist.beam
 	$(OTPDIR)/bin/erl -no_epmd -proto_dist gen_tcp -epmd_module crazierl_epmd -sname host -pz $(shell pwd)/$(OBJDIR) -setcookie $(shell cat .erlang.cookie)
@@ -112,11 +115,11 @@ push-code-hw: $(TCPIP_OBJS) $(INITRD_ERLANG_OBJS) $(OTPDIR)/bin/escript
 	@ERL_FLAGS="-hidden -name pusher -no_epmd -proto_dist gen_tcp -epmd_module crazierl_epmd -pa $(shell pwd)/$(OBJDIR) -setcookie $(shell cat .erlang.cookie)" $(OTPDIR)/bin/escript push_code.escript $(HWNODE) $(TCPIP_OBJS) $(INITRD_ERLANG_OBJS)
 
 debugger:
-	gdb -ex "set confirm off" -ex "add-symbol-file obj/mykernel.elf" -ex "add-symbol-file $$(find $(OTPDIR) -name beam.smp)" -ex "target remote localhost:1234"
+	gdb -ex "set confirm off" -ex "add-symbol-file obj/crazierl.elf" -ex "add-symbol-file $$(find $(OTPDIR) -name beam.smp)" -ex "target remote localhost:1234"
 
 .PHONY: clean $(OTPDIR)/bin/erlc
 clean:
-	rm -f obj/initrd obj/mykernel.elf obj/*.gz obj/*.o obj/*.beam obj/*.so obj/initrd.tmp obj/.deps/*.d obj/*.app obj/*.iso obj/iso/initrd obj/iso/mykernel.elf obj/iso/boot/grub/grub.cfg
+	rm -f obj/initrd obj/crazierl.elf obj/*.gz obj/*.o obj/*.beam obj/*.so obj/initrd.tmp obj/.deps/*.d obj/*.app obj/*.iso obj/iso/initrd obj/iso/crazierl.elf obj/iso/boot/grub/grub.cfg
 
 erlang-runtime$(ERLANG_VERSION)/usr/share/keys/pkg/trusted/.setup:
 	mkdir -p erlang-runtime$(ERLANG_VERSION)/usr/share/keys/pkg
@@ -136,8 +139,8 @@ $(OTPDIR)/bin/erlc: $(OTPDIR)/bin/erl.patched
 $(OTPDIR)/bin/escript: $(OTPDIR)/bin/erlc
 
 ALL_KERNEL_OBJS = $(KERNEL_OBJS) $(FBSD_KERNEL_OBJS) $(BEARSSL_OBJS) obj/start.o
-$(OBJDIR)/mykernel.elf: $(ALL_KERNEL_OBJS) kernel_src/linker.ld
-	clang -m32 -g -static -ffreestanding -nostdlib -Xlinker -Tkernel_src/linker.ld -Xlinker $(ALL_KERNEL_OBJS)  -o obj/mykernel.elf -gdwarf-2
+$(OBJDIR)/crazierl.elf: $(ALL_KERNEL_OBJS) kernel_src/linker.ld
+	clang -m32 -g -static -ffreestanding -nostdlib -Xlinker -Tkernel_src/linker.ld -Xlinker $(ALL_KERNEL_OBJS)  -o obj/crazierl.elf -gdwarf-2
 
 obj/start.o: kernel_src/start.s | $(DEPDIR)
 	clang -m32 -g -gdwarf-2 -c $^ -o $@
