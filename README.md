@@ -8,6 +8,8 @@
 
 ## What does it do
 
+[See the demo](https://crazierl.org/demo.html)
+
 Crazierl is just enough of an OS to run BEAM, the Erlang/OTP VM for x86 PCs
 (and virtual machines). The console is the Erlang shell. Most drivers will
 be written in Erlang, and can be hot loaded.
@@ -21,8 +23,8 @@ client, ntp client, and simple http server.
 Dist works (milestone 2), with -proto_dist gen_tcp, a custom epmd, and a little help here
 and there with cookies and things.
 
-[See the demo](https://crazierl.org/demo.html) Note: crazierl does not
-support ne2000 nics, so there is currently no networking for crazierl in v86.
+Note: crazierl does not support ne2000 nics, so there is currently no networking for crazierl in
+the demo using v86.
 
 ## Where does it run
 
