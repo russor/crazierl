@@ -34,12 +34,12 @@ start() ->
 		ethernet_sender ! {ping, self()},
 		receive
 			pong -> ok
-		end
+		end,
+		example_host:start(),
+		example_host2:start(),
+		catch dhcpc:go()
 	catch _:_ -> ok
-	end,
-	example_host:start(),
-	example_host2:start(),
-	catch dhcpc:go().
+	end.
 
 open_interrupt(Irq) ->
         Path = io_lib:format("/kern/irq/~B", [Irq]),
