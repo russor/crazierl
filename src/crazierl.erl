@@ -39,7 +39,8 @@ start() ->
 		example_host2:start(),
 		catch dhcpc:go()
 	catch _:_ -> ok
-	end.
+	end,
+	motd().
 
 open_interrupt(Irq) ->
         Path = io_lib:format("/kern/irq/~B", [Irq]),
@@ -51,3 +52,11 @@ open_interrupt(Irq) ->
         {ok, {local, ActualPath}} = inet:sockname(Socket),
         {ok, [ActualIrq], []} = io_lib:fread("/kern/irq/~d", binary_to_list(ActualPath)),
         {Socket, ActualIrq}.
+
+motd() ->
+	io:format("Welcome to Crazierl: an Erlang Operating System https://crazierl.org/~n"
+		  "Crazierl is licensed Apache-2.0; Copyright (c) 2019-2024~n"
+		  "Erlang/OTP is licensed Apache-2.0; Copyright Ericsson AB 2010-2023. All Rights Reserved.~n"
+		  "FreeBSD is licensed BSD-2-Clause; Copyright (c) 1992-2021 The FreeBSD Project.~n"
+		  "BearSSL is licensed MIT; Copyright (c) 2016 Thomas Pornin <pornin@bolet.org>~n"
+	).
