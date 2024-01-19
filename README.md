@@ -18,7 +18,7 @@ and rtl_8168.
 erlang-tcpip enables a basic tcp-ip stack, and there is an example dhcp
 client, ntp client, and simple http server.
 
-Dist works, with -proto_dist gen_tcp, a custom epmd, and a little help here
+Dist works (milestone 2), with -proto_dist gen_tcp, a custom epmd, and a little help here
 and there with cookies and things.
 
 [See the demo](https://crazierl.org/demo.html) Note: crazierl does not
@@ -30,7 +30,7 @@ Runs on qemu, v86, and some real hardware. Needs a multiboot loader (tested
 on the built in multiboot loader for qemu and v86, as well as ipxe and
 grub). ACPI required, CPU support for SSE is required. The TSC is treated as
 invariant, but it's not a fatal error, as many VMs don't support it. SMP
-works, but is untested at large core counts; over 256 cores is definitely
+works (milestone 1), but is untested at large core counts; over 256 cores is definitely
 not going to work.
 
 ## How does it work
@@ -58,6 +58,20 @@ GNU Make builds it all.
 Initial structure of the kernel is from
 https://wiki.osdev.org/User:Zesterer/Bare_Bones as well as lots of other
 knowledge from the OS Dev wikis and forums; thank you!
+
+## Similar projects
+
+[Ling](https://github.com/cloudozer/ling): ErlangOnXen -- an alternate VM
+for Erlang targetted to be a Xen guest.
+
+[HydrOS](http://www.erlang-factory.com/euc2017/sam-williams) presentation
+available; but I didn't find code? Seems to have a focus on a capability
+security model. Presentation includes some additional projects.
+
+## Why
+
+An excellent question. It seemed like a good idea to explore the possibility
+of Erlang as its own system.
 
 ## Who did this
 

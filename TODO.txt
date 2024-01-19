@@ -2,7 +2,7 @@ current next steps:
 
 *) tune tcp-ip as needed
 
-*) port to amd64 (milestone 3: release)
+*) port to amd64 (milestone 3)
 
 *) commercial cloud images
    Amazon, GCP, Digital Ocean, etc
