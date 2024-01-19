@@ -2074,7 +2074,7 @@ int syscall_bind (struct bind_args *a, struct interrupt_frame *iframe) {
 			UNLOCK(&FDS[a->s].lock);
 			SYSCALL_SUCCESS(0);
 		} else if (strncmp("/kern/fd/std", name, 13) == 0) {
-			ERROR_PRINTF("STD requested by %d\r\n", a->s);
+			DEBUG_PRINTF("STD requested by %d\r\n", a->s);
 			LOCK(&FDS[0].lock);
 			LOCK(&FDS[1].lock);
 			LOCK(&FDS[2].lock);
