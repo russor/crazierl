@@ -1892,6 +1892,23 @@ int syscall_close (struct close_args *a, struct interrupt_frame *iframe) {
 	}
 }
 
+int syscall_sendmsg(struct sendmsg_args *a, struct interrupt_frame *iframe) {
+	if (a->s < 0 || a->s >= BOGFD_MAX) {
+		SYSCALL_FAILURE(EBADF);
+	}
+	LOCK(&FDS[a->s].lock);
+	if (FDS[a->s].type != PIPE) {
+		UNLOCK(&FDS[a->s].lock);
+		SYSCALL_FAILURE(ENOTSOCK);
+	}
+	if (FDS[a->s].pipe == NULL) {
+		UNLOCK(&FDS[a->s].lock);
+		SYSCALL_FAILURE(EPIPE);
+	} else {
+		halt("sendmsg on pipe, unable to handle\r\n", 0);
+	}
+}
+
 int syscall_recvfrom (struct recvfrom_args *a, struct interrupt_frame *iframe) {
 	int ret = kern_read(a->s, a->buf, a->len, 0);
 	if (ret < 0) {
@@ -2727,6 +2744,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 		case SYS_close: return syscall_close((struct close_args *) argp, iframe);
 		case SYS_getpid: SYSCALL_SUCCESS(PID);
 		case SYS_geteuid: SYSCALL_SUCCESS(0);
+		case SYS_sendmsg: return syscall_sendmsg((struct sendmsg_args *) argp, iframe);
 		case SYS_recvfrom: return syscall_recvfrom((struct recvfrom_args *) argp, iframe);
 		case SYS_getsockname: return syscall_getsockname((struct getsockname_args *) argp, iframe);
 		case SYS_access: return syscall_access((struct access_args *) argp, iframe);
