@@ -1,4 +1,6 @@
 ERLANG_VERSION=26
+#OTPDIR=../installed/lib/erlang
+OTPDIR=erlang-runtime$(ERLANG_VERSION)/usr/local/lib/erlang$(ERLANG_VERSION)
 
 OBJDIR := obj
 DEPDIR := $(OBJDIR)/.deps
@@ -47,8 +49,6 @@ ifeq ($(wildcard $(ROOTDIR)/libexec/ld-elf32.so.1),)
 else
 	RTLD=$(ROOTDIR)/libexec/ld-elf32.so.1
 endif
-#OTPDIR=../installed/lib/erlang
-OTPDIR=erlang-runtime$(ERLANG_VERSION)/usr/local/lib/erlang$(ERLANG_VERSION)
 
 KERNEL_COMPILER=clang -m32 -mno-sse -g -ffreestanding -gdwarf-2 -c -DCRAZIERL_KERNEL
 NIF_COMPILER=clang -m32 -fpic -g -gdwarf-2 -shared -I$(OTPDIR)/usr/include/ -I kernel_src/

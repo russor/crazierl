@@ -43,6 +43,16 @@ will prepare an initrd that includes many files from the pkg distribution of
 Erlang, the FreeBSD rtld, and object files from this source, including some
 which override files in the Erlang distribution.
 
+## How to build
+
+Should build with gmake on FreeBSD matching the version returned from
+syscall\_\_\_sysctl in kernel_src/kernel.c This will use Erlang/OTP from pkg,
+but you can change OPTDIR in Makefile to use a different build. Using a
+checked build can be very helpful for finding kernel bugs that manifest in
+returning improper results to BEAM. Crazierl is (currently) 32-bit, but can
+build on 32-bit or 64-bit FreeBSD. Send me email if you have trouble
+building.
+
 ## What is it based on
 
 Erlang/OTP provides for the userland and was the inspiration for the
