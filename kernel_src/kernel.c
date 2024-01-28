@@ -1071,30 +1071,37 @@ ssize_t write(int fd, const void * buf, size_t nbyte) {
 			UNLOCK(&FDS[fd].lock);
 			return -EBADF;
 		}
-		break;
-	}
-	check_bnotes_fd(&FDS[fd]);
-	UNLOCK(&FDS[fd].lock);
-	LOCK(&thread_st);
-	struct crazierl_thread *tp;
-	if (wait_target != NULL && wait_target->flags & BOGFD_BLOCKED_READ) {
-		while ((tp = TAILQ_FIRST(&wait_target->waiters)) != NULL) {
-			size_t i = tp - threads;
-			mark_thread_runnable(i);
-		}
-		wait_target->flags &= ~BOGFD_BLOCKED_READ;
-	}
-	while ((tp = TAILQ_FIRST(&pollqueue)) != NULL) {
-		size_t i = tp - threads;
-		mark_thread_runnable(i);
-	}
+		if (written) {
+			check_bnotes_fd(&FDS[fd]);
+			UNLOCK(&FDS[fd].lock);
+			LOCK(&thread_st);
+			struct crazierl_thread *tp;
+			if (wait_target != NULL && wait_target->flags & BOGFD_BLOCKED_READ) {
+				while ((tp = TAILQ_FIRST(&wait_target->waiters)) != NULL) {
+					size_t i = tp - threads;
+					mark_thread_runnable(i);
+				}
+				wait_target->flags &= ~BOGFD_BLOCKED_READ;
+			}
+			while ((tp = TAILQ_FIRST(&pollqueue)) != NULL) {
+				size_t i = tp - threads;
+				mark_thread_runnable(i);
+			}
 
-	UNLOCK(&thread_st);
-	return written;
+			UNLOCK(&thread_st);
+			return written;
+		} else if (FDS[fd].flags & O_NONBLOCK) {
+			UNLOCK(&FDS[fd].lock);
+			return -EAGAIN;
+		} else {
+			FDS[fd].flags |= BOGFD_BLOCKED_WRITE;
+			switch_thread(IO_WRITE, 0, 0, &FDS[fd].waiters, &FDS[fd].lock);
+		}
+	}
 }
 
 size_t kern_read(int fd, void * buf, size_t nbyte, int force_async) {
-	struct BogusFD *locked_pipe = NULL;
+	struct BogusFD *wait_target = NULL, *locked_pipe = NULL;
 	if (fd < 0 || fd >= BOGFD_MAX) {
 		return -EBADF;
 	}
@@ -1133,6 +1140,7 @@ size_t kern_read(int fd, void * buf, size_t nbyte, int force_async) {
 				}
 				FDS[fd].pb->data[FDS[fd].pb->length] = '\0'; // zero terminate to help with debugging
 				if (FDS[fd].pipe != NULL) {
+					wait_target = FDS[fd].pipe;
 					check_bnotes_fd(FDS[fd].pipe);
 					UNLOCK(&FDS[fd].pipe->lock);
 				}
@@ -1166,6 +1174,13 @@ size_t kern_read(int fd, void * buf, size_t nbyte, int force_async) {
 			UNLOCK(&FDS[fd].lock);
 			LOCK(&thread_st);
 			struct crazierl_thread *tp;
+			if (wait_target != NULL && wait_target->flags & BOGFD_BLOCKED_WRITE) {
+				while ((tp = TAILQ_FIRST(&wait_target->waiters)) != NULL) {
+					size_t i = tp - threads;
+					mark_thread_runnable(i);
+				}
+				wait_target->flags &= ~BOGFD_BLOCKED_WRITE;
+			}
 			while ((tp = TAILQ_FIRST(&pollqueue)) != NULL) {
 				size_t i = tp - threads;
 				mark_thread_runnable(i);
@@ -1704,14 +1719,6 @@ int syscall_sendto (struct sendto_args *a, struct interrupt_frame *iframe) {
 		ssize_t ret = write(a->s, a->buf, a->len);
 		if (ret > 0) {
 			SYSCALL_SUCCESS(ret);
-		} else if (ret == 0) {
-			if (FDS[a->s].flags & O_NONBLOCK) {
-				SYSCALL_FAILURE(EAGAIN);
-			} else {
-				halt("bad locking, needs fixing\r\n", 0);
-				FDS[a->s].flags |= BOGFD_BLOCKED_WRITE;
-				switch_thread(IO_WRITE, 0, 0, &FDS[a->s].waiters, NULL);
-			}
 		} else {
 			SYSCALL_FAILURE(-ret);
 		}
@@ -1722,14 +1729,6 @@ int syscall_write (struct write_args *a, struct interrupt_frame *iframe) {
 		ssize_t ret = write(a->fd, a->buf, a->nbyte);
 		if (ret > 0) {
 			SYSCALL_SUCCESS(ret);
-		} else if (ret == 0) {
-			if (FDS[a->fd].flags & O_NONBLOCK) {
-				SYSCALL_FAILURE(EAGAIN);
-			} else {
-				halt("bad locking needs fixing\r\n", 0);
-				FDS[a->fd].flags |= BOGFD_BLOCKED_WRITE;
-				switch_thread(IO_WRITE, 0, 0, &FDS[a->fd].waiters, NULL);
-			}
 		} else {
 			SYSCALL_FAILURE(-ret);
 		}
@@ -1754,14 +1753,6 @@ int syscall_writev (struct writev_args *a, struct interrupt_frame *iframe) {
 		}
 		if (ret > 0) {
 			SYSCALL_SUCCESS(ret);
-		} else if (ret == 0) {
-			if (FDS[a->fd].flags & O_NONBLOCK) {
-				SYSCALL_FAILURE(EAGAIN);
-			} else {
-				halt("bad locking, needs fixing\r\n", 0);
-				FDS[a->fd].flags |= BOGFD_BLOCKED_WRITE;
-				switch_thread(IO_WRITE, 0, 0, &FDS[a->fd].waiters, NULL);
-			}
 		} else {
 			ERROR_PRINTF("writev (%d, %08x, %d)\r\n", a->fd, a->iovp, a->iovcnt);
 			SYSCALL_FAILURE(-ret);
