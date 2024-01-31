@@ -327,21 +327,76 @@ void write_serial(char a) {
 	outb(PORT_COM1,a);
 }
 
+void vga_newline() {
+	// What happens if we get past the last row? We need to reset both column and row to 0 in order to loop back to the top of the screen
+	vga_current_index = (vga_current_index & ~(VGA_MEM_COLS - 1)) + VGA_MEM_COLS;
+	if (vga_current_index == VGA_BUFFER_ELEMENTS) {
+		vga_current_index = 0;
+	}
+	// clear the line if we're starting a new line
+	for (int i = 0; i < VGA_COLS; ++i) {
+		vga_buffer[(vga_current_index + i) % VGA_BUFFER_ELEMENTS] = ((uint16_t)term_color << 8) | ' ';
+	}
+	int index = vga_current_index - (VGA_MEM_COLS * (VGA_ROWS -1));
+
+	static int last_line_compare = 0x3FF;
+	int line_compare = 0x3FF;
+	if (index < 0) {
+		line_compare = 16 * (-index / VGA_MEM_COLS);
+		index += VGA_BUFFER_ELEMENTS;
+	}
+	if (line_compare != last_line_compare) {
+		outb(0x3D4, 0x07);
+		uint8_t tmp = inb(0x3D5);
+		uint8_t out;
+		if (line_compare & 0x100) {
+			out = tmp | 0x10;
+		} else {
+			out = tmp & ~0x10;
+		}
+		if (out != tmp) {
+			outb(0x3D5, out);
+		}
+		outb(0x3D4, 0x09);
+		tmp = inb(0x3D5);
+		if (line_compare & 0x200) {
+			out = tmp | 0x40;
+		} else {
+			out = tmp & ~ 0x40;
+		}
+		if (out != tmp) {
+			outb(0x3D5, out);
+		}
+		outb(0x3D4, 0x18);
+		outb(0x3D5, line_compare & 0xFF);
+		last_line_compare = line_compare;
+	}
+	outb(0x3D4, 12);
+	outb(0x3D5, index >> 8);
+	outb(0x3D4, 13);
+	outb(0x3D5, index & 0xFF);
+}
+
 // This function places a single character onto the screen
-void _putchar(char c)
+void kern_putchar(char c)
 {
 	write_serial(c);
-	int endofline = 0;
 	// Remember - we don't want to display ALL characters!
 	switch (c)
 	{
-	case '\r': break;
-	case '\n': // Newline characters should return the column to 0, and increment the row
-		{
-			endofline = 1;
-			break;
-		}
+	case '\r': { // carriage return
+		//vga_current_index |= ~(VGA_MEM_COLS - 1);
+		break;
+	}
+	case '\n': { // new line
+		vga_newline();
+		break;
+	}
 	case '\t': {
+		if ((vga_current_index & (VGA_MEM_COLS - 1)) >= VGA_COLS) {
+			vga_newline();
+		}
+
 		if (vga_current_index & 7) {
 			vga_current_index = ((vga_current_index & ~7) + 8);
 		} else {
@@ -355,74 +410,18 @@ void _putchar(char c)
 		}
 		break;
 	}
-	default: // Normal characters just get displayed and then increment the column
-		{
-			if (c < 0x20 || c >= 0x7f) {
-				//ERROR_PRINTF("unhandled control character %x\r\n", c);
-			}
-			vga_buffer[vga_current_index] = ((uint16_t)term_color << 8) | c;
-			/*if (vga_current_index + VGA_SCREEN >= VGA_BUFFER_SIZE) {
-				vga_buffer[vga_current_index - (VGA_BUFFER_SIZE - VGA_SCREEN)] = ((uint16_t)term_color << 8) | c;
-			}*/
-			++vga_current_index;
-			break;
+	default: { // Normal characters just get displayed and then increment the column
+		if ((vga_current_index & (VGA_MEM_COLS - 1)) >= VGA_COLS) {
+			vga_newline();
 		}
-	}
- 
-	// What happens if we get past the last column? We need to reset the column to 0, and increment the row to get to a new line
-	if ((vga_current_index & (VGA_MEM_COLS - 1)) >= VGA_COLS)
-	{
-		endofline = 1;
-	}
- 
-	// What happens if we get past the last row? We need to reset both column and row to 0 in order to loop back to the top of the screen
-	if (endofline) {
-		vga_current_index = (vga_current_index & ~(VGA_MEM_COLS - 1)) + VGA_MEM_COLS;
-		if (vga_current_index == VGA_BUFFER_ELEMENTS) {
-			vga_current_index = 0;
-		}
-		// clear the line if we're starting a new line
-		for (int i = 0; i < VGA_COLS; ++i) {
-			vga_buffer[(vga_current_index + i) % VGA_BUFFER_ELEMENTS] = ((uint16_t)term_color << 8) | ' ';
-		}
-		int index = vga_current_index - (VGA_MEM_COLS * (VGA_ROWS -1));
 
-		static int last_line_compare = 0x3FF;
-		int line_compare = 0x3FF;
-		if (index < 0) {
-			line_compare = 16 * (-index / VGA_MEM_COLS);
-			index += VGA_BUFFER_ELEMENTS;
+		if (c < 0x20 || c >= 0x7f) {
+			//ERROR_PRINTF("unhandled control character %x\r\n", c);
 		}
-		if (line_compare != last_line_compare) {
-			outb(0x3D4, 0x07);
-			uint8_t tmp = inb(0x3D5);
-			uint8_t out;
-			if (line_compare & 0x100) {
-				out = tmp | 0x10;
-			} else {
-				out = tmp & ~0x10;
-			}
-			if (out != tmp) {
-				outb(0x3D5, out);
-			}
-			outb(0x3D4, 0x09);
-			tmp = inb(0x3D5);
-			if (line_compare & 0x200) {
-				out = tmp | 0x40;
-			} else {
-				out = tmp & ~ 0x40;
-			}
-			if (out != tmp) {
-				outb(0x3D5, out);
-			}
-			outb(0x3D4, 0x18);
-			outb(0x3D5, line_compare & 0xFF);
-			last_line_compare = line_compare;
-		}
-		outb(0x3D4, 12);
-		outb(0x3D5, index >> 8);
-		outb(0x3D4, 13);
-		outb(0x3D5, index & 0xFF);
+		vga_buffer[vga_current_index] = ((uint16_t)term_color << 8) | c;
+		++vga_current_index;
+		break;
+	}
 	}
 }
  
@@ -430,14 +429,14 @@ void _putchar(char c)
 void term_print(const char* str)
 {
 	for (size_t i = 0; str[i] != '\0'; i ++) // Keep placing characters until we hit the null-terminating character ('\0')
-		_putchar(str[i]);
+		kern_putchar(str[i]);
 	move_cursor();
 }
 
 void term_printn (const uint8_t* str, ssize_t len)
 {
 	while (len) {
-		_putchar(*str);
+		kern_putchar(*str);
 		++str;
 		--len;
 	}
