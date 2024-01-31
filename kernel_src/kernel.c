@@ -1665,7 +1665,11 @@ int kern_kevent(struct kevent_args *a) {
 
 int syscall_exit (struct sys_exit_args *a, struct interrupt_frame *iframe) {
 	ERROR_PRINTF("exit %d\r\n", a->rval);
-	halt("rebooting\r\n", 2);
+	if (a->rval) {
+		halt("halt\r\n", 0);
+	} else {
+		halt("rebooting\r\n", 2);
+	}
 }
 
 int syscall_read (struct read_args *a, struct interrupt_frame *iframe) {
