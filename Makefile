@@ -55,7 +55,7 @@ NIF_COMPILER=clang -m32 -fpic -g -gdwarf-2 -shared -I$(OTPDIR)/usr/include/ -I k
 
 run: obj/crazierl.elf obj/initrd
 	qemu-system-i386 -cpu max --no-reboot -display none -smp 16 -s -m 512 -serial mon:stdio -kernel obj/crazierl.elf -append $(RTLD) -initrd obj/initrd \
-		-netdev user,hostname=localhost,id=mynet0,hostfwd=tcp:127.0.0.1:7780-:80,hostfwd=tcp:127.0.0.1:7781-:8080,hostfwd=tcp:127.0.0.1:4370-:4370 -device ne2k_pci,netdev=mynet0 -object filter-dump,id=mynet0,netdev=mynet0,file=/tmp/crazierl.pcap
+		-netdev user,hostname=localhost,id=mynet0,hostfwd=tcp:127.0.0.1:7780-:80,hostfwd=tcp:127.0.0.1:7781-:8080,hostfwd=tcp:127.0.0.1:4370-:4370 -device virtio-net,netdev=mynet0 -object filter-dump,id=mynet0,netdev=mynet0,file=/tmp/crazierl.pcap
 
 build: obj/crazierl.elf obj/initrd
 	echo "Built"
@@ -103,16 +103,16 @@ remote-shell-hw: .erlang.cookie obj/crazierl_epmd.beam $(OTPDIR)/bin/erl obj/gen
 	$(OTPDIR)/bin/erl -hidden -no_epmd -proto_dist gen_tcp -epmd_module crazierl_epmd -remsh $(HWNODE) -name shell -pz $(shell pwd)/$(OBJDIR) -setcookie $(shell cat .erlang.cookie)
 
 push-code: $(TCPIP_OBJS) $(INITRD_ERLANG_OBJS) $(OTPDIR)/bin/escript
-	@ERL_FLAGS="-hidden -sname pusher -no_epmd -proto_dist gen_tcp -epmd_module crazierl_epmd -pa $(shell pwd)/$(OBJDIR) -setcookie $(shell cat .erlang.cookie)" $(OTPDIR)/bin/escript push_code.escript 'crazierl@localhost' $(TCPIP_OBJS) $(INITRD_ERLANG_OBJS)
+	@ERL_FLAGS="-hidden -sname pusher -no_epmd -proto_dist gen_tcp -epmd_module crazierl_epmd -pa $(shell pwd)/$(OBJDIR) -setcookie $(shell cat .erlang.cookie)" $(OTPDIR)/bin/escript scripts/push_code.escript 'crazierl@localhost' $(TCPIP_OBJS) $(INITRD_ERLANG_OBJS)
 
 timer-offset: $(OTPDIR)/bin/escript
-	@ERL_FLAGS="-hidden -sname timer -no_epmd -proto_dist gen_tcp -epmd_module crazierl_epmd -pa $(shell pwd)/$(OBJDIR) -setcookie $(shell cat .erlang.cookie)" $(OTPDIR)/bin/escript timer_offset.escript 'crazierl@localhost'
+	@ERL_FLAGS="-hidden -sname timer -no_epmd -proto_dist gen_tcp -epmd_module crazierl_epmd -pa $(shell pwd)/$(OBJDIR) -setcookie $(shell cat .erlang.cookie)" $(OTPDIR)/bin/escript scripts/timer_offset.escript 'crazierl@localhost'
 
 timer-offset-hw: $(OTPDIR)/bin/escript
-	@ERL_FLAGS="-hidden -name timer -no_epmd -proto_dist gen_tcp -epmd_module crazierl_epmd -pa $(shell pwd)/$(OBJDIR) -setcookie $(shell cat .erlang.cookie)" $(OTPDIR)/bin/escript timer_offset.escript $(HWNODE)
+	@ERL_FLAGS="-hidden -name timer -no_epmd -proto_dist gen_tcp -epmd_module crazierl_epmd -pa $(shell pwd)/$(OBJDIR) -setcookie $(shell cat .erlang.cookie)" $(OTPDIR)/bin/escript scripts/timer_offset.escript $(HWNODE)
 
 push-code-hw: $(TCPIP_OBJS) $(INITRD_ERLANG_OBJS) $(OTPDIR)/bin/escript
-	@ERL_FLAGS="-hidden -name pusher -no_epmd -proto_dist gen_tcp -epmd_module crazierl_epmd -pa $(shell pwd)/$(OBJDIR) -setcookie $(shell cat .erlang.cookie)" $(OTPDIR)/bin/escript push_code.escript $(HWNODE) $(TCPIP_OBJS) $(INITRD_ERLANG_OBJS)
+	@ERL_FLAGS="-hidden -name pusher -no_epmd -proto_dist gen_tcp -epmd_module crazierl_epmd -pa $(shell pwd)/$(OBJDIR) -setcookie $(shell cat .erlang.cookie)" $(OTPDIR)/bin/escript scripts/push_code.escript $(HWNODE) $(TCPIP_OBJS) $(INITRD_ERLANG_OBJS)
 
 debugger:
 	gdb -ex "set confirm off" -ex "add-symbol-file obj/crazierl.elf" -ex "add-symbol-file $$(find $(OTPDIR) -name beam.smp)" -ex "target remote localhost:1234"
