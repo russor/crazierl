@@ -273,9 +273,9 @@ key_process(State = #s {mods = Mods}, Bool, Modifier) when is_atom(Modifier) ->
 		left_shift -> Mods#mods{left_shift = Bool};
 		right_shift -> Mods#mods{right_shift = Bool};
 		left_alt -> Mods#mods{left_alt = Bool};
-		caps_lock when Bool == true -> Mods#mods{caps_lock = bnot Mods#mods.caps_lock};
-		num_lock when Bool == true -> Mods#mods{num_lock = bnot Mods#mods.num_lock};
-		scroll_lock when Bool == true -> Mods#mods{scroll_lock = bnot Mods#mods.scroll_lock};
+		caps_lock when Bool == true -> Mods#mods{caps_lock = not Mods#mods.caps_lock};
+		num_lock when Bool == true -> Mods#mods{num_lock = not Mods#mods.num_lock};
+		scroll_lock when Bool == true -> Mods#mods{scroll_lock = not Mods#mods.scroll_lock};
 		_ -> Mods
 	end,
 	State#s{ mods = NewMods };
