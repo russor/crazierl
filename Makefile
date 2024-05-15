@@ -50,8 +50,8 @@ else
 	RTLD=$(ROOTDIR)/libexec/ld-elf32.so.1
 endif
 
-KERNEL_COMPILER=clang -m32 -mno-sse -g -ffreestanding -gdwarf-2 -c -DCRAZIERL_KERNEL
-NIF_COMPILER=clang -m32 -fpic -g -gdwarf-2 -shared -I$(OTPDIR)/usr/include/ -I kernel_src/
+KERNEL_COMPILER=clang -Werror -m32 -mno-sse -g -ffreestanding -gdwarf-2 -c -DCRAZIERL_KERNEL
+NIF_COMPILER=clang -Werror -m32 -fpic -g -gdwarf-2 -shared -I$(OTPDIR)/usr/include/ -I kernel_src/
 
 run: obj/crazierl.elf obj/initrd
 	qemu-system-i386 -cpu max --no-reboot -display none -smp 16 -s -m 512 -serial mon:stdio -kernel obj/crazierl.elf -append $(RTLD) -initrd obj/initrd \
@@ -127,7 +127,7 @@ erlang-runtime$(ERLANG_VERSION)/usr/share/keys/pkg/trusted/.setup:
 	touch erlang-runtime$(ERLANG_VERSION)/usr/share/keys/pkg/trusted/.setup
 
 $(OTPDIR)/bin/erl: erlang-runtime$(ERLANG_VERSION)/usr/share/keys/pkg/trusted/.setup
-	INSTALL_AS_USER=1 pkg -R ../cfg --root erlang-runtime$(ERLANG_VERSION) -o ABI=FreeBSD:13:i386 install -r latest -y erlang-runtime$(ERLANG_VERSION)
+	IGNORE_OSVERSION=yes INSTALL_AS_USER=1 pkg -R ../cfg --root erlang-runtime$(ERLANG_VERSION) -o ABI=FreeBSD:14:i386 install -r latest -y erlang-runtime$(ERLANG_VERSION)
 	touch $(OTPDIR)/bin/erl
 
 

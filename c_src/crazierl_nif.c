@@ -126,24 +126,18 @@ static ERL_NIF_TERM bcopy_from_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM 
 static ERL_NIF_TERM time_offset_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 {
 	struct timeval tv, tv2;
-	if (sizeof(tv.tv_sec) == sizeof(int64_t)) {
-		if (!enif_get_int64(env, argv[0], &tv.tv_sec)) { return enif_make_badarg(env); }
-	} else if (sizeof(tv.tv_sec) == sizeof(long)) {
-		if (!enif_get_long(env, argv[0], &tv.tv_sec)) { return enif_make_badarg(env); }
-	} else if (sizeof(tv.tv_sec) == sizeof(int)) {
-		if (!enif_get_int(env, argv[0], &tv.tv_sec)) { return enif_make_badarg(env); }
-	} else {
-		enif_make_badarg(env);
-	}
-	if (sizeof(tv.tv_usec) == sizeof(int64_t)) {
-		if (!enif_get_int64(env, argv[1], &tv.tv_usec)) { return enif_make_badarg(env); }
-	} else if (sizeof(tv.tv_usec) == sizeof(long)) {
-		if (!enif_get_long(env, argv[1], &tv.tv_usec)) { return enif_make_badarg(env); }
-	} else if (sizeof(tv.tv_usec) == sizeof(int)) {
-		if (!enif_get_int(env, argv[1], &tv.tv_usec)) { return enif_make_badarg(env); }
-	} else {
-		enif_make_badarg(env);
-	}
+
+#if defined(__i386__)
+	_Static_assert(sizeof(tv.tv_sec) == sizeof(int), "time_t is not an int on i386?");
+	if (!enif_get_int(env, argv[0], &tv.tv_sec)) { return enif_make_badarg(env); }
+#else
+	_Static_assert(sizeof(tv.tv_sec) == sizeof(int64_t), "time_t is not a int64 on non-i386?");
+	if (!enif_get_int64(env, argv[0], &tv.tv_sec)) { return enif_make_badarg(env); }
+#endif
+
+	_Static_assert(sizeof(tv.tv_usec) == sizeof(long), "suseconds_t is not a long?");
+	if (!enif_get_long(env, argv[1], &tv.tv_usec)) { return enif_make_badarg(env); }
+
 	if (gettimeofday(&tv2, NULL) != 0) {
 		return enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_int(env, errno));
 	}

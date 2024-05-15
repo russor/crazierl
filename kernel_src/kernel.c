@@ -63,7 +63,7 @@ extern void * ap_trampoline2;
 extern void * gen_int;
 extern void * gen_error;
 extern void * stack_top;
-extern void start_entrypoint();
+extern void start_entrypoint(void *, void *, uint);
 extern uintptr_t setup_new_stack(uintptr_t new_stack_top, uintptr_t current_stack_top);
 extern uintptr_t setup_new_idle(uintptr_t new_stack_top);
 extern int switch_thread_impl(uintptr_t* oldstack, uintptr_t newstack);
@@ -1371,7 +1371,7 @@ int syscall_ppoll(struct ppoll_args *a, struct interrupt_frame *iframe) {
 }
 
 // assume kq and fd locked
-size_t find_bnote(kq, fd, filter) {
+size_t find_bnote(size_t kq, size_t fd, short filter) {
 	size_t i = FDS[fd].bnote;
 	while (i < BNOTE_MAX) {
 		if (BNOTES[i].kq == kq && BNOTES[i].filter == filter) {
@@ -1662,7 +1662,7 @@ int kern_kevent(struct kevent_args *a) {
 }
 
 
-int syscall_exit (struct sys_exit_args *a, struct interrupt_frame *iframe) {
+int syscall_exit (struct exit_args *a, struct interrupt_frame *iframe) {
 	ERROR_PRINTF("exit %d\r\n", a->rval);
 	if (a->rval) {
 		halt("halt\r\n", 0);
@@ -2222,7 +2222,7 @@ int syscall_ntp_adjtime (struct ntp_adjtime_args *a, struct interrupt_frame *ifr
 	}
 	SYSCALL_SUCCESS(TIME_OK);
 }
-int syscall_getrlimit (struct __getrlimit_args *a, struct interrupt_frame *iframe) {
+int syscall_getrlimit (struct getrlimit_args *a, struct interrupt_frame *iframe) {
 	switch (a->which) {
 		case RLIMIT_STACK:
 			a->rlp->rlim_cur = USER_STACK_SIZE;
@@ -2238,7 +2238,7 @@ int syscall_getrlimit (struct __getrlimit_args *a, struct interrupt_frame *ifram
 	}
 	SYSCALL_SUCCESS(0);
 }
-int syscall_setrlimit (struct __setrlimit_args *a, struct interrupt_frame *iframe) {
+int syscall_setrlimit (struct setrlimit_args *a, struct interrupt_frame *iframe) {
 	DEBUG_PRINTF("setrlimit (%d, {%d, %d})\r\n", a->which, a->rlp->rlim_cur, a->rlp->rlim_max);
 	switch (a->which) {
 		case RLIMIT_STACK:
@@ -2263,7 +2263,7 @@ int syscall___sysctlbyname (struct __sysctlbyname_args *a, struct interrupt_fram
 	ERROR_PRINTF("sysctlbyname (\"%s\" ...)\r\n", a->name);
 	SYSCALL_FAILURE(ENOENT);
 }
-int syscall___sysctl (struct sysctl_args *a, struct interrupt_frame *iframe) { // probably need to check buffer addresses and lengths
+int syscall___sysctl (struct __sysctl_args *a, struct interrupt_frame *iframe) { // probably need to check buffer addresses and lengths
 	if (a->namelen == 2) {
 		switch (a->name[0]) {
 			case CTL_KERN: switch(a->name[1]) {
@@ -2716,7 +2716,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 {
 	void *argp = (void *)(iframe->sp + sizeof(iframe->sp));
 	switch(call) {
-	        case SYS_exit: return syscall_exit((struct sys_exit_args *) argp, iframe);
+	        case SYS_exit: return syscall_exit((struct exit_args *) argp, iframe);
 		case SYS_fork: {
 			if (TERRIBLE_HACK_PHASE == 1) {
 				TERRIBLE_HACK_PHASE = 2;
@@ -2758,10 +2758,10 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 		case SYS_settimeofday: return syscall_settimeofday((struct gettimeofday_args *) argp, iframe);
 		case SYS_sysarch: return syscall_sysarch((struct sysarch_args *) argp, iframe);
 		case SYS_ntp_adjtime: return syscall_ntp_adjtime((struct ntp_adjtime_args *) argp, iframe);
-		case SYS_getrlimit: return syscall_getrlimit((struct __getrlimit_args *) argp, iframe);
-		case SYS_setrlimit: return syscall_setrlimit((struct __setrlimit_args *) argp, iframe);
+		case SYS_getrlimit: return syscall_getrlimit((struct getrlimit_args *) argp, iframe);
+		case SYS_setrlimit: return syscall_setrlimit((struct setrlimit_args *) argp, iframe);
 		case SYS___sysctlbyname: return syscall___sysctlbyname((struct __sysctlbyname_args *) argp, iframe);
-		case SYS___sysctl: return syscall___sysctl((struct sysctl_args *) argp, iframe);
+		case SYS___sysctl: return syscall___sysctl((struct __sysctl_args *) argp, iframe);
 		case SYS_clock_gettime: return syscall_clock_gettime((struct clock_gettime_args *) argp, iframe);
 		case SYS_issetugid: return syscall_issetugid((struct issetugid_args *) argp, iframe);
 		case SYS___getcwd: return syscall___getcwd((struct __getcwd_args *) argp, iframe);
