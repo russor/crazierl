@@ -2260,6 +2260,11 @@ int syscall___sysctlbyname (struct __sysctlbyname_args *a, struct interrupt_fram
 		*a->oldlenp = sizeof(u_int);
 		SYSCALL_SUCCESS(0);
 	}
+	if (strncmp("hw.pagesizes", a->name, a->namelen) == 0) {
+		*(u_long *)a->old = PAGE_SIZE;
+		*a->oldlenp = sizeof(u_long);
+		SYSCALL_SUCCESS(0);
+	}
 	ERROR_PRINTF("sysctlbyname (\"%s\" ...)\r\n", a->name);
 	SYSCALL_FAILURE(ENOENT);
 }
@@ -2737,6 +2742,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 		case SYS_open: return syscall_open((struct open_args *) argp, iframe);
 		case SYS_close: return syscall_close((struct close_args *) argp, iframe);
 		case SYS_getpid: SYSCALL_SUCCESS(PID);
+		case SYS_getuid: SYSCALL_SUCCESS(0);
 		case SYS_geteuid: SYSCALL_SUCCESS(0);
 		case SYS_sendmsg: return syscall_sendmsg((struct sendmsg_args *) argp, iframe);
 		case SYS_recvfrom: return syscall_recvfrom((struct recvfrom_args *) argp, iframe);
@@ -3229,7 +3235,7 @@ void setup_entrypoint()
 	new_top -= sizeof(size_t);
 	*(size_t *)new_top = 0;
 	new_top -= sizeof(size_t);
-	*(size_t *)new_top = 0x1000;
+	*(size_t *)new_top = PAGE_SIZE;
 	void * page_sizes = new_top;
 
 	// set up environment
