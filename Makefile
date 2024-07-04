@@ -50,7 +50,7 @@ else
 	RTLD=$(ROOTDIR)/libexec/ld-elf32.so.1
 endif
 
-KERNEL_COMPILER=clang -Werror -m32 -mno-sse -g -ffreestanding -gdwarf-2 -c -DCRAZIERL_KERNEL
+KERNEL_COMPILER=clang -Werror -m32 -mno-sse -g -ffreestanding -gdwarf-2 -mgeneral-regs-only -mno-red-zone -c -DCRAZIERL_KERNEL
 NIF_COMPILER=clang -Werror -m32 -fpic -g -gdwarf-2 -shared -I$(OTPDIR)/usr/include/ -I kernel_src/
 
 run: obj/crazierl.elf obj/initrd

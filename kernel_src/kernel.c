@@ -453,7 +453,6 @@ void term_printf(const char* format, ...)
        write(2, foo, strlen(foo));
 }
 
-__attribute__ ((no_caller_saved_registers))
 void early_term_printf(const char* format, ...)
 {
        va_list args;
@@ -469,7 +468,6 @@ void wake_cpu(size_t cpu) {
 	local_apic_write(0x300, 0x04000 | SWITCH_VECTOR);
 }
 
-__attribute__ ((no_caller_saved_registers))
 _Noreturn
 void halt(char * message, int mode) {
 	find_cursor();
