@@ -2274,13 +2274,13 @@ int syscall___sysctl (struct __sysctl_args *a, struct interrupt_frame *iframe) {
 					strlcpy(a->old, "FreeBSD", *a->oldlenp);
 					SYSCALL_SUCCESS(0);
 				case KERN_OSRELEASE:
-					strlcpy(a->old, "13.2-RELEASE", *a->oldlenp);
+					strlcpy(a->old, "14.1-RELEASE", *a->oldlenp);
 					SYSCALL_SUCCESS(0);
 				case KERN_VERSION:
-					strlcpy(a->old, "FreeBSD 13.2-RELEASE releng/13.2-n254617-525ecfdad597 GENERIC", *a->oldlenp);
+					strlcpy(a->old, "FreeBSD 14.1-RELEASE releng/14.1-n267679-10e31f0946d8 GENERIC", *a->oldlenp);
 					SYSCALL_SUCCESS(0);
 				case KERN_OSRELDATE:
-					*(u_int *)a->old = 1302001; // pretend to be freebsd 13.2 for now
+					*(u_int *)a->old = 1401000;
 					*a->oldlenp = sizeof(uint);
 					SYSCALL_SUCCESS(0);
 				case KERN_HOSTNAME:
@@ -2384,6 +2384,18 @@ int syscall_thr_self (struct thr_self_args *a, struct interrupt_frame *iframe) {
 	DEBUG_PRINTF("thr_self()\r\n");
 	*a->id = THREAD_ID_OFFSET + current_thread;
 	SYSCALL_SUCCESS(0);
+}
+
+int syscall_thr_wake (struct thr_wake_args *a, struct interrupt_frame *iframe) {
+	// FreeBSD's libtr calls thr_wake(-1) in rtld init to help force symbol resolution,
+	// but the result is unused.
+	// https://github.com/freebsd/freebsd-src/commit/36f0a34ca645d49ec79d60ea7e773374ef0991ea
+	if (a->id == -1){
+		SYSCALL_FAILURE(ESRCH);
+	}
+	// Otherwise, we don't know how to thr_wake
+	ERROR_PRINTF("thr_wake(%ld)\r\n", a->id);
+	halt("thr_wake halting\r\n", 0);
 }
 
 int syscall_rtprio_thread (struct rtprio_thread_args *a, struct interrupt_frame *iframe) {
@@ -2776,6 +2788,7 @@ int handle_syscall(uint32_t call, struct interrupt_frame *iframe)
 			ERROR_PRINTF("xxx sending back bogus success for getcontext\r\n");
 			SYSCALL_SUCCESS(0);
 		case SYS_thr_self: return syscall_thr_self((struct thr_self_args *) argp, iframe);
+		case SYS_thr_wake: return syscall_thr_wake((struct thr_wake_args *) argp, iframe);
 		case SYS__umtx_op: return syscall__umtx_op((struct _umtx_op_args *) argp, iframe);
 		case SYS_rtprio_thread: return syscall_rtprio_thread((struct rtprio_thread_args *) argp, iframe);
 		case SYS_cpuset_getaffinity: return syscall_cpuset_getaffinity((struct cpuset_getaffinity_args *) argp, iframe);
