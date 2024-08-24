@@ -22,6 +22,7 @@ typedef uint32_t u_int32_t;
 #include <stdlib.h>
 #include <sys/stat.h>
 #include <sys/ioctl.h>
+#define TTYDEFCHARS
 #include <term.h>
 #include <sys/resource.h>
 
@@ -1944,15 +1945,15 @@ int syscall_ioctl (struct ioctl_args *a, struct interrupt_frame *iframe) {
 	int ret = -1;
 	switch (a->com) {
 		case TIOCGETA: {
-			if (a->fd < 0 || a->fd >= BOGFD_MAX || (FDS[a->fd].type != TERMIN && FDS[a->fd].type != TERMOUT )) {
+			if (a->fd < 0 || a->fd >= BOGFD_MAX || (FDS[a->fd].type != TERMIN && FDS[a->fd].type != TERMOUT && FDS[a->fd].type != TERMPIPED && (a->fd == 0 && FDS[a->fd].type != PIPE))) {
 				SYSCALL_FAILURE(ENOTTY);
 			}
 			struct termios *t = (struct termios *)a->data;
-			t->c_iflag = 11010;
-			t->c_oflag = 3;
-			t->c_cflag = 19200;
-			t->c_lflag = 1483;
-			//t->c_cc = "\004\377\377\177\027\025\022\b\003\034\032\031\021\023\026\017\001\000\024\377";
+			t->c_iflag = TTYDEF_IFLAG;
+			t->c_oflag = TTYDEF_OFLAG;
+			t->c_cflag = TTYDEF_CFLAG;
+			t->c_lflag = TTYDEF_LFLAG_ECHO;
+			memcpy(t->c_cc, ttydefchars, sizeof(ttydefchars));
 			t->c_ispeed = 38400;
 			t->c_ospeed = 38400;
 			SYSCALL_SUCCESS(0);
