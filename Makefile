@@ -145,7 +145,7 @@ $(OBJDIR)/crazierl.elf: $(ALL_KERNEL_OBJS) kernel_src/linker.ld
 obj/start.o: kernel_src/start.s | $(DEPDIR)
 	clang -m32 -g -gdwarf-2 -c $^ -o $@
 
-INITRD_FILES := .erlang.cookie cfg/inetrc obj/etcpip.app /usr/share/misc/termcap.db $(NIF_OBJS) obj/checksum.so $(TCPIP_OBJS) $(INITRD_ERLANG_OBJS)
+INITRD_FILES := .erlang.cookie cfg/inetrc obj/etcpip.app /etc/termcap $(NIF_OBJS) obj/checksum.so $(TCPIP_OBJS) $(INITRD_ERLANG_OBJS)
 
 .erlang.cookie: scripts/gen_cookie.escript $(OTPDIR)/bin/escript
 	$(OTPDIR)/bin/escript scripts/gen_cookie.escript > .erlang.cookie.tmp
