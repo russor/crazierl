@@ -1,3 +1,4 @@
+#include <stdint.h>
 #include <strings.h>
 #include <sys/time.h>
 #include <sys/timex.h>
@@ -10,6 +11,12 @@ ErlNifResourceType *MMAP_TYPE;
 struct mmap_resource {
 	uintptr_t start;
 	size_t length;
+};
+
+ErlNifResourceType *IOPORT_TYPE;
+struct ioport_resource {
+	uint16_t start;
+	uint16_t length;
 };
 
 static ERL_NIF_TERM inb_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
@@ -78,6 +85,28 @@ static ERL_NIF_TERM map_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 	}
 }
 
+static ERL_NIF_TERM map_port_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
+{
+	unsigned int start;
+	unsigned int length;
+	if (!enif_get_uint(env, argv[0], &start)) { return enif_make_badarg(env); }
+	if (!enif_get_uint(env, argv[1], &length)) { return enif_make_badarg(env); }
+
+	if (start > UINT16_MAX || length > UINT16_MAX) {
+		return enif_make_badarg(env);
+	}
+
+	struct ioport_resource *resource = enif_alloc_resource(IOPORT_TYPE, sizeof(struct ioport_resource));;
+	resource->start = (uint16_t) start;
+	resource->length = (uint16_t) length;
+	ERL_NIF_TERM ret = enif_make_tuple2(env,
+		enif_make_atom(env, "ok"),
+		enif_make_resource(env, resource)
+	);
+	enif_release_resource(resource);
+	return ret;
+}
+
 static ERL_NIF_TERM map_addr_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 {
 	struct mmap_resource *resource;
@@ -90,37 +119,60 @@ static ERL_NIF_TERM map_addr_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM ar
 
 static ERL_NIF_TERM bcopy_to_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 {
-	struct mmap_resource *resource;
+	struct mmap_resource *mmap_resource;
+	struct ioport_resource *ioport_resource;
 	uintptr_t offset;
 	ErlNifBinary binary;
-	if (!enif_get_resource(env, argv[0], MMAP_TYPE, (void **)&resource)) { return enif_make_badarg(env); }
 	if (!enif_get_uint(env, argv[1], &offset)) { return enif_make_badarg(env); }
 	if (!enif_inspect_iolist_as_binary(env, argv[2], &binary)) { return enif_make_badarg(env); }
-	if ((offset + binary.size) > resource->length) { return enif_make_badarg(env); }
+	if (enif_get_resource(env, argv[0], MMAP_TYPE, (void **)&mmap_resource)) {
+		if ((offset + binary.size) > mmap_resource->length) { return enif_make_badarg(env); }
 
-	bcopy(binary.data, (void *)(resource->start + offset), binary.size);
-	__sync_synchronize();
+		bcopy(binary.data, (void *)(mmap_resource->start + offset), binary.size);
+		__sync_synchronize();
 
-	return enif_make_atom(env, "ok");
+		return enif_make_atom(env, "ok");
+	} else if (enif_get_resource(env, argv[0], IOPORT_TYPE, (void **)&ioport_resource)) {
+		if ((offset + binary.size) > ioport_resource->length) { return enif_make_badarg(env); }
+
+		for (size_t i = 0; i < binary.size; ++i) {
+			uint16_t port = ioport_resource->start + offset + i;
+			asm volatile ( "outb %0, %1" : : "a"(binary.data[i]), "Nd"(port) );
+		}
+		return enif_make_atom(env, "ok");
+	}
+	return enif_make_badarg(env);
 }
 
 static ERL_NIF_TERM bcopy_from_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 {
-	struct mmap_resource *resource;
+	struct mmap_resource *mmap_resource;
+	struct ioport_resource *ioport_resource;
 	uintptr_t offset;
 	size_t length;
-	if (!enif_get_resource(env, argv[0], MMAP_TYPE, (void **)&resource)) { return enif_make_badarg(env); }
 	if (!enif_get_uint(env, argv[1], &offset)) { return enif_make_badarg(env); }
 	if (!enif_get_uint(env, argv[2], &length)) { return enif_make_badarg(env); }
-	if ((offset + length) > resource->length) { return enif_make_badarg(env); }
+	if (enif_get_resource(env, argv[0], MMAP_TYPE, (void **)&mmap_resource)) {
+		if ((offset + length) > mmap_resource->length) { return enif_make_badarg(env); }
 
-	ERL_NIF_TERM binary;
-	unsigned char * bindata = enif_make_new_binary(env, length, &binary);
+		ERL_NIF_TERM binary;
+		unsigned char * bindata = enif_make_new_binary(env, length, &binary);
 
-	__sync_synchronize();
-	bcopy((void *) (resource->start + offset), bindata, length);
+		__sync_synchronize();
+		bcopy((void *) (mmap_resource->start + offset), bindata, length);
+		return binary;
+	} else if (enif_get_resource(env, argv[0], IOPORT_TYPE, (void **)&ioport_resource)) {
+		if ((offset + length) > ioport_resource->length) { return enif_make_badarg(env); }
 
-	return binary;
+		ERL_NIF_TERM binary;
+		unsigned char * bindata = enif_make_new_binary(env, length, &binary);
+		for (size_t i = 0; i < length; ++i) {
+			uint16_t port = ioport_resource->start + offset + i;
+			asm volatile ( "inb %1, %0" : "=a"(bindata[i]) : "Nd"(port) );
+		}
+		return binary;
+	}
+	return enif_make_badarg(env);
 }
 
 static ERL_NIF_TERM time_offset_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
@@ -176,6 +228,7 @@ static ErlNifFunc nif_funcs[] = {
     {"outb", 2, outb_nif},
     {"outl", 2, outl_nif},
     {"map", 2, map_nif},
+    {"map_port", 2, map_nif},
     {"map_addr", 1, map_addr_nif},
     {"bcopy_to", 3, bcopy_to_nif},
     {"bcopy_from", 3, bcopy_from_nif},
@@ -186,6 +239,7 @@ static ErlNifFunc nif_funcs[] = {
 int load (ErlNifEnv* env, void** priv_data, ERL_NIF_TERM load_info)
 {
 	MMAP_TYPE = enif_open_resource_type(env, NULL, "mmap", NULL, ERL_NIF_RT_CREATE, NULL);
+	IOPORT_TYPE = enif_open_resource_type(env, NULL, "ioport", NULL, ERL_NIF_RT_CREATE, NULL);
 	return 0;
 }
 

@@ -61,7 +61,7 @@ attach(Device, _Args) ->
 	crazierl:bcopy_to(CommonMap, ?DEVICE_FEATURE_SELECT, <<1:32/little>>),
 	<<DeviceFeaturesHi:32/little>> = crazierl:bcopy_from(CommonMap, ?DEVICE_FEATURE, 4),
 	DeviceFeatures = parse_features(<<DeviceFeaturesHi:32, DeviceFeaturesLo:32>>),
-	%io:format("~w~n", [DeviceFeatures]),
+	io:format("~w~n", [{DeviceFeaturesLo, DeviceFeaturesHi, DeviceFeatures}]),
 	true = maps:is_key(virtio_version_1, DeviceFeatures),
 	true = maps:is_key(mac, DeviceFeatures),
 	DriverFeatures = make_features([virtio_version_1, mac]),
@@ -123,8 +123,8 @@ parse_capabilities([], Map) -> Map.
 map_structure(Key, #pci_device{bars = Bars}, Caps) ->
 	Cap = maps:get(Key, Caps),
 	Bar = element(Cap#virtio_pci_cap.bar + 1, Bars),
-	true = (Bar#pci_mem_bar.size >= (Cap#virtio_pci_cap.offset + Cap#virtio_pci_cap.length)),
-	crazierl:map(Bar#pci_mem_bar.base + Cap#virtio_pci_cap.offset, Cap#virtio_pci_cap.length).
+	io:format("caps ~p~nbars ~p~ncap ~p~nbar ~p~n", [Caps, Bars, Cap, Bar]),
+	pci:map(Bar, Cap#virtio_pci_cap.offset, Cap#virtio_pci_cap.length).
 
 % tx queue full, don't process send messages
 loop(Device, MacAddr, RxSocket, TxSocket, RxQ, TxQ = #virtq{used = []}) ->

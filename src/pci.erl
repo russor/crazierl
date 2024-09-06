@@ -1,6 +1,6 @@
 -module(pci).
 
--export([start/0, list/0, attach/2, enable_msix/3]).
+-export([start/0, list/0, attach/2, enable_msix/3, map/3]).
 -include("pci.hrl").
 -behavior(gen_server).
 
@@ -307,11 +307,16 @@ map_msix(#pci_common{capabilities = Capabilities} = Common, Bars) ->
 		#pci_msi_x {size = Size, table = {BarNumber, BarOffset}} ->
 			Length = Size * 16,
 			Bar = element(BarNumber + 1, Bars),
-			true = (Bar#pci_mem_bar.size >= (BarOffset + Length)),
-			{ok, Map} = crazierl:map(Bar#pci_mem_bar.base + BarOffset, Length),
+			{ok, Map} = map(Bar, BarOffset, Length),
 			Common#pci_common{msix_map = Map};
 		false -> Common
 	end.
+
+map(#pci_mem_bar{base = Base, size = Size}, Offset, Length) when Size >= Offset + Length ->
+	crazierl:map(Base + Offset, Length);
+
+map(#pci_io_bar{base = Base, size = Size}, Offset, Length) when Size >= Offset + Length ->
+	crazierl:map_port(Base + Offset, Length).
 
 get_msix([#pci_msi_x{} = X | _]) -> X;
 get_msix([_ | T]) -> get_msix(T);
