@@ -50,29 +50,28 @@ attach(Device, _Args) ->
 	Common = Device#pci_device.common,
 	Capabilities = parse_capabilities(Common#pci_common.capabilities, #{}),
 	{ok, CommonMap} = map_structure(common_cfg, Device, Capabilities),
-	crazierl:bcopy_to(CommonMap, ?DEVICE_STATUS, <<0>>), % reset device
+	ok = crazierl:bcopy_to(CommonMap, ?DEVICE_STATUS, <<0>>), % reset device
 	<<0>> = crazierl:bcopy_from(CommonMap, ?DEVICE_STATUS, 1), % confirm
-	crazierl:bcopy_to(CommonMap, ?DEVICE_STATUS, <<1>>), % OS ACK
+	ok = crazierl:bcopy_to(CommonMap, ?DEVICE_STATUS, <<1>>), % OS ACK
 	<<1>> = crazierl:bcopy_from(CommonMap, ?DEVICE_STATUS, 1), % confirm
-	crazierl:bcopy_to(CommonMap, ?DEVICE_STATUS, <<3>>), % driver ACK
+	ok = crazierl:bcopy_to(CommonMap, ?DEVICE_STATUS, <<3>>), % driver ACK
 
-	crazierl:bcopy_to(CommonMap, ?DEVICE_FEATURE_SELECT, <<0:32/little>>),
+	ok = crazierl:bcopy_to(CommonMap, ?DEVICE_FEATURE_SELECT, <<0:32/little>>),
 	<<DeviceFeaturesLo:32/little>> = crazierl:bcopy_from(CommonMap, ?DEVICE_FEATURE, 4),
-	crazierl:bcopy_to(CommonMap, ?DEVICE_FEATURE_SELECT, <<1:32/little>>),
+	ok = crazierl:bcopy_to(CommonMap, ?DEVICE_FEATURE_SELECT, <<1:32/little>>),
 	<<DeviceFeaturesHi:32/little>> = crazierl:bcopy_from(CommonMap, ?DEVICE_FEATURE, 4),
 	DeviceFeatures = parse_features(<<DeviceFeaturesHi:32, DeviceFeaturesLo:32>>),
-	io:format("~w~n", [{DeviceFeaturesLo, DeviceFeaturesHi, DeviceFeatures}]),
 	true = maps:is_key(virtio_version_1, DeviceFeatures),
 	true = maps:is_key(mac, DeviceFeatures),
 	DriverFeatures = make_features([virtio_version_1, mac]),
 	<<DriverFeaturesLo:4/binary, DriverFeaturesHi:4/binary>> = <<DriverFeatures:64/little>>,
-	crazierl:bcopy_to(CommonMap, ?DRIVER_FEATURE_SELECT, <<0:32/little>>),
-	crazierl:bcopy_to(CommonMap, ?DRIVER_FEATURE, DriverFeaturesLo),
-	crazierl:bcopy_to(CommonMap, ?DRIVER_FEATURE_SELECT, <<1:32/little>>),
-	crazierl:bcopy_to(CommonMap, ?DRIVER_FEATURE, DriverFeaturesHi),
+	ok = crazierl:bcopy_to(CommonMap, ?DRIVER_FEATURE_SELECT, <<0:32/little>>),
+	ok = crazierl:bcopy_to(CommonMap, ?DRIVER_FEATURE, DriverFeaturesLo),
+	ok = crazierl:bcopy_to(CommonMap, ?DRIVER_FEATURE_SELECT, <<1:32/little>>),
+	ok = crazierl:bcopy_to(CommonMap, ?DRIVER_FEATURE, DriverFeaturesHi),
 
 	<<3>> = crazierl:bcopy_from(CommonMap, ?DEVICE_STATUS, 1), % confirm
-	crazierl:bcopy_to(CommonMap, ?DEVICE_STATUS, <<11>>), % features_OK
+	ok = crazierl:bcopy_to(CommonMap, ?DEVICE_STATUS, <<11>>), % features_OK
 	{ok, DeviceMap} = map_structure(device_cfg, Device, Capabilities),
 	MacAddr = crazierl:bcopy_from(DeviceMap, 0, 6),
 
@@ -88,7 +87,7 @@ attach(Device, _Args) ->
 	TxQ = setup_virtq(CommonMap, write, 1, NotifyOffsetMult, NotifyMap, 1),
 
 	<<11>> = crazierl:bcopy_from(CommonMap, ?DEVICE_STATUS, 1), % confirm
-	crazierl:bcopy_to(CommonMap, ?DEVICE_STATUS, <<15>>), % features_OK
+	ok = crazierl:bcopy_to(CommonMap, ?DEVICE_STATUS, <<15>>), % features_OK
 	<<15>> = crazierl:bcopy_from(CommonMap, ?DEVICE_STATUS, 1), % confirm
 	application:set_env([
 		{etcpip, [
@@ -123,7 +122,6 @@ parse_capabilities([], Map) -> Map.
 map_structure(Key, #pci_device{bars = Bars}, Caps) ->
 	Cap = maps:get(Key, Caps),
 	Bar = element(Cap#virtio_pci_cap.bar + 1, Bars),
-	io:format("caps ~p~nbars ~p~ncap ~p~nbar ~p~n", [Caps, Bars, Cap, Bar]),
 	pci:map(Bar, Cap#virtio_pci_cap.offset, Cap#virtio_pci_cap.length).
 
 % tx queue full, don't process send messages
@@ -265,7 +263,7 @@ setup_virtq(CommonMap, Type, QueueNum, NotifyMult, NotifyMap, Vector) ->
 		write -> 0
 	end,
 	DescriptorTable = virtq_descriptors(Physical + ?VIRTQ_BUFFER_START, Flags, 0, <<>>),
-	crazierl:bcopy_to(Map, 0, <<DescriptorTable/binary>>),
+	ok = crazierl:bcopy_to(Map, 0, <<DescriptorTable/binary>>),
 	Used = case Type of
 		read -> ignore;
 		write -> [{0, ?VIRTQ_LEN - 1}]
@@ -274,13 +272,13 @@ setup_virtq(CommonMap, Type, QueueNum, NotifyMult, NotifyMap, Vector) ->
 		false -> 16#FFFF;
 		_ -> Vector
 	end,
-	crazierl:bcopy_to(CommonMap, ?QUEUE_SELECT, <<QueueNum:16/little>>),
-	crazierl:bcopy_to(CommonMap, ?QUEUE_SIZE, <<?VIRTQ_LEN:16/little>>),
-	crazierl:bcopy_to(CommonMap, ?QUEUE_MSIX_VECTOR, <<MSIVector:16/little>>),
-	crazierl:bcopy_to(CommonMap, ?QUEUE_DESC, <<Physical:64/little>>),
-	crazierl:bcopy_to(CommonMap, ?QUEUE_DRIVER, <<(Physical + ?VIRTQ_AVAIL_START):64/little>>),
-	crazierl:bcopy_to(CommonMap, ?QUEUE_DEVICE, <<(Physical + ?VIRTQ_USED_START):64/little>>),
-	crazierl:bcopy_to(CommonMap, ?QUEUE_ENABLE, <<1:16/little>>),
+	ok = crazierl:bcopy_to(CommonMap, ?QUEUE_SELECT, <<QueueNum:16/little>>),
+	ok = crazierl:bcopy_to(CommonMap, ?QUEUE_SIZE, <<?VIRTQ_LEN:16/little>>),
+	ok = crazierl:bcopy_to(CommonMap, ?QUEUE_MSIX_VECTOR, <<MSIVector:16/little>>),
+	ok = crazierl:bcopy_to(CommonMap, ?QUEUE_DESC, <<Physical:64/little>>),
+	ok = crazierl:bcopy_to(CommonMap, ?QUEUE_DRIVER, <<(Physical + ?VIRTQ_AVAIL_START):64/little>>),
+	ok = crazierl:bcopy_to(CommonMap, ?QUEUE_DEVICE, <<(Physical + ?VIRTQ_USED_START):64/little>>),
+	ok = crazierl:bcopy_to(CommonMap, ?QUEUE_ENABLE, <<1:16/little>>),
 	<<NotifyOffset:16/little>> = crazierl:bcopy_from(CommonMap, ?QUEUE_NOTIFY_OFF, 2),
 	#virtq{map = Map, avail_idx = 0, used = Used, used_idx = 0, notify= {NotifyMap, NotifyOffset * NotifyMult, QueueNum}}.
 
@@ -299,15 +297,15 @@ offer_desc(Queue, N) ->
 	Out.
 
 offer_desc_impl(Queue = #virtq{map = Map, avail_idx = Idx}, N) ->
-	crazierl:bcopy_to(Map, ?VIRTQ_AVAIL_START + 4 + (2 * (Idx band (?VIRTQ_LEN - 1))), <<N:16/little>>),
+	ok = crazierl:bcopy_to(Map, ?VIRTQ_AVAIL_START + 4 + (2 * (Idx band (?VIRTQ_LEN - 1))), <<N:16/little>>),
 	Queue#virtq{avail_idx = Idx + 1}.
 
 write_avail_idx(#virtq{map = Map, avail_idx = Idx, notify = {NotifyMap, Offset, QueueNum}}) ->
-	crazierl:bcopy_to(Map, ?VIRTQ_AVAIL_START + 2, <<Idx:16/little>>),
+	ok = crazierl:bcopy_to(Map, ?VIRTQ_AVAIL_START + 2, <<Idx:16/little>>),
 	<<Flags:16/little>> = crazierl:bcopy_from(Map, ?VIRTQ_USED_START, 2),
 	case Flags band 1 of
 		1 -> ok;
-		0 -> crazierl:bcopy_to(NotifyMap, Offset, <<QueueNum:16/little>>)
+		0 -> ok = crazierl:bcopy_to(NotifyMap, Offset, <<QueueNum:16/little>>)
 	end.
 
 add_to_queue(Queue = #virtq{used = []}, Packet) ->
@@ -316,9 +314,9 @@ add_to_queue(Queue = #virtq{used = []}, Packet) ->
 add_to_queue(Queue = #virtq{map = Map, used = Used}, Packet) when size(Packet) =< ?VIRTQ_MAX_PACKET ->
 	{Descriptor, NewUsed} = get_descriptor(Used),
 	%io:format("got ~p~n", [{Descriptor, NewUsed}]),
-	crazierl:bcopy_to(Map, ?VIRTQ_BUFFER_START + Descriptor * ?VIRTQ_BUFFER_SIZE,
+	ok = crazierl:bcopy_to(Map, ?VIRTQ_BUFFER_START + Descriptor * ?VIRTQ_BUFFER_SIZE,
 		<<0, 0, 0:16, 0:16, 0:16, 0:16, 0:16, Packet/binary>>),
-	crazierl:bcopy_to(Map, Descriptor * ?VIRTQ_DESC_SIZE + 8,
+	ok = crazierl:bcopy_to(Map, Descriptor * ?VIRTQ_DESC_SIZE + 8,
 		<<(size(Packet) + 12):32/little>>),
 	offer_desc(Queue#virtq{used = NewUsed}, Descriptor);
 add_to_queue(Queue, Packet) ->

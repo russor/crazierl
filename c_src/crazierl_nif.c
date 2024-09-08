@@ -135,9 +135,37 @@ static ERL_NIF_TERM bcopy_to_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM ar
 	} else if (enif_get_resource(env, argv[0], IOPORT_TYPE, (void **)&ioport_resource)) {
 		if ((offset + binary.size) > ioport_resource->length) { return enif_make_badarg(env); }
 
-		for (size_t i = 0; i < binary.size; ++i) {
-			uint16_t port = ioport_resource->start + offset + i;
-			asm volatile ( "outb %0, %1" : : "a"(binary.data[i]), "Nd"(port) );
+		uint16_t port = ioport_resource->start + offset;
+		switch (binary.size) {
+			case 1:
+				asm volatile ( "outb %0, %1" : : "a"(binary.data[0]), "Nd"(port) );
+				break;
+			case 2: {
+				uint16_t data = binary.data[1] << 8 | binary.data[0];
+				asm volatile ( "outw %0, %1" : : "a"(data), "Nd"(port) );
+				break;
+			}
+			case 4: {
+				uint32_t data = binary.data[3] << 24 | binary.data[2] << 16 | binary.data[1] << 8 | binary.data[0];
+				asm volatile ( "outl %0, %1" : : "a"(data), "Nd"(port) );
+				break;
+			}
+			case 8: {
+				uint32_t data = binary.data[3] << 24 | binary.data[2] << 16 | binary.data[1] << 8 | binary.data[0];
+				asm volatile ( "outl %0, %1" : : "a"(data), "Nd"(port) );
+				port += 4;
+				data = binary.data[7] << 24 | binary.data[6] << 16 | binary.data[5] << 8 | binary.data[4];
+				asm volatile ( "outl %0, %1" : : "a"(data), "Nd"(port) );
+				break;
+			}
+			default:
+				printf("bad binary size for bcopy_to %d\r\n", binary.size);
+				return enif_make_badarg(env);
+				/*
+				for (size_t i = 0; i < binary.size; ++i) {
+					uint16_t port = ioport_resource->start + offset + i;
+					asm volatile ( "outb %0, %1" : : "a"(binary.data[i]), "Nd"(port) );
+				}*/
 		}
 		return enif_make_atom(env, "ok");
 	}
@@ -165,10 +193,32 @@ static ERL_NIF_TERM bcopy_from_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM 
 		if ((offset + length) > ioport_resource->length) { return enif_make_badarg(env); }
 
 		ERL_NIF_TERM binary;
+		uint16_t port = ioport_resource->start + offset;
 		unsigned char * bindata = enif_make_new_binary(env, length, &binary);
-		for (size_t i = 0; i < length; ++i) {
-			uint16_t port = ioport_resource->start + offset + i;
-			asm volatile ( "inb %1, %0" : "=a"(bindata[i]) : "Nd"(port) );
+		switch (length) {
+			case 1:
+				asm volatile ( "inb %1, %0" : "=a"(bindata[0]) : "Nd"(port) );
+				break;
+			case 2: {
+				uint16_t data;
+				asm volatile ( "inw %1, %0" : "=a"(data) : "Nd"(port) );
+				bindata[0] = data & 0xFF;
+				bindata[1] = (data >> 8) & 0xFF;
+				break;
+			}
+			case 4: {
+				uint32_t data;
+				asm volatile ( "inl %1, %0" : "=a"(data) : "Nd"(port) );
+				bindata[0] = data & 0xFF;
+				bindata[1] = (data >> 8) & 0xFF;
+				bindata[2] = (data >> 16) & 0xFF;
+				bindata[3] = (data >> 24) & 0xFF;
+				break;
+			}
+			default:
+				for (size_t i = 0; i < length; ++i, ++port) {
+					asm volatile ( "inb %1, %0" : "=a"(bindata[i]) : "Nd"(port) );
+				}
 		}
 		return binary;
 	}
@@ -228,7 +278,7 @@ static ErlNifFunc nif_funcs[] = {
     {"outb", 2, outb_nif},
     {"outl", 2, outl_nif},
     {"map", 2, map_nif},
-    {"map_port", 2, map_nif},
+    {"map_port", 2, map_port_nif},
     {"map_addr", 1, map_addr_nif},
     {"bcopy_to", 3, bcopy_to_nif},
     {"bcopy_from", 3, bcopy_from_nif},
