@@ -77,23 +77,36 @@ attach(Device, _Args) ->
 
 	{ok, NotifyMap} = map_structure(notify_cfg, Device, Capabilities),
 
-	{RxSocket, RxInt} = crazierl:open_interrupt(0),
-	{TxSocket, TxInt} = crazierl:open_interrupt(0),
-	%io:format("using int ~B~n", [RxInt]),
-	pci:enable_msix(Common, 0, RxInt),
-	pci:enable_msix(Common, 1, TxInt),
+	{RxSocket, TxSocket, ReadVector, WriteVector} = case pci:msix_size(Common) of
+		N when N >= 2 ->
+			io:format("up to ~B MSIX interrupts~n", [N]),
+			{Rx, RxInt} = crazierl:open_interrupt(0),
+			{Tx, TxInt} = crazierl:open_interrupt(0),
+			io:format("virtio_net: using msix ~B rx ~B tx~n", [RxInt, TxInt]),
+			ok = pci:enable_msix(Common, 0, RxInt),
+			ok = pci:enable_msix(Common, 1, TxInt),
+			{Rx, Tx, 0, 1};
+		_ -> % No MSIX, have to use the interrupt pin
+			Interrupt = Device#pci_device.interrupt_line,
+			io:format("virtio_net: using PCI int ~B~n", [Interrupt]),
+			{ok, IrqSocket} = gen_udp:open(0, [
+				{inet_backend, inet},
+				{ifaddr, {local, io_lib:format("/kern/ioapic/~B/0~n", [Interrupt])}},
+				{active, true}
+			]),
+			{IrqSocket, none, false, false}
+	end,
+
 	<<NotifyOffsetMult:32/little>> = (maps:get(notify_cfg, Capabilities))#virtio_pci_cap.data,
-	RxQ = setup_virtq(CommonMap, read, 0, NotifyOffsetMult, NotifyMap, 0),
-	TxQ = setup_virtq(CommonMap, write, 1, NotifyOffsetMult, NotifyMap, 1),
+
+	RxQ = setup_virtq(CommonMap, read, 0, NotifyOffsetMult, NotifyMap, ReadVector),
+	TxQ = setup_virtq(CommonMap, write, 1, NotifyOffsetMult, NotifyMap, WriteVector),
 
 	<<11>> = crazierl:bcopy_from(CommonMap, ?DEVICE_STATUS, 1), % confirm
 	ok = crazierl:bcopy_to(CommonMap, ?DEVICE_STATUS, <<15>>), % features_OK
 	<<15>> = crazierl:bcopy_from(CommonMap, ?DEVICE_STATUS, 1), % confirm
 	application:set_env([
 		{etcpip, [
-			%{ip,      {10,0,2,15}},
-			%{netmask, {255,255,255,0}},
-			%{gateway, {10,0,2,2}},
 			{ip, {0,0,0,0}},
 			{netmask, {255, 255, 255, 255}},
 			{gateway, {0, 0, 0, 0}},
@@ -106,7 +119,6 @@ attach(Device, _Args) ->
 	], [{persistent, true}]),
 	etcpip_socket:start(),
 	
-	%arp:register(self(), {10,0,2,15}, 24, {10,0,2,2}, MacAddr),
 	RxQ2 = offer_desc(RxQ, {0, ?VIRTQ_LEN - 1}),
 	loop(Device, MacAddr, RxSocket, TxSocket, RxQ2, TxQ).
 
@@ -127,6 +139,8 @@ map_structure(Key, #pci_device{bars = Bars}, Caps) ->
 % tx queue full, don't process send messages
 loop(Device, MacAddr, RxSocket, TxSocket, RxQ, TxQ = #virtq{used = []}) ->
 	{RxQ1, TxQ1} = receive
+		{udp, RxSocket, _, _, _} when TxSocket == none ->
+			{check_queue(RxQ, read), check_queue(TxQ, write)};
 		{udp, RxSocket, _, _, _} ->
 			{check_queue(RxQ, read), TxQ};
 		{udp, TxSocket, _, _, _} ->
@@ -139,6 +153,8 @@ loop(Device, MacAddr, RxSocket, TxSocket, RxQ, TxQ = #virtq{used = []}) ->
 
 loop(Device, MacAddr, RxSocket, TxSocket, RxQ, TxQ) ->
 	{RxQ1, TxQ1} = receive
+		{udp, RxSocket, _, _, _} when TxSocket == none ->
+			{check_queue(RxQ, read), check_queue(TxQ, write)};
 		{udp, RxSocket, _, _, _} ->
 			{check_queue(RxQ, read), TxQ};
 		{udp, TxSocket, _, _, _} ->
@@ -157,9 +173,11 @@ loop(Device, MacAddr, RxSocket, TxSocket, RxQ, TxQ) ->
 		Other ->
 			io:format("virtio: got message ~p~n", [Other]),
 			{RxQ, TxQ}
+		after 1000 ->
+			% check in case we missed an interrupt
+			{check_queue(RxQ, read), check_queue(TxQ, write)}
 	end,
 	loop(Device, MacAddr, RxSocket, TxSocket, RxQ1, TxQ1).
-
 
 virtio_cfg_type(1) -> common_cfg;
 virtio_cfg_type(2) -> notify_cfg;

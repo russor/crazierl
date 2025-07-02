@@ -1,6 +1,6 @@
 -module(pci).
 
--export([start/0, list/0, attach/2, enable_msix/3, map/3]).
+-export([start/0, list/0, attach/2, msix_size/1, enable_msix/3, map/3]).
 -include("pci.hrl").
 -behavior(gen_server).
 
@@ -66,6 +66,13 @@ handle_call({enable_msix, #pci_common{msix_map = Map, capabilities = Capabilitie
 	end,
 	{reply, Reply, State};
 
+handle_call({msix_size, #pci_common{capabilities = Capabilities} = Common}, _From, State) ->
+	Reply = case get_msix(Capabilities) of
+		false -> 0;
+		#pci_msi_x{size = S} -> S
+	end,
+	{reply, Reply, State};
+
 handle_call(list, _From, State) ->
 	{reply, State#state.devices, State}.
 
@@ -96,6 +103,9 @@ attach(Module, Args) ->
 
 enable_msix(Device, Vector, IRQ) when Vector >= 0 ->
 	gen_server:call(?MODULE, {enable_msix, Device, Vector, IRQ}, infinity).
+
+msix_size(Device) ->
+	gen_server:call(?MODULE, {msix_size, Device}, infinity).
 
 scan_bus(_, 32, _, Acc) -> Acc; % only 32 devices per Bus
 scan_bus(Bus, Device, Function, Acc) ->
