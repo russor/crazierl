@@ -272,17 +272,19 @@ print_pci([#pci_bridge{common = C} = B | Tail]) ->
 		]),
 	print_driver(C),
 	print_bars(B#pci_bridge.bars),
+	print_capabilities(C#pci_common.capabilities),
 	print_pci(Tail);
 print_pci([#pci_device{common = C} = D | Tail]) ->
-	io:format("pci ~2B:~2B:~B class=~4.16.0B~4.16.0B card=~4.16.0B~4.16.0B chip=~4.16.0B~4.16.0B rev=~2.16.0B type=device~n",
+	io:format("pci ~2B:~2B:~B class=~4.16.0B~4.16.0B card=~4.16.0B~4.16.0B chip=~4.16.0B~4.16.0B rev=~2.16.0B type=device irq=~B~n",
 		[C#pci_common.bus, C#pci_common.device, C#pci_common.function,
 		 C#pci_common.class, C#pci_common.sub_class,
 		 C#pci_common.device_id, C#pci_common.vendor,
 		 D#pci_device.chip_device_id, D#pci_device.chip_vendor,
-		 C#pci_common.revision
+		 C#pci_common.revision, D#pci_device.interrupt_line
 		]),
 	print_driver(C),
 	print_bars(D#pci_device.bars),
+	print_capabilities(C#pci_common.capabilities),
 	print_pci(Tail).
 
 print_driver(#pci_common{driver = undefined}) -> ok;
@@ -301,6 +303,11 @@ print_bar(#pci_io_bar{base = Base, size = Size}, N) ->
 	io:format("    bar~B = I/O size ~B, base 0x~.16B~n", [N, Size, Base]);
 print_bar(#pci_mem_bar{base = Base, size = Size, prefetch = Prefetch, type = Type}, N) ->
 	io:format("    bar~B = mem size ~B, base 0x~.16B, prefetch ~p, type ~s~n", [N, Size, Base, Prefetch, Type]).
+
+print_capabilities([H|T]) ->
+	io:format("    cap ~p~n", [H]),
+	print_capabilities(T);
+print_capabilities([]) -> ok.
 
 map_msix(#pci_common{capabilities = Capabilities} = Common, Bars) ->
 	case get_msix(Capabilities) of
