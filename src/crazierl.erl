@@ -30,7 +30,6 @@ start() ->
 	pci:start(),
 	pci:attach(virtio_net, []),
 	pci:attach(rtl_8168, []),
-	%pci:attach(ne2k_pci, []),
 	try
 		ethernet_sender ! {ping, self()},
 		receive
