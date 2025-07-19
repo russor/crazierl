@@ -1,4 +1,4 @@
-ERLANG_VERSION=27
+ERLANG_VERSION=26
 #OTPDIR=../installed/lib/erlang
 OTPDIR=erlang-runtime$(ERLANG_VERSION)/usr/local/lib/erlang$(ERLANG_VERSION)
 
