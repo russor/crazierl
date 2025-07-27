@@ -79,7 +79,7 @@ go() ->
                     net_kernel:start([binary_to_atom(iolist_to_binary(NodeName)), longnames])
            end,
            case maps:get(dns_server, O2) of
-               ServerInt ->
+               ServerInt when is_integer(ServerInt) ->
                    DNSIp = etcpip_socket:unmap_ip(ServerInt),
                    io:format("dns server ~p~n", [DNSIp]),
                    inet_db:add_ns(DNSIp);
