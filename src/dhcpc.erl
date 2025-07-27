@@ -66,8 +66,7 @@ go() ->
                 99, 130, 83, 99,
                 RawOptions2/binary>>} ->
            O2 = parse_options(RawOptions2, #{}),
-           %io:format("dhcp offer IP ~.16B~nOptions ~w~n", [MyAddr, O2]),
-           io:format("Ip ~.16B, Netmask ~.16B, Gateway ~.16B~n", [MyAddr, maps:get(subnet_mask, O2), maps:get(router, O2)]),
+           io:format("Ip ~p, Netmask ~p, Gateway ~p~n", [etcpip_socket:unmap_ip(MyAddr), etcpip_socket:unmap_ip(maps:get(subnet_mask, O2)), etcpip_socket:unmap_ip(maps:get(router, O2))]),
            case {maps:get(hostname, O2, undefined), maps:get(domain_name, O2, undefined)} of
                 {undefined, undefined} ->
                     NodeName = io_lib:format("crazierl@noname_~.16B", [MyAddr]),
@@ -79,6 +78,14 @@ go() ->
                     NodeName = io_lib:format("crazierl@~s.~s", [Hostname, Domain]),
                     net_kernel:start([binary_to_atom(iolist_to_binary(NodeName)), longnames])
            end,
+           case maps:get(dns_server, O2) of
+               ServerInt ->
+                   DNSIp = etcpip_socket:unmap_ip(ServerInt),
+                   io:format("dns server ~p~n", [DNSIp]),
+                   inet_db:add_ns(DNSIp);
+               _ -> io:format("no dns server from dhcpd~n")
+           end,
+
            etcpip_socket:new_ip(MyAddr, maps:get(subnet_mask, O2), maps:get(router, O2));
         M -> io:format("got ~w~n", [M])
     end.
