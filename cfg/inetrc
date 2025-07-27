@@ -1,3 +1,4 @@
-%{resolv_conf, ""}.
-%{hosts_file, ""}.
+{resolv_conf, ""}.
+{hosts_file, ""}.
 {lookup, [file, dns]}.
+{usevc, true}.
