@@ -79,7 +79,6 @@ attach(Device, _Args) ->
 
 	{RxSocket, TxSocket, ReadVector, WriteVector} = case pci:msix_size(Common) of
 		N when N >= 2 ->
-			io:format("up to ~B MSIX interrupts~n", [N]),
 			{Rx, RxInt} = crazierl:open_interrupt(0),
 			{Tx, TxInt} = crazierl:open_interrupt(0),
 			io:format("virtio_net: using msix ~B rx ~B tx~n", [RxInt, TxInt]),
@@ -94,7 +93,8 @@ attach(Device, _Args) ->
 				{ifaddr, {local, io_lib:format("/kern/ioapic/~B/0~n", [Interrupt])}},
 				{active, true}
 			]),
-			{IrqSocket, none, false, false}
+			{ok, IsrMap} = map_structure(isr_cfg, Device, Capabilities),
+			{IrqSocket, IsrMap, false, false}
 	end,
 
 	<<NotifyOffsetMult:32/little>> = (maps:get(notify_cfg, Capabilities))#virtio_pci_cap.data,
@@ -139,7 +139,8 @@ map_structure(Key, #pci_device{bars = Bars}, Caps) ->
 % tx queue full, don't process send messages
 loop(Device, MacAddr, RxSocket, TxSocket, RxQ, TxQ = #virtq{used = []}) ->
 	{RxQ1, TxQ1} = receive
-		{udp, RxSocket, _, _, _} when TxSocket == none ->
+		{udp, RxSocket, _, _, _} when is_reference(TxSocket) ->
+			crazierl:bcopy_from(TxSocket, 0, 1),
 			{check_queue(RxQ, read), check_queue(TxQ, write)};
 		{udp, RxSocket, _, _, _} ->
 			{check_queue(RxQ, read), TxQ};
@@ -153,7 +154,8 @@ loop(Device, MacAddr, RxSocket, TxSocket, RxQ, TxQ = #virtq{used = []}) ->
 
 loop(Device, MacAddr, RxSocket, TxSocket, RxQ, TxQ) ->
 	{RxQ1, TxQ1} = receive
-		{udp, RxSocket, _, _, _} when TxSocket == none ->
+		{udp, RxSocket, _, _, _} when is_reference(TxSocket) ->
+			crazierl:bcopy_from(TxSocket, 0, 1),
 			{check_queue(RxQ, read), check_queue(TxQ, write)};
 		{udp, RxSocket, _, _, _} ->
 			{check_queue(RxQ, read), TxQ};
@@ -174,6 +176,11 @@ loop(Device, MacAddr, RxSocket, TxSocket, RxQ, TxQ) ->
 			io:format("virtio: got message ~p~n", [Other]),
 			{RxQ, TxQ}
 		after 1000 ->
+			if 
+				is_reference(TxSocket) -> crazierl:bcopy_from(TxSocket, 0, 1);
+				true -> ok
+			end,
+				
 			% check in case we missed an interrupt
 			{check_queue(RxQ, read), check_queue(TxQ, write)}
 	end,
