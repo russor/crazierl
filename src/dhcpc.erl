@@ -69,8 +69,8 @@ go() ->
            io:format("Ip ~p, Netmask ~p, Gateway ~p~n", [etcpip_socket:unmap_ip(MyAddr), etcpip_socket:unmap_ip(maps:get(subnet_mask, O2)), etcpip_socket:unmap_ip(maps:get(router, O2))]),
            case {maps:get(hostname, O2, undefined), maps:get(domain_name, O2, undefined)} of
                 {undefined, undefined} ->
-                    NodeName = io_lib:format("crazierl@noname_~.16B", [MyAddr]),
-                    net_kernel:start([binary_to_atom(iolist_to_binary(NodeName)), shortnames]);
+                    NodeName = io_lib:format("crazierl@~8.16.0B.nip.io", [MyAddr]),
+                    net_kernel:start([binary_to_atom(iolist_to_binary(NodeName)), longnames]);
                 {Hostname, undefined} ->
                     NodeName = io_lib:format("crazierl@~s", [Hostname]),
                     net_kernel:start([binary_to_atom(iolist_to_binary(NodeName)), shortnames]);
@@ -78,7 +78,7 @@ go() ->
                     NodeName = io_lib:format("crazierl@~s.~s", [Hostname, Domain]),
                     net_kernel:start([binary_to_atom(iolist_to_binary(NodeName)), longnames])
            end,
-           case maps:get(dns_server, O2) of
+           case maps:get(dns_server, O2, etcpip_socket:map_ip({8,8,8,8})) of
                ServerInt when is_integer(ServerInt) ->
                    DNSIp = etcpip_socket:unmap_ip(ServerInt),
                    io:format("dns server ~p~n", [DNSIp]),
