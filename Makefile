@@ -94,7 +94,7 @@ dist: .erlang.cookie obj/crazierl_epmd.beam $(OTPDIR)/bin/erl obj/gen_tcp_dist.b
 	$(OTPDIR)/bin/erl -no_epmd -proto_dist gen_tcp -epmd_module crazierl_epmd -sname host -pz $(shell pwd)/$(OBJDIR) -setcookie $(shell cat .erlang.cookie)
 
 dist-hw: .erlang.cookie obj/crazierl_epmd.beam $(OTPDIR)/bin/erl obj/gen_tcp_dist.beam
-	$(OTPDIR)/bin/erl -no_epmd -proto_dist gen_tcp -epmd_module crazierl_epmd -name host -pz $(shell pwd)/$(OBJDIR) -setcookie $(shell cat .erlang.cookie)
+	$(OTPDIR)/bin/erl -no_epmd -proto_dist gen_tcp -epmd_module crazierl_epmd -name host -pz $(shell pwd)/$(OBJDIR) -setcookie $(shell cat .erlang.cookie) -kernel inet_dist_listen_min 4370
 
 remote-shell: .erlang.cookie obj/crazierl_epmd.beam $(OTPDIR)/bin/erl obj/gen_tcp_dist.beam
 	$(OTPDIR)/bin/erl -hidden -no_epmd -proto_dist gen_tcp -epmd_module crazierl_epmd -remsh 'crazierl@localhost' -sname shell -pz $(shell pwd)/$(OBJDIR) -setcookie $(shell cat .erlang.cookie)
