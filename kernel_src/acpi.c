@@ -72,7 +72,7 @@ int acpi_process_madt(void * rsdt) {
 			ACPI_MADT_LOCAL_APIC *data = (ACPI_MADT_LOCAL_APIC *)p;
 			if (data->LapicFlags & ACPI_MADT_ENABLED) {
 				if (numcpu < MAX_CPUS) {
-					EARLY_ERROR_PRINTF("Processor %d, APIC %d, Flags %x\r\n", data->ProcessorId, data->Id, data->LapicFlags);
+					//EARLY_ERROR_PRINTF("Processor %d, APIC %d, Flags %x\r\n", data->ProcessorId, data->Id, data->LapicFlags);
 					cpus[numcpu].flags = CPU_ENABLED;
 					cpus[numcpu].apic_id = data->Id;
 					++numcpu;
@@ -111,10 +111,10 @@ int acpi_process_madt(void * rsdt) {
 			if (data->Bus == 0 && data->SourceIrq == 0) {
 				timer_gsirq = data->GlobalIrq;
 				timer_flags = data->IntiFlags;
-				EARLY_ERROR_PRINTF("timer irq is global IRQ %d (flags %x)\r\n", timer_gsirq, data->IntiFlags);
+				//EARLY_ERROR_PRINTF("timer irq is global IRQ %d (flags %x)\r\n", timer_gsirq, data->IntiFlags);
 			} else {
-				EARLY_ERROR_PRINTF("ISO: Bus %d, SourceIRQ %d, GlobalIRQ %d, Flags %x\r\n",
-				             data->Bus, data->SourceIrq, data->GlobalIrq, data->IntiFlags);
+				//EARLY_ERROR_PRINTF("ISO: Bus %d, SourceIRQ %d, GlobalIRQ %d, Flags %x\r\n",
+				//             data->Bus, data->SourceIrq, data->GlobalIrq, data->IntiFlags);
 			}
 
 		} else if (subhead->Type == ACPI_MADT_TYPE_LOCAL_APIC_NMI && subhead->Length == sizeof(ACPI_MADT_LOCAL_APIC_NMI)) {

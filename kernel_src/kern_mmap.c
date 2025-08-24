@@ -429,13 +429,13 @@ void kern_mmap_init (unsigned int length, unsigned int addr, uintptr_t max_used_
 {
 	uintptr_t mmap;
 	size_t pages = 0;
-	EARLY_ERROR_PRINTF ("memory map at 0x%08x, length %d\r\n", addr, length);
+	//EARLY_ERROR_PRINTF ("memory map at 0x%08x, length %d\r\n", addr, length);
 	for (mmap = addr; mmap < (addr + length); mmap += ((multiboot_memory_map_t *)mmap)->size + sizeof (((multiboot_memory_map_t *)mmap)->size)) {
 		multiboot_memory_map_t * mmm = (multiboot_memory_map_t *) mmap;
 		if (mmm->type == 1 && (mmm->addr + mmm->len - 1) <= SIZE_MAX) {
 			uintptr_t addr = mmm->addr;
 			uintptr_t len = mmm->len;
-			EARLY_ERROR_PRINTF("Available memory at 0x%08x-0x%08x; 0x%08x (%u) bytes\r\n", addr, addr + len - 1, len, len);
+			//EARLY_ERROR_PRINTF("Available memory at 0x%08x-0x%08x; 0x%08x (%u) bytes\r\n", addr, addr + len - 1, len, len);
 			addr = PAGE_FLOOR(addr);
 			if (addr != mmm->addr) {
 				addr += PAGE_SIZE;
@@ -471,7 +471,7 @@ void kern_mmap_init (unsigned int length, unsigned int addr, uintptr_t max_used_
 		} else {
 			uintptr_t addr = mmm->addr;
 			uintptr_t len = mmm->len;
-			EARLY_ERROR_PRINTF("unavailable memory (%d) at 0x%08x; 0x%08x (%u) bytes\r\n", mmm->type, addr, len, len);
+			//EARLY_ERROR_PRINTF("unavailable memory (%d) at 0x%08x; 0x%08x (%u) bytes\r\n", mmm->type, addr, len, len);
 		}
 	}
 
@@ -536,12 +536,12 @@ void kern_mmap_init (unsigned int length, unsigned int addr, uintptr_t max_used_
 		if (segment->addr + segment->len > MAX_ADDR) {
 			MAX_ADDR = segment->addr + segment->len;
 		}
-		EARLY_ERROR_PRINTF("add mem segment %x %x (%u)\r\n", segment->addr, segment->len, segment->len);
+		//EARLY_ERROR_PRINTF("add mem segment %x %x (%u)\r\n", segment->addr, segment->len, segment->len);
 		add_page_mappings(0, segment->addr, segment->len);
 		add_mem_segment(i);
 	}
 
-	EARLY_ERROR_PRINTF("finished setting up pages\r\n");
+	//EARLY_ERROR_PRINTF("finished setting up pages\r\n");
 	PAGE_SETUP_FINISHED = 1;
 }
 
@@ -627,7 +627,7 @@ int kern_mmap (uintptr_t *ret, void * addr, size_t len, int prot, int flags)
 	len = PAGE_CEIL(len);
 	addr = (void*)PAGE_FLOOR(addr);
 	if (addr != NULL && !((prot & PROT_FORCE) || (flags & MAP_FIXED)) && !mem_available((uintptr_t)addr, len)) {
-		ERROR_PRINTF("range %08x, %08x not available; looking for anything!\r\n", addr, len);
+		DEBUG_PRINTF("range %08x, %08x not available; looking for anything!\r\n", addr, len);
 		//halt("couldn't satisfy range\r\n", 0);
 		addr = NULL;
 	} else if (addr != NULL && ((uintptr_t)addr & (alignsize - 1))) {

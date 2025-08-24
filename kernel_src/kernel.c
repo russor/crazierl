@@ -2455,7 +2455,7 @@ int syscall_mmap (struct mmap_args *a, struct interrupt_frame *iframe) {
 	if (kern_mmap(&ret_addr, a->addr, a->len, a->prot, a->flags)) {
 		if (a->fd != -1 && a->fd < BOGFD_MAX && FDS[a->fd].type == BOGFD_FILE) {
 			if (a->pos == 0 && a->addr != NULL) { // && a->len > PAGE_SIZE) {
-				ERROR_PRINTF("add-symbol-file %s -o 0x%08x\r\n", FDS[a->fd].file->name, a->addr);
+				DEBUG_PRINTF("add-symbol-file %s -o 0x%08x\r\n", FDS[a->fd].file->name, a->addr);
 			}
 
 			if (a->pos + a->len > FDS[a->fd].file->size) {
@@ -2517,7 +2517,7 @@ int syscall_pipe2 (struct pipe2_args *a, struct interrupt_frame *iframe) {
 	FDS[pipe2].pb->length = 0;
 	a->fildes[0] = pipe1;
 	a->fildes[1] = pipe2;
-	ERROR_PRINTF("pipe2 -> %d <-> %d\r\n", pipe1, pipe2);
+	DEBUG_PRINTF("pipe2 -> %d <-> %d\r\n", pipe1, pipe2);
 	UNLOCK(&FDS[pipe1].lock);
 	UNLOCK(&FDS[pipe2].lock);
 	SYSCALL_SUCCESS(0);
@@ -2892,7 +2892,6 @@ void interrupt_setup()
 	if (rsdt == NULL) {
 		halt("ACPI is required, but could not find RSDP\r\n", 1);
 	}
-	EARLY_ERROR_PRINTF("RSDT is at %p\r\n", rsdt);
 	if (! acpi_check_table(rsdt)) {
 		halt("Invalid ACPI RSDT table\r\n", 1);
 	}
@@ -2998,8 +2997,8 @@ void load_file(void *start, char *name, size_t size)
 		++phead;
 	}
 
-	ERROR_PRINTF("load offsets %08x - %08x; virt %08x - %08x\r\n", first_addr, last_addr, first_virtual, last_virtual);
-	ERROR_PRINTF("file space %08x; virt space %08x\r\n", last_addr - first_addr, last_virtual - first_virtual);
+	DEBUG_PRINTF("load offsets %08x - %08x; virt %08x - %08x\r\n", first_addr, last_addr, first_virtual, last_virtual);
+	DEBUG_PRINTF("file space %08x; virt space %08x\r\n", last_addr - first_addr, last_virtual - first_virtual);
 	uintptr_t virtual_space = last_virtual - first_virtual;
 	uintptr_t space = max (last_addr - first_addr, last_virtual - first_virtual);
 	load_addr = 0;
@@ -3020,10 +3019,10 @@ void load_file(void *start, char *name, size_t size)
 //	}
 	if (load_addr != first_virtual) {
 		entrypoint = entrypoint - first_virtual + load_addr;
-		ERROR_PRINTF("elf entrypoint moved to 0x%08x\r\n", entrypoint);
+		DEBUG_PRINTF("elf entrypoint moved to 0x%08x\r\n", entrypoint);
 	}
 
-	ERROR_PRINTF("add-symbol-file %s -o 0x%08x\r\n", name, load_addr);
+	DEBUG_PRINTF("add-symbol-file %s -o 0x%08x\r\n", name, load_addr);
 
 	phead = phead_start;
 	size_t last_vaddr = 0;
@@ -3039,7 +3038,7 @@ void load_file(void *start, char *name, size_t size)
 			}
 			if (phead->p_vaddr > last_vaddr) {
 				size_t count = phead->p_vaddr - last_vaddr;
-				ERROR_PRINTF("zeroing %d bytes from %08x to %08x\r\n", count, load_addr + last_vaddr, load_addr + last_vaddr + count);
+				DEBUG_PRINTF("zeroing %d bytes from %08x to %08x\r\n", count, load_addr + last_vaddr, load_addr + last_vaddr + count);
 				explicit_bzero((uint8_t *)(load_addr + last_vaddr), count);
 			}
 
@@ -3050,7 +3049,7 @@ void load_file(void *start, char *name, size_t size)
 			uint8_t *src = start + phead->p_offset;
 			uint8_t *dst = (void*) (load_addr - first_virtual +  phead->p_vaddr);
 			if (src != dst) {
-				ERROR_PRINTF("copying %d bytes from %08x to %08x\r\n", phead->p_filesz, src, dst);
+				DEBUG_PRINTF("copying %d bytes from %08x to %08x\r\n", phead->p_filesz, src, dst);
 				memcpy(dst, src, phead->p_filesz);
 			}
 			last_vaddr = phead->p_vaddr + phead->p_filesz;
@@ -3067,7 +3066,7 @@ void load_file(void *start, char *name, size_t size)
 	virtual_space = PAGE_CEIL(virtual_space);
 	size_t count = virtual_space - last_vaddr;
 	if (count) {
-		ERROR_PRINTF("zeroing final %d bytes from %08x to %08x\r\n", count, load_addr + last_vaddr, load_addr + last_vaddr + count);
+		DEBUG_PRINTF("zeroing final %d bytes from %08x to %08x\r\n", count, load_addr + last_vaddr, load_addr + last_vaddr + count);
 		explicit_bzero((uint8_t*) (load_addr + last_vaddr), count);
 	}
 	kern_munmap(PROT_KERNEL, load_addr, virtual_space);
@@ -3497,8 +3496,6 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 	term_init();
 	setup_fds();
  
-	// Display some messages
-	EARLY_ERROR_PRINTF("Hello, World! %x\r\n", mb_magic);
 	check_cpuid();
 	enable_sse();
 	interrupt_setup();
@@ -3531,13 +3528,13 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 	init_cpus();
 	unsigned int cpus_inited = TIMER_COUNT;
 	
-	ERROR_PRINTF("kernel read-only %08x - %08x\r\n", &__executable_start, &__etext);
+	DEBUG_PRINTF("kernel read-only %08x - %08x\r\n", &__executable_start, &__etext);
 
 	if (!kern_mmap(&scratch, &__executable_start, &__etext - &__executable_start, PROT_KERNEL | PROT_READ, MAP_FIXED)) {
 		halt("couldn't map read only kernel section\r\n", 1);
 	}
 
-	ERROR_PRINTF("kernel read-write %08x - %08x\r\n", &__data_start, &__edata);
+	DEBUG_PRINTF("kernel read-write %08x - %08x\r\n", &__data_start, &__edata);
 	if (!kern_mmap(&scratch, &__data_start, &__edata - &__data_start, PROT_KERNEL | PROT_READ | PROT_WRITE, MAP_FIXED)) {
 		halt("couldn't map read/write kernel section\r\n", 1);
 	}
@@ -3550,7 +3547,7 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 	DEBUG_PRINTF("Multiboot magic: %08x (%s)\r\n", mb_magic, (char *) mb->boot_loader_name);
 	DEBUG_PRINTF("Multiboot info at %08x (%08x)\r\n", mb, &mb);
 	DEBUG_PRINTF("mem range: %08x-%08x\r\n", mb->mem_lower, mb->mem_upper);
-	ERROR_PRINTF("modules: %d @ %08x\r\n", mb->mods_count, mb->mods_addr);
+	DEBUG_PRINTF("modules: %d @ %08x\r\n", mb->mods_count, mb->mods_addr);
 	
 	ERROR_PRINTF("command line: %s\r\n", mb->cmdline);
 	char * filestart = strchrnul((char *)mb->cmdline, ' ');
@@ -3563,11 +3560,11 @@ void kernel_main(uint32_t mb_magic, multiboot_info_t *mb)
 
 	kern_mmap(&scratch, (void *) mods, mods_count * sizeof(mods), PROT_KERNEL | PROT_READ, MAP_FIXED);
 	for (int mod = 0; mod < mods_count; ++mod) {
-		ERROR_PRINTF("Module %d (%s):\r\n 0x%08x-0x%08x\r\n", mod, mods[mod].cmdline, mods[mod].mod_start, mods[mod].mod_end);
+		DEBUG_PRINTF("Module %d (%s):\r\n 0x%08x-0x%08x\r\n", mod, mods[mod].cmdline, mods[mod].mod_start, mods[mod].mod_end);
 		init_files(&mods[mod]);
 	}
 	if (filename[0]) {
-		ERROR_PRINTF("file to load: %s\r\n", filename);
+		DEBUG_PRINTF("file to load: %s\r\n", filename);
 		struct hardcoded_file * file = find_file(filename);
 		if (file) {
 			DEBUG_PRINTF("loading %s at %08x\r\n", filename, file->start);
