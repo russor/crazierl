@@ -1,6 +1,6 @@
 -module (comport).
 
--export ([start/2, init/3]).
+-export ([start/3, init/4]).
 -record (s, {
 		owner,
 		io_port,
@@ -8,10 +8,10 @@
 		buffer
 }).
 
-start(IoPort, Interrupt) ->
-	spawn(?MODULE, init, [self(), IoPort, Interrupt]).
+start(IoPort, Interrupt, Args) ->
+	spawn(?MODULE, init, [self(), IoPort, Interrupt, Args]).
 
-init(Owner, IoPort, Interrupt) ->
+init(Owner, IoPort, Interrupt, Args) ->
 	{ok, InterruptSocket} = gen_udp:open(0, [
 	        {inet_backend, inet},
 		{ifaddr, {local, Interrupt}},
@@ -29,13 +29,18 @@ init(Owner, IoPort, Interrupt) ->
         crazierl:outb(IoPort + 4, 16#1B), % Loopback enabled, IRQs enabled, RTS/DSR set
 
         crazierl:outb(IoPort, 16#AE), % Write to loopback
-        16#AE = crazierl:inb(IoPort), % Read from loopback
+        case crazierl:inb(IoPort) of  % Read from loopback
+        	16#AE ->
+			crazierl:outb(IoPort + 4, 16#0B), % Loopback disabled, IRQs enabled, RTS/DSR set
 
-        crazierl:outb(IoPort + 4, 16#0B), % Loopback disabled, IRQs enabled, RTS/DSR set
-
-	crazierl:outb(IoPort + 1, 2#11), % request irq for data avail and transmitter empty
-	crazierl:outb(IoPort, 16#13), % XOFF
-	loop(port_loop(#s{owner = Owner, io_port = IoPort, irq = InterruptSocket, buffer = <<>>})).
+			crazierl:outb(IoPort + 1, 2#11), % request irq for data avail and transmitter empty
+			case proplists:get_bool(xoff, Args) of
+				true -> crazierl:outb(IoPort, 16#13); % XOFF
+				false -> ok
+			end,
+			loop(port_loop(#s{owner = Owner, io_port = IoPort, irq = InterruptSocket, buffer = <<>>}));
+        	_ -> Owner ! {self(), init_failed} 
+        end.
 
 loop(State = #s{buffer = B, irq = Irq}) ->
 	NewState = receive

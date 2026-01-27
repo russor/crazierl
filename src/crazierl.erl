@@ -24,9 +24,10 @@ ntp_adjtime_freq(_ScaledFreq) -> exit(nif_library_not_loaded).
 % setup console
 start() ->
 	console:start([
-		{comport, start, [16#3f8, "/kern/ioapic/4/0"]},
+		{comport, start, [16#3f8, "/kern/ioapic/4/0", [xoff]]},
 		{vgakb, start, [16#60, "/kern/ioapic/1/0"]}
 	]),
+	crazierl_demo:start(),
 	pci:start(),
 	pci:attach(virtio_net, []),
 	pci:attach(rtl_8168, []),
@@ -37,7 +38,7 @@ start() ->
 		end,
 		example_host:start(),
 		example_host2:start(),
-		catch dhcpc:go()
+		catch dhcpc:go([fun etcpip_socket:new_ip/3, fun crazierl_demo:new_ip/3])
 	catch _:_ -> ok
 	end,
 	motd().

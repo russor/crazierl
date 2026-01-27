@@ -1462,6 +1462,9 @@ int check_bnote(size_t i, struct BogusFD * fd) {
 			}
 			break;
 		}
+		case BNOTE_PENDING: {
+			break;
+		}
 		default:
 			ERROR_PRINTF("filter %d\r\n", BNOTES[i].filter);
 			halt("unexpected filter type in check_bnote\r\n", 0);

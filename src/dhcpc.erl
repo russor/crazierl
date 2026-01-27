@@ -1,13 +1,12 @@
 -module (dhcpc).
 
--export ([go/0]).
+-export ([go/1]).
 -define (CLIENT_PORT, 68).
 -define (SERVER_PORT, 67).
 -define (BROADCAST, 16#FFFFFFFF).
 
-go() ->
-
-    Sock = udp:open(?CLIENT_PORT),
+go(Callbacks) ->
+    _Sock = udp:open(?CLIENT_PORT),
     Xid = crypto:strong_rand_bytes(4),
     Terms = application:get_all_env(etcpip),
     {value, {mac, Mac}} = lists:keysearch(mac, 1, Terms),
@@ -26,8 +25,7 @@ go() ->
                  55, 3, 3, 12, 15, % parameter request Router, Host Name, Domain Name
                  255 % End
               >>,
-    udp:send(0, ?CLIENT_PORT, ?BROADCAST, ?SERVER_PORT, Discovery),
-    Options = receive
+    Options = case send_until_response(0, ?CLIENT_PORT, ?BROADCAST, ?SERVER_PORT, Discovery, 500) of
        {udp, {_, ?CLIENT_PORT, _, ?SERVER_PORT},
              << 2, 1, 6, _Hops,
                 Xid:4/binary,
@@ -55,8 +53,7 @@ go() ->
                  50, 4, MyAddr:32, % Requested IP Address
                  255 % DHCP Discover
               >>,
-    udp:send(0, ?CLIENT_PORT, ?BROADCAST, ?SERVER_PORT, Request),
-    receive
+    case send_until_response(0, ?CLIENT_PORT, ?BROADCAST, ?SERVER_PORT, Request, 500) of
        {udp, {_, ?CLIENT_PORT, _, ?SERVER_PORT},
              << 2, 1, 6, _Hops,
                 Xid:4/binary,
@@ -85,8 +82,7 @@ go() ->
                    inet_db:add_ns(DNSIp);
                _ -> io:format("no dns server from dhcpd~n")
            end,
-
-           etcpip_socket:new_ip(MyAddr, maps:get(subnet_mask, O2), maps:get(router, O2));
+	   lists:foreach(fun (F) -> F(MyAddr, maps:get(subnet_mask, O2), maps:get(router, O2)) end, Callbacks);
         M -> io:format("got ~w~n", [M])
     end.
 
@@ -120,3 +116,11 @@ parse_options(<<0, Rest/binary>>, Map) -> parse_options(Rest, Map);
 parse_options(<<255, _/binary>>, Map) -> Map;
 parse_options(<<N, Len, Data:Len/binary, Rest/binary>>, Map) -> parse_options(Rest, Map#{{unknown, N} => Data}).
 
+send_until_response (Src_Ip, SPort, Dst_Ip, DPort, DataToSend, Timeout) ->
+	udp:send(Src_Ip, SPort, Dst_Ip, DPort, DataToSend),
+	receive
+		{udp, FourTuple, Data} -> {udp, FourTuple, Data}
+	after Timeout ->
+		io:format("dhcp resending after ~p ms~n", [Timeout]),
+		send_until_response(Src_Ip, SPort, Dst_Ip, DPort, DataToSend, Timeout + ceil(Timeout / 2))
+	end.
