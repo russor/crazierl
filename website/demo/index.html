@@ -1,0 +1,63 @@
+<!doctype html>
+<title>(cylon) Crazierl: an Erlang Operating System</title>
+<head>
+<!-- this is probably not very helpful, but let's try -->
+<meta http-equiv="Content-Security-Policy" content=
+"default-src 'none';
+style-src 'self';
+script-src 'self' 'wasm-unsafe-eval' blob:;
+connect-src 'self' wss://relay.widgetry.org/ wss://gather.crazierl.net/;
+img-src 'self'"
+>
+<link rel="stylesheet" href="xterm.css">
+<link rel="stylesheet" href="demo.css">
+<link href="favicon.ico" rel="icon" type="image/x-icon">
+</head>
+<p> You can join your friends in a dist cluster, by sharing a url with the
+same hashtag, and enabling dist with the checkbox below the terminal.
+
+<p>Hashtag (for linking) <input id="hash" size=20 disabled=true></p>
+
+<p> Please wait while the emulator starts. Javascript is required.
+ 
+<div id="terminal"></div>
+<br><br>
+<h2>Warnings</h2>
+<ul>
+<li>There is no security barrier between nodes in a dist cluster; you should
+only use dist between nodes you control and trust</li>
+<li>This demo uses gen_tcp_dist which communicates in plain text; you should
+only use this on a network you control and trust</li>
+<li>This demo uses wss://relay.widgetry.org to provide networking service;
+chances are you don't control that.</li>
+<li>"no one in their right mind would run the <i>unencrypted and
+unauthenticated</i> Erlang distribution unsecured over the internet." --
+jhogberg, Erlang Core Team <a
+href="https://erlangforums.com/t/does-a-security-issue-with-the-node-cookies-continue-to-exist-nowadays/4035/3">in
+thread</a></li>
+<li>Maybe you got a link from not a friend, and you're
+connecting to a totally random person</li>
+<li>If someone malicious can dist connect to your crazierl node, they can
+control it, and if there's a v86 vm escape, they could also control your browser window
+<li><em>Do not use credentials or enter sensitive information or PII</em>
+</ul>
+<p><input type="checkbox" id="dist_consent"><label>I understand the risk,
+but let's play dist with friends anyway</label></p>
+
+
+
+<p>More info about <a href="/">crazierl</a>. This demo shows crazierl
+running on an emulated x86 PC in your browser (courtesy of v86).</p>
+
+
+<h2>Thanks</h2> 
+
+<ul>
+<li>v86: https://copy.sh/v86/ https://github.com/copy/v86
+<li>xterm.js: https://xtermjs.org/ https://github.com/xtermjs/xterm.js
+</ul>
+
+<script src="libv86.js"></script>
+<script src="xterm.js"></script> 
+<script src="demo.js"></script>
+<!-- favicon courtesy of https://www.favicon.cc/?action=icon&file_id=977539 --> 

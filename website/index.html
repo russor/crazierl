@@ -1,0 +1,68 @@
+<head>
+<link rel="canonical" href="https://crazierl.org/" />
+<title>Crazierl: an Erlang operating system</title>
+</head>
+<p><strong>Crazierl</strong> is an Erlang operating system. <a
+href="https://github.com/russor/crazierl/">GitHub</a></p> 
+<p><strong>Erlang</strong> is a programming language and runtime system for building massively scalable soft real-time systems with requirements on high availability.</p>
+<p><a href="http://erlang.org/doc/system_architecture_intro/sys_arch_intro.html">Learn more about Erlang and OTP</a>.</p>
+<h2 id="what-does-it-do">What does it do</h2>
+<p><a href="https://crazierl.org/demo.html">See the demo</a>
+<p>Crazierl is just enough of an OS to run BEAM, the Erlang/OTP VM for x86 PCs
+(and virtual machines). The console is the Erlang shell. Most drivers will
+be written in Erlang, and can be hot loaded.</p>
+<p>Drivers are present for text mode vga, pc keyboard, pc com port, virtio-net,
+and rtl_8168.</p>
+<p>erlang-tcpip enables a basic tcp-ip stack, and there is an example dhcp
+client, ntp client, and simple http server.</p>
+<p>Dist works (milestone 2), with -proto_dist gen_tcp, a custom epmd, and a little help here
+and there with cookies and things.</p>
+<p>Note: networking in the v86 demo is coming soon; v86 and crazierl both support virtio-net.</p>
+<h2 id="where-does-it-run">Where does it run</h2>
+<p>Runs on qemu, v86, and some real hardware. Needs a multiboot loader (tested
+on the built in multiboot loader for qemu and v86, as well as ipxe and
+grub). ACPI required, CPU support for SSE is required. The TSC is treated as
+invariant, but it&#39;s not a fatal error, as many VMs don&#39;t support it. SMP
+works (milestone 1), but is untested at large core counts; over 256 cores is definitely
+not going to work.</p>
+<h2 id="how-does-it-work">How does it work</h2>
+<p>Crazierl provides a (roughly) FreeBSD compatible syscall interface, and can
+load and run FreeBSD executables from an initrd filesystem.  The Makefile
+will prepare an initrd that includes many files from the pkg distribution of
+Erlang, the FreeBSD rtld, and object files from this source, including some
+which override files in the Erlang distribution.</p>
+<h2 id="what-is-it-based-on">What is it based on</h2>
+<p>Erlang/OTP provides for the userland and was the inspiration for the
+project.</p>
+<p>FreeBSD provides many things: the syscall interface, libraries and
+utilities, rtld: the dynamic loader.</p>
+<p>BearSSL, from FreeBSD contrib, provides the blocks to build kernel random.</p>
+<p>Erlang-Tcpip provides the tcp-ip stack.</p>
+<p>GNU Make builds it all.</p>
+<p>Initial structure of the kernel is from
+<a href="https://wiki.osdev.org/User:Zesterer/Bare_Bones">https://wiki.osdev.org/User:Zesterer/Bare_Bones</a> as well as lots of other
+knowledge from the OS Dev wikis and forums; thank you!</p>
+<h2 id="similar-projects">Similar projects</h2>
+<p><a href="https://github.com/cloudozer/ling">Ling</a>: ErlangOnXen -- an alternate VM
+for Erlang targetted to be a Xen guest.</p>
+<p><a href="http://www.erlang-factory.com/euc2017/sam-williams">HydrOS</a> presentation
+available; but I didn&#39;t find code? Seems to have a focus on a capability
+security model. Presentation includes some additional projects.</p>
+<h2 id="why">Why</h2>
+<p>An excellent question. It seemed like a good idea to explore the possibility
+of Erlang as its own system.</p>
+<h2 id="who-did-this">Who did this</h2>
+<p><a href="mailto:crazierl@ruka.org">Richard Russo</a> and friends.</p>
+<h2 id="license">License</h2>
+<p>Copyright [2019-2024]</p>
+<p>Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at</p>
+<p><a href="http://www.apache.org/licenses/LICENSE-2.0">http://www.apache.org/licenses/LICENSE-2.0</a></p>
+<p>Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.</p>
+
+
