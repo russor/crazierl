@@ -44,6 +44,8 @@ BEARSSL_OBJS = $(BEARSSL_SRCS:%.c=$(OBJDIR)/%.o)
 TCPIP_SRCS = $(filter-out %eth_port.erl,$(wildcard erlang-tcpip/src/*.erl))
 TCPIP_OBJS = $(TCPIP_SRCS:erlang-tcpip/src/%.erl=$(OBJDIR)/%.beam)
 
+DEMO_OBJS = $(wildcard website/demo/*.js website/demo/*.html website/demo/*.bin website/demo/*.ico website/demo/*.wasm website/demo/*.css)
+
 ifeq ($(wildcard $(ROOTDIR)/libexec/ld-elf32.so.1),)
 	RTLD=$(ROOTDIR)/libexec/ld-elf.so.1
 else
@@ -77,8 +79,11 @@ obj/crazierl.iso: obj/initrd.gz obj/crazierl.elf.gz cfg/grub.cfg
 netboot: obj/crazierl.elf obj/initrd
 	cp $^ /usr/local/www/apache24/data/tftpboot/crazierl/
 
-push-to-demo: obj/crazierl.elf obj/initrd
-	rsync $^ dh1.ruka.org:crazierl/
+push-to-demo: obj/crazierl.elf obj/initrd $(DEMO_OBJS)
+	rsync $^ dh1.ruka.org:crazierl/demo
+
+website:
+	rsync website/index.html dh1.ruka.org:crazierl/
 
 iso: obj/crazierl.iso
 	cp $^ /usr/local/www/apache24/data/tftpboot/crazierl/
