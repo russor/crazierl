@@ -1,11 +1,11 @@
 -module (dhcpc).
 
--export ([go/1]).
+-export ([go/0]).
 -define (CLIENT_PORT, 68).
 -define (SERVER_PORT, 67).
 -define (BROADCAST, 16#FFFFFFFF).
 
-go(Callbacks) ->
+go() ->
     _Sock = udp:open(?CLIENT_PORT),
     Xid = crypto:strong_rand_bytes(4),
     Terms = application:get_all_env(etcpip),
@@ -63,18 +63,7 @@ go(Callbacks) ->
                 99, 130, 83, 99,
                 RawOptions2/binary>>} ->
            O2 = parse_options(RawOptions2, #{}),
-           io:format("Ip ~p, Netmask ~p, Gateway ~p~n", [etcpip_socket:unmap_ip(MyAddr), etcpip_socket:unmap_ip(maps:get(subnet_mask, O2)), etcpip_socket:unmap_ip(maps:get(router, O2))]),
-           case {maps:get(hostname, O2, undefined), maps:get(domain_name, O2, undefined)} of
-                {undefined, undefined} ->
-                    NodeName = io_lib:format("crazierl@~8.16.0B.nip.io", [MyAddr]),
-                    net_kernel:start([binary_to_atom(iolist_to_binary(NodeName)), longnames]);
-                {Hostname, undefined} ->
-                    NodeName = io_lib:format("crazierl@~s", [Hostname]),
-                    net_kernel:start([binary_to_atom(iolist_to_binary(NodeName)), shortnames]);
-                {Hostname, Domain} ->
-                    NodeName = io_lib:format("crazierl@~s.~s", [Hostname, Domain]),
-                    net_kernel:start([binary_to_atom(iolist_to_binary(NodeName)), longnames])
-           end,
+
            case maps:get(dns_server, O2, etcpip_socket:map_ip({8,8,8,8})) of
                ServerInt when is_integer(ServerInt) ->
                    DNSIp = etcpip_socket:unmap_ip(ServerInt),
@@ -82,7 +71,12 @@ go(Callbacks) ->
                    inet_db:add_ns(DNSIp);
                _ -> io:format("no dns server from dhcpd~n")
            end,
-	   lists:foreach(fun (F) -> F(MyAddr, maps:get(subnet_mask, O2), maps:get(router, O2)) end, Callbacks);
+           {Hostname, Domain} = case {maps:get(hostname, O2, undefined), maps:get(domain_name, O2, undefined)} of
+                {undefined, undefined} -> {io_lib:format("~8.16.0B", [MyAddr]), "nip.io"};
+                {H, D} -> {H, D}
+           end,
+           io:format("Ip ~p, Netmask ~p, Gateway ~p~n", [etcpip_socket:unmap_ip(MyAddr), etcpip_socket:unmap_ip(maps:get(subnet_mask, O2)), etcpip_socket:unmap_ip(maps:get(router, O2))]),
+           crazierl:new_ip(MyAddr, maps:get(subnet_mask, O2), maps:get(router, O2), Hostname, Domain);
         M -> io:format("got ~w~n", [M])
     end.
 

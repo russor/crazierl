@@ -34,10 +34,12 @@ loop(Comport, Pending) ->
 		{Comport, Other} ->
 			io:format("crazierl_demo: got ~p from com2~n", Other),
 			Pending;
-		{ip, _IP} ->
-			NodeName = atom_to_binary(node()),
-			NodeSize = size(NodeName),
-			Comport ! <<"n", NodeSize:16, NodeName/binary>>,
+		{host, Host, Domain} ->
+			put(host, {Host, Domain}),
+			case erase(cookie) of
+				undefined -> ok;
+				Cookie -> command(Comport, $c, Cookie)
+			end,
 			Pending;
 		Other ->
 			io:format("crazierl_demo: got ~p~n", [Other]),
@@ -48,15 +50,19 @@ loop(Comport, Pending) ->
 new_ip(Ip, _SubnetMask, _Router) ->
 	catch ?MODULE ! {ip, Ip}.
 
-command(_Comport, $c, Cookie) ->
-	io:format("setting cookie...~n"),
-	erlang:set_cookie(binary_to_atom(binary:encode_hex(list_to_binary(Cookie))));
+command(Comport, $c, Cookie) ->
+	case erase(host) of
+		undefined -> put(cookie, Cookie);
+		{Host, Domain} ->
+			crazierl:start_dist(Host, Domain),
+			io:format("setting cookie...~n"),
+			erlang:set_cookie(binary_to_atom(binary:encode_hex(list_to_binary(Cookie)))),
+			NodeName = atom_to_binary(node()),
+			NodeSize = size(NodeName),
+			Comport ! <<"n", NodeSize:16, NodeName/binary>>
+	end;
 command(_Comport, $n, Node) ->
 	Result = net_adm:ping(list_to_atom(Node)),
 	io:format("ping node ~s -> ~p~n", [Node, Result]);
 command(_Comport, Command, Value) ->
 	io:format("crazierl_demo: unknown command ~p, value: ~p~n", [Command, Value]).
-
-
-		
-		

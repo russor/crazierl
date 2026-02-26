@@ -1,6 +1,6 @@
 -module(crazierl).
 -export([start/0, inb/1, inl/1, outb/2, outl/2, map/2, map_port/2, map_addr/1, bcopy_to/3, bcopy_from/3, time_offset/2, ntp_adjtime_freq/1]).
--export([open_interrupt/1]).
+-export([open_interrupt/1, new_ip/5, start_dist/2]).
 
 -on_load(init/0).
 
@@ -38,7 +38,7 @@ start() ->
 		end,
 		example_host:start(),
 		example_host2:start(),
-		catch dhcpc:go([fun etcpip_socket:new_ip/3, fun crazierl_demo:new_ip/3])
+		catch dhcpc:go()
 	catch _:_ -> ok
 	end,
 	motd().
@@ -61,3 +61,17 @@ motd() ->
 		  "FreeBSD is licensed BSD-2-Clause; Copyright (c) 1992-2021 The FreeBSD Project.~n"
 		  "BearSSL is licensed MIT; Copyright (c) 2016 Thomas Pornin <pornin@bolet.org>~n"
 	).
+
+new_ip(Ip, SubnetMask, Router, Hostname, Domain) ->
+	etcpip_socket:new_ip(Ip, SubnetMask, Router),
+	case whereis(crazierl_demo) of
+		undefined -> start_dist(Hostname, Domain);
+		Pid -> Pid ! {host, Hostname, Domain}
+	end.
+
+start_dist(Hostname, undefined) ->
+        NodeName = io_lib:format("crazierl@~s", [Hostname]),
+        net_kernel:start([binary_to_atom(iolist_to_binary(NodeName)), shortnames]);
+start_dist(Hostname, Domain) ->
+        NodeName = io_lib:format("crazierl@~s.~s", [Hostname, Domain]),
+        net_kernel:start([binary_to_atom(iolist_to_binary(NodeName)), longnames]).
