@@ -122,7 +122,7 @@ push-code-hw: $(TCPIP_OBJS) $(INITRD_ERLANG_OBJS) $(OTPDIR)/bin/escript
 debugger:
 	gdb -ex "set confirm off" -ex "add-symbol-file obj/crazierl.elf" -ex "add-symbol-file $$(find $(OTPDIR) -name beam.smp)" -ex "target remote localhost:1234"
 
-.PHONY: clean $(OTPDIR)/bin/erlc
+.PHONY: clean $(OTPDIR)/bin/erlc website
 clean:
 	rm -f obj/initrd obj/crazierl.elf obj/*.gz obj/*.o obj/*.beam obj/*.so obj/initrd.tmp obj/.deps/*.d obj/*.app obj/*.iso obj/iso/initrd obj/iso/crazierl.elf obj/iso/boot/grub/grub.cfg
 

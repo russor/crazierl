@@ -3271,6 +3271,7 @@ void setup_entrypoint()
 			"-sbwtdcpu", "none",
 			"-sbwtdio", "none",
 			"-kernel", "inet_backend", "socket",
+			"-kernel", "start_pg", "true",
 			"-proto_dist", "gen_tcp",
 			"-epmd_module", "crazierl_epmd",
 			"-kernel", "inet_dist_listen_min", "4370",
