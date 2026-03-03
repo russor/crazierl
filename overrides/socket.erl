@@ -1,5 +1,5 @@
 -hook([open/4, setopt/3, getopt/2, bind/2, listen/2, accept/2, connect/3,
-       recv/4, send/4, sendto/5, recvfrom/4,
+       recv/4, send/4, sendto/5, sendv/3, recvfrom/4,
        close/1, sockname/1, peername/1, info/1, cancel/2]).
 -include_lib("kernel/src/socket.erl").
 
@@ -45,6 +45,14 @@ hook_send(Sock, Data, Flags, Timeout) -> real_send(Sock, Data, Flags, Timeout).
 
 hook_sendto({etcpip, Sock}, Data, Dest, Flags, Timeout) -> etcpip_socket:sendto(Sock, Data, Dest, Flags, Timeout);
 hook_sendto(Sock, Data, Dest, Flags, Timeout) -> real_sendto(Sock, Data, Dest, Flags, Timeout).
+
+hook_sendv({etcpip, Sock}, [IO], Timeout) -> etcpip_socket:send(Sock, IO, [], Timeout);
+hook_sendv({etcpip, Sock}, [IO|RestIOV], Timeout) ->
+	case etcpip_socket:send(Sock, IO, [], Timeout) of
+		ok -> sendv({etcpip, Sock}, RestIOV, Timeout);
+		{error, Reason} -> {error, {Reason, RestIOV}}
+	end;
+hook_sendv(Sock, IOV, Timeout) -> real_sendv(Sock, IOV, Timeout).
 
 hook_close({etcpip, Sock}) -> etcpip_socket:close(Sock);
 hook_close(Sock) -> real_close(Sock).
