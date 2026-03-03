@@ -7,7 +7,8 @@ href="https://github.com/russor/crazierl/">GitHub</a></p>
 <p><strong>Erlang</strong> is a programming language and runtime system for building massively scalable soft real-time systems with requirements on high availability.</p>
 <p><a href="http://erlang.org/doc/system_architecture_intro/sys_arch_intro.html">Learn more about Erlang and OTP</a>.</p>
 <h2 id="what-does-it-do">What does it do</h2>
-<p><a href="https://crazierl.org/demo/">See the demo</a>
+<p><a href="https://crazierl.org/demo/">See the demo</a>, including a
+networked chat application.
 <p>Crazierl is just enough of an OS to run BEAM, the Erlang/OTP VM for x86 PCs
 (and virtual machines). The console is the Erlang shell. Most drivers will
 be written in Erlang, and can be hot loaded.</p>
@@ -17,7 +18,6 @@ and rtl_8168.</p>
 client, ntp client, and simple http server.</p>
 <p>Dist works (milestone 2), with -proto_dist gen_tcp, a custom epmd, and a little help here
 and there with cookies and things.</p>
-<p>Note: networking in the v86 demo is coming soon; v86 and crazierl both support virtio-net.</p>
 <h2 id="where-does-it-run">Where does it run</h2>
 <p>Runs on qemu, v86, and some real hardware. Needs a multiboot loader (tested
 on the built in multiboot loader for qemu and v86, as well as ipxe and

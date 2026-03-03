@@ -8,7 +8,8 @@
 
 ## What does it do
 
-[See the demo](https://crazierl.org/demo.html)
+[See the demo](https://crazierl.org/demo.html) Demo includes a simple
+networked chat application.
 
 Crazierl is just enough of an OS to run BEAM, the Erlang/OTP VM for x86 PCs
 (and virtual machines). The console is the Erlang shell. Most drivers will
@@ -22,9 +23,6 @@ client, ntp client, and simple http server.
 
 Dist works (milestone 2), with -proto_dist gen_tcp, a custom epmd, and a little help here
 and there with cookies and things.
-
-Note: networking in the v86 demo is coming soon; v86 and crazierl both
-support virtio-net.
 
 ## Where does it run
 
